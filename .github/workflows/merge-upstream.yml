@@ -41,7 +41,7 @@ jobs:
             # the merge's are wiped and restored from before it — a plain
             # checkout of the path leaves a file upstream added staged in
             # the merge, and the push is refused again.
-            git rm -q -r .github/workflows
+            git rm -q -rf .github/workflows
             git checkout ORIG_HEAD -- .github/workflows
             git diff --cached --quiet || git commit -m "keep the fork's workflows"
             if [ "$(git rev-parse HEAD)" = "$before" ]; then
