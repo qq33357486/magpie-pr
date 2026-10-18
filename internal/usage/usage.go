@@ -1005,10 +1005,12 @@ func Vias(since time.Time) map[string][]Via {
 
 func buildVias(snapshot *logSnapshot, since time.Time) map[string][]Via {
 	out := map[string][]Via{}
+	keep := keptStrings{}
 	snapshot.visit(since, func(r Record) {
 		if r.IsRejected() || r.IsReported() || r.Session == "" || r.Model == "" {
 			return
 		}
+		r.Provider, r.Model, r.Effort = keep.of(r.Provider), keep.of(r.Model), keep.of(r.Effort)
 		k := ReportedAs(r.Agent) + "|" + r.Session
 		vs := out[k]
 		i := slices.IndexFunc(vs, func(v Via) bool { return v.Provider == r.Provider && v.Model == r.Model && v.Effort == r.Effort })

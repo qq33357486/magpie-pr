@@ -21,6 +21,7 @@ package provider
 // into providers.json by hand is cut where it closes.
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"maps"
@@ -377,7 +378,7 @@ func groupsIn(entries []Entry) []Group {
 	if f.NoAutoGroups {
 		return orderedGroups(out, f.GroupOrder)
 	}
-	for _, g := range autoGroups(entries, heldSettings().ModelSameAs) {
+	for _, g := range foundGroups(entries) {
 		if slices.ContainsFunc(out, func(o Group) bool { return o.ID == g.ID }) {
 			continue // the user changed it: theirs now
 		}
@@ -564,7 +565,41 @@ func AutoStandIn(id string) (string, bool) {
 	return "", false
 }
 
-// autoGroups are the models more than one ready provider serves under the
+// foundGroups are the groups magpie finds (autoGroups) among entries and
+// the models of the providers switched off: one switched off for a while
+// stays in the group, a member the gateway skips (membersIn), rather than
+// taking a group of two away with every agent, rule and group set to it.
+func foundGroups(entries []Entry) []Group {
+	return autoGroups(foundFrom(entries, heldOffEntries()), heldSettings().ModelSameAs)
+}
+
+// foundFrom is entries with idle's models it lacks, each provider's in
+// the Providers order, so a provider on again is back in its place.
+func foundFrom(entries, idle []Entry) []Entry {
+	have := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		have[e.ID] = true
+	}
+	idle = slices.DeleteFunc(slices.Clone(idle), func(e Entry) bool { return have[e.ID] })
+	if len(idle) == 0 {
+		return entries
+	}
+	at := map[string]int{}
+	for i, p := range All() {
+		at[p.ID] = i
+	}
+	pos := func(e Entry) int {
+		if i, ok := at[e.Provider.ID]; ok {
+			return i
+		}
+		return len(at)
+	}
+	out := append(slices.Clone(entries), idle...)
+	slices.SortStableFunc(out, func(a, b Entry) int { return cmp.Compare(pos(a), pos(b)) })
+	return out
+}
+
+// autoGroups are the models more than one provider serves under the
 // same name — however each vendor spells it (see sameModel), or as the
 // user said one is the same as another (same: settings' ModelSameAs) — in
 // the order the providers were added.
@@ -609,17 +644,24 @@ func autoGroups(entries []Entry, same map[string]string) []Group {
 // the vendor's own prefix ("anthropic/claude-sonnet-5" is claude-sonnet-5,
 // "accounts/fireworks/models/…" too), with a version's dot as Anthropic
 // writes it ("claude-opus-5.5" is claude-opus-5-5, and so is Fireworks'
-// "p" for the dot, "deepseek-v4p1"), "_" as "-", and without the snapshot
+// "p" for the dot, "deepseek-v4p1"), a run of spaces, "_" and "-" as one
+// "-" (a relay that lists its display name as the id, "GPT-6 Sol", is
+// gpt-6-sol: Chill on Discord), and without the snapshot
 // date some add: "claude-opus-5-5-20260801", Vertex's "…@20260801", and
 // Volcengine Ark's six digits ("deepseek-v4-1-flash-260910" is
 // deepseek-v4-1-flash, #583). Anything else stays: a variant after ":"
 // (":batch"), -flash, -thinking, and a four-digit release (qwen's -2507,
-// kimi-k2-0905) that is a model of its own.
+// kimi-k2-0905) that is a model of its own. So does OpenAI's dashed date
+// ("gpt-4o-2024-08-06"): a pinned snapshot apart from the alias that
+// moves, and an id that has had a group of its own (auto-gpt-4o-2024-08-06)
+// agents and saved groups name. An id spelt with spaces merges with its
+// dashed spelling, whose group id (Slug's) it had already.
 func sameModel(id string) string {
-	k := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(id)), "_", "-")
+	k := strings.ToLower(strings.TrimSpace(id))
 	if i := strings.LastIndex(k, "/"); i >= 0 {
 		k = k[i+1:]
 	}
+	k = strings.Trim(modelGaps.ReplaceAllString(k, "-"), "-")
 	b := []byte(k)
 	for i := 1; i+1 < len(b); i++ {
 		if (b[i] == '.' || b[i] == 'p') && isDigit(b[i-1]) && isDigit(b[i+1]) {
@@ -649,6 +691,10 @@ func snapshotDate(s string) bool {
 	}
 	return false
 }
+
+// modelGaps are what sameModel spells as one "-": a run of spaces (a
+// no-break one too), "_" and "-".
+var modelGaps = regexp.MustCompile(`[\s\p{Zs}_-]+`)
 
 func atoi2(s string) int { return int(s[0]-'0')*10 + int(s[1]-'0') }
 
@@ -822,10 +868,34 @@ func membersOff(entries []Entry, all []Group, g Group, off func(pid, model strin
 // every member fixed, the group offers the levels they are fixed at, so
 // that an agent still asks it to reason. A group that names its own
 // levels (Group.Levels) offers those, and so does a group in it for its
-// models.
+// models. Held while a request holds the catalog (heldFrom).
 func groupEntries(entries []Entry) []Entry {
+	return heldFrom("group entries", entries, buildGroupEntries)
+}
+
+// entryOf is where in entries the last entry of provider pid's model is,
+// -1 when none is.
+type entryOf func(pid, model string) int
+
+// entriesBy is entryOf for entries, looked up in a map built once rather
+// than by a pass over every entry for each member of each group.
+func entriesBy(entries []Entry) entryOf {
+	at := make(map[[2]string]int, len(entries))
+	for i := range entries {
+		at[[2]string{entries[i].Provider.ID, entries[i].Model}] = i
+	}
+	return func(pid, model string) int {
+		if i, ok := at[[2]string{pid, model}]; ok {
+			return i
+		}
+		return -1
+	}
+}
+
+func buildGroupEntries(entries []Entry) []Entry {
 	var out []Entry
 	all := groupsIn(entries)
+	find := entriesBy(entries)
 	for _, g := range all {
 		if g.Hidden || g.Disabled {
 			continue
@@ -853,11 +923,10 @@ func groupEntries(entries []Entry) []Entry {
 			images, thinks, ctx, output := false, false, 0, 0
 			var imageInput *bool
 			unknown, reasonless := false, false
-			for _, x := range entries {
-				if x.Provider.ID == m.Provider.ID && x.Model == m.Model {
-					efforts, images, thinks, ctx, output, imageInput = x.Efforts, x.Images, x.Reasoning, x.Context, x.Output, x.ImageInput
-					unknown, reasonless = levelsUnknown(x), x.Reasonless
-				}
+			if j := find(m.Provider.ID, m.Model); j >= 0 {
+				x := &entries[j]
+				efforts, images, thinks, ctx, output, imageInput = x.Efforts, x.Images, x.Reasoning, x.Context, x.Output, x.ImageInput
+				unknown, reasonless = levelsUnknown(*x), x.Reasonless
 			}
 			// it reasons when a member does: the gateway sends the
 			// effort to the members that take it, and a member known not
@@ -965,8 +1034,13 @@ func groupEntries(entries []Entry) []Entry {
 		ruledEntry(&e, g.Live(), ms, entries)
 		if g.Context > 0 {
 			e.Context, e.WindowSet = g.Context, true
-		} else if smallest, typed := smallestWindow(entries, ms); g.Context == ContextSmallest && smallest > 0 {
-			e.Context, e.WindowSet = smallest, typed
+		} else if g.Context == ContextSmallest {
+			// only for a group that follows its smallest member: run for
+			// every group, it was another pass over the catalog for each
+			// member of each (8f4d091c6)
+			if smallest, typed := smallestWindowBy(entries, find, ms); smallest > 0 {
+				e.Context, e.WindowSet = smallest, typed
+			}
 		}
 		e.Family = g.Family
 		out = append(out, e)
@@ -983,12 +1057,14 @@ func groupEntries(entries []Entry) []Entry {
 // group set to 500K itself wasn't). A tie counts as typed: the window is
 // the user's either way.
 func smallestWindow(entries []Entry, ms []Member) (n int, typed bool) {
+	return smallestWindowBy(entries, entriesBy(entries), ms)
+}
+
+func smallestWindowBy(entries []Entry, find entryOf, ms []Member) (n int, typed bool) {
 	for _, m := range ms {
 		ctx, set := 0, false
-		for _, x := range entries {
-			if x.Provider.ID == m.Provider.ID && x.Model == m.Model {
-				ctx, set = x.Context, x.WindowSet
-			}
+		if j := find(m.Provider.ID, m.Model); j >= 0 {
+			ctx, set = entries[j].Context, entries[j].WindowSet
 		}
 		switch {
 		case ctx <= 0:
@@ -1301,7 +1377,7 @@ func DeleteGroup(id string) error {
 		}
 		return false
 	})
-	if slices.ContainsFunc(autoGroups(providerEntries(), settings.Load().ModelSameAs), func(g Group) bool { return g.ID == id }) {
+	if slices.ContainsFunc(foundGroups(providerEntries()), func(g Group) bool { return g.ID == id }) {
 		f.Groups = append(f.Groups, Group{ID: id, Hidden: true})
 		found = true
 	}
@@ -1482,7 +1558,7 @@ func RenameGroup(from, to string) error {
 		slices.ContainsFunc(f.Groups, func(o Group) bool { return o.ID == to }) {
 		return fmt.Errorf("there is a group %q already", to)
 	}
-	found := slices.ContainsFunc(autoGroups(providerEntries(), settings.Load().ModelSameAs), func(o Group) bool { return o.ID == from })
+	found := slices.ContainsFunc(foundGroups(providerEntries()), func(o Group) bool { return o.ID == from })
 	g.ID, g.Auto, g.Hidden = to, false, false
 	f.Groups = slices.DeleteFunc(f.Groups, func(o Group) bool { return o.ID == from })
 	if found {

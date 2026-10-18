@@ -105,8 +105,14 @@ func searchesItself(p provider.Provider, proto provider.Protocol) bool {
 	saidTo := p.Searches && (proto == provider.Anthropic || proto == provider.Responses) && p.Base(proto) != ""
 	if p.Account != nil {
 		// Grok by its id: moved to its plugin, its account is the plugin's;
-		// its plugin beside the built-in (grok-plugin) by the plugin's id
-		return (p.Account.Agent == "codex" || p.ID == "grok" || p.PluginProvider() == "grok") && proto == provider.Responses ||
+		// its plugin beside the built-in (grok-plugin) by the plugin's id.
+		// Copilot's /responses runs web_search itself for every model it
+		// serves there: gpt-5.3-codex, gpt-5.4-mini, gpt-6-luna, grok-4.7
+		// and mai-code-1.1-flash each answered a request offering it with
+		// web_search_call items and cited pages (2026-10-17, a real
+		// account). Translated for magpie's search instead, Codex's every
+		// turn on Copilot lost the relay (echo_ts on Discord).
+		return (p.Account.Agent == "codex" || p.Account.Agent == "copilot" || p.ID == "grok" || p.PluginProvider() == "grok") && proto == provider.Responses ||
 			p.IsPlugin() && saidTo
 	}
 	if saidTo {
@@ -242,6 +248,10 @@ func searchRank(p provider.Provider) int {
 		return 0
 	case p.Account != nil && p.Account.Agent == "codex":
 		return 1
+	case p.Account != nil && p.Account.Agent == "copilot":
+		// it searches for its own models only: another's searches would
+		// spend its premium requests, which no one asked for
+		return -1
 	case searchesItself(p, provider.Anthropic):
 		return 2
 	case searchesItself(p, provider.Responses):

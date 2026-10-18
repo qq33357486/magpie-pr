@@ -78,8 +78,12 @@ func Agents() []AgentCount {
 	mu.Lock()
 	defer mu.Unlock()
 	defer closeDBs()
+	return agentCounts(allFiles())
+}
+
+func agentCounts(all []file) []AgentCount {
 	n := map[string]map[string]bool{}
-	for _, f := range allFiles() {
+	for _, f := range all {
 		if n[f.agent] == nil {
 			n[f.agent] = map[string]bool{}
 		}
@@ -107,7 +111,90 @@ func ListAgent(agent string) []Managed {
 	defer mu.Unlock()
 	loadCache()
 	defer closeDBs()
+	return listAgent(agent, allFiles())
+}
+
+// NativeIDs are the ids of every session the agents named keep themselves,
+// by agent: one nothing was said in too, as ListAgent lists it. It tells a
+// gateway session an agent keeps from one only magpie saw. Only the named
+// agents' files are looked at, and of those only the ones whose session id
+// is inside the file are read when they changed.
+func NativeIDs(agents map[string]bool) map[string]map[string]bool {
+	dbReadMu.Lock()
+	defer dbReadMu.Unlock()
+	mu.Lock()
+	defer mu.Unlock()
+	loadCache()
+	defer closeDBs()
+	return nativeIDs(agents, allFiles())
+}
+
+// ManageView is the session management page, read in one pass over every
+// agent's files: the agents with sessions, the ids of the sessions of those
+// asked for (as NativeIDs), and the agent shown with its sessions (as
+// ListAgent).
+type ManageView struct {
+	Agents   []AgentCount
+	Native   map[string]map[string]bool
+	Agent    string
+	Sessions []Managed
+}
+
+// Manage reads the management page. pick, given the counts and the native
+// ids of the agents in native, names the agent to list ("" for none); it
+// runs under the sessions lock and must not call back into this package.
+// Only native's agents and the one picked are read: a change to another
+// agent's sessions waits for a page that shows it (#2776).
+func Manage(native map[string]bool, pick func([]AgentCount, map[string]map[string]bool) string) ManageView {
+	dbReadMu.Lock()
+	defer dbReadMu.Unlock()
+	mu.Lock()
+	defer mu.Unlock()
+	loadCache()
+	defer closeDBs()
 	all := allFiles()
+	v := ManageView{Agents: agentCounts(all), Native: nativeIDs(native, all)}
+	v.Agent = pick(v.Agents, v.Native)
+	if v.Agent != "" {
+		v.Sessions = listAgent(v.Agent, all)
+	}
+	return v
+}
+
+// idInFile says which agents' session ids are read from inside the
+// session's file, not taken from its name (as assemble does).
+func idInFile(agent string) bool {
+	switch agent {
+	case "codex", "pi", "omp", "dsh", "grok", "droid":
+		return true
+	}
+	return false
+}
+
+func nativeIDs(agents map[string]bool, all []file) map[string]map[string]bool {
+	groups := map[string][]file{}
+	var want []file
+	for _, f := range all {
+		if !agents[f.agent] {
+			continue
+		}
+		groups[f.key] = append(groups[f.key], f)
+		if idInFile(f.agent) {
+			want = append(want, f)
+		}
+	}
+	refresh(want, all)
+	out := map[string]map[string]bool{}
+	for a := range agents {
+		out[a] = map[string]bool{}
+	}
+	for _, fs := range groups {
+		out[fs[0].agent][sessionID(fs)] = true
+	}
+	return out
+}
+
+func listAgent(agent string, all []file) []Managed {
 	groups := map[string][]file{}
 	var mine []file
 	for _, f := range all {

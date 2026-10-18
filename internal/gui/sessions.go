@@ -452,11 +452,7 @@ func statsFor(days int) sessions.Stats {
 }
 
 func combinedSessionStats(days int) sessions.Stats {
-	st := sessions.StatsFor(days)
-	nativeKeys := map[string]bool{}
-	for _, s := range sessions.List(sessions.All) {
-		nativeKeys[s.Agent+"|"+s.ID] = true
-	}
+	st, nativeKeys := sessions.StatsAndNative(days)
 	var since time.Time
 	if days > 0 && st.From != "" {
 		since, _ = time.ParseInLocation(time.DateOnly, st.From, time.Local)
