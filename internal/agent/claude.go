@@ -1098,10 +1098,12 @@ func claudeIn(at place) *Agent {
 			return cmp.Or(s.Compact(), -1)
 		}
 		var models []claudeBudget
-		shown, _ := provider.CatalogFor("claude-desktop")
-		for _, e := range shown {
-			if id := gateway.DesktopID(e); claudeName(id) == "" {
-				models = append(models, claudeBudget{id: id, window: e.Context, long: gateway.DesktopListed1M(e), compact: work(e.ID)})
+		if desktopOn() {
+			shown, _ := provider.CatalogFor("claude-desktop")
+			for _, e := range shown {
+				if id := gateway.DesktopID(e); claudeName(id) == "" {
+					models = append(models, claudeBudget{id: id, window: e.Context, long: gateway.DesktopListed1M(e), compact: work(e.ID)})
+				}
 			}
 		}
 		if main != "" {
@@ -1115,13 +1117,13 @@ func claudeIn(at place) *Agent {
 			for _, t := range claudeTiers {
 				refs = append(refs, tiers[t])
 			}
-			for _, v := range refs {
+			for i, v := range refs {
 				m, _ := tierAt(v)
 				bare := strings.TrimSuffix(m, "[1m]")
 				if v == "" || claudeModel(bare) || provider.ClaudeGroup(bare) {
 					continue
 				}
-				models = append(models, claudeBudget{id: spell(v), window: window[bare], long: strings.HasSuffix(v, "[1m]"), compact: work(bare)})
+				models = append(models, claudeBudget{id: spell(v), window: window[bare], long: strings.HasSuffix(v, "[1m]"), main: i == 0, compact: work(bare)})
 			}
 			// the one for every model else, as the variable gave it: none
 			// on a Claude main model, which Anthropic runs to its own
@@ -1152,16 +1154,22 @@ func claudeIn(at place) *Agent {
 	// writeWindow tells Claude Code the window of the models it runs on
 	// (claudeWindow). While Claude Desktop runs on magpie too, it is the
 	// largest of theirs and each model below it gets its own
-	// (desktopPlan); with a CLAUDE_CODE_AUTO_COMPACT_WINDOW of the user's,
-	// which takes precedence over those, the least of them, as one value
-	// serves them all. One the user set is theirs.
+	// (desktopPlan), and so while the main model is a [1m] one beside a
+	// tier that isn't: the main's own window, with each tier below it held
+	// to the tier's (多喝热水 on Discord: the least tier's 246K beside a
+	// [1m] DeepSeek read as the main's window under Full window, and was
+	// the one it fell back to whenever Claude Code stopped taking it for
+	// 1M). With a
+	// CLAUDE_CODE_AUTO_COMPACT_WINDOW of the user's, which takes
+	// precedence over those, the least of them, as one value serves them
+	// all. One the user set is theirs.
 	writeWindow := func(main string, tiers map[string]string) error {
 		budgeted = false
 		if env(claudeContextEnv) != "" && !windowOurs() {
 			forget(windowKey)
 			return dropBudgets()
 		}
-		if desktopOn() && (env(claudeCompactEnv) == "" || compactOurs()) {
+		if (desktopOn() || claudeLongMain(main) && claudeWindow(main, tiers) > 0) && (env(claudeCompactEnv) == "" || compactOurs()) {
 			top, def, entries := desktopPlan(main, tiers)
 			if top <= 0 {
 				return dropWindow()
@@ -2327,6 +2335,14 @@ func claudeOwnCompact(path, model string) bool {
 		}
 	}
 	return false
+}
+
+// claudeLongMain says main is a model of magpie's Claude Code takes for 1M
+// by its "[1m]", not one of Claude's own, which Anthropic runs to its own.
+func claudeLongMain(main string) bool {
+	m, _ := tierAt(main)
+	bare := strings.TrimSuffix(m, "[1m]")
+	return bare != m && !claudeModel(bare) && !provider.ClaudeGroup(bare)
 }
 
 // claudeWindow is the context window to tell Claude Code for the models it
