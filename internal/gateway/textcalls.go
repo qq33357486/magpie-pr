@@ -15,11 +15,7 @@ import (
 // </tool_call>, GLM's <tool_call>name<arg_key>…</arg_key><arg_value>…
 // </arg_value></tool_call> (#906), or DeepSeek's own <｜DSML｜invoke
 // name="…"> with its
-// parameters, often with the other's closing tags strewn after it, or a
-// model told the conversation again the way the gateway tells a run of it
-// writes its calls the way it reads them made: "[tool call name id=…
-// args=…]" (renderParts, claude_subscription.go; Droid over the
-// subscription bridge). The
+// parameters, often with the other's closing tags strewn after it. The
 // agent got it as text, ran nothing and ended the turn; told to go on, the
 // model read its own text-written call back and wrote the next one the
 // same way, so the session was lost. When the request offered tools, text
@@ -29,9 +25,8 @@ import (
 // that isn't all such blocks goes on as the text it was.
 
 // textCallMarks are what a call written into the text opens with, beside
-// DeepSeek's DSML tags, which dsmlMark reads. "[tool call " is the run
-// replay renderParts writes (Droid over the subscription bridge): the
-// model imitates it, and the call is read back (#2486).
+// DeepSeek's DSML tags, which dsmlMark reads. The fork's "[tool call " is
+// read by magpieCall (textcalls_magpie.go).
 var textCallMarks = []string{"<tool_call>", "[tool call "}
 
 // dsmlMark tells whether s begins with a DSML tag's mark, read as the
@@ -475,48 +470,6 @@ func dsmlCall(s, name string, open int, names map[string]bool) (writtenCall, int
 		return writtenCall{}, 0, false
 	}
 	return writtenCall{Name: name, Args: b}, end, true
-}
-
-// magpieCall reads a call written the way the gateway tells a run of the
-// conversation its calls were made ("[tool call name id=… args={…}]",
-// renderParts, claude_subscription.go), the name as the bridge wrote it:
-// a model told the conversation that way again writes its next call the
-// same way instead of making it (Droid, over the subscription bridge). It
-// says how much of s it took.
-func magpieCall(s string, names map[string]bool) (writtenCall, int, bool) {
-	name, rest, ok := strings.Cut(s[len("[tool call "):], " ")
-	if !ok {
-		return writtenCall{}, 0, false
-	}
-	if n, bridge := strings.CutPrefix(name, "mcp__magpie__"); bridge {
-		name = n
-	}
-	if !names[name] {
-		return writtenCall{}, 0, false
-	}
-	if id, r, ok := strings.Cut(rest, " "); ok && strings.HasPrefix(id, "id=") {
-		rest = r
-	}
-	args, ok := strings.CutPrefix(rest, "args=")
-	if !ok {
-		return writtenCall{}, 0, false
-	}
-	dec := json.NewDecoder(strings.NewReader(args))
-	dec.UseNumber()
-	var v map[string]any
-	if dec.Decode(&v) != nil {
-		return writtenCall{}, 0, false
-	}
-	n := len(s) - len(args) + int(dec.InputOffset()) // past the arguments
-	tail := strings.TrimLeft(s[n:], " \t\r\n")
-	if !strings.HasPrefix(tail, "]") {
-		return writtenCall{}, 0, false
-	}
-	b, err := json.Marshal(v)
-	if err != nil {
-		return writtenCall{}, 0, false
-	}
-	return writtenCall{Name: name, Args: b}, len(s) - len(tail) + 1, true
 }
 
 // callArgs is a call's arguments as a JSON object: one given as a string
