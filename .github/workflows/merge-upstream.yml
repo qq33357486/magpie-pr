@@ -11,9 +11,6 @@ on:
 
 permissions:
   contents: write
-  # upstream moves its own workflows (release.yml & co); pushing a merge
-  # that carries one needs this, or GitHub refuses the push whole
-  workflows: write
 
 concurrency:
   group: merge-upstream
@@ -36,6 +33,14 @@ jobs:
           git fetch upstream main
           before=$(git rev-parse HEAD)
           if git merge upstream/main --no-edit; then
+            # a merge carrying one of upstream's workflow changes is refused
+            # a push whole: GITHUB_TOKEN has no workflows permission, and the
+            # permissions: block above cannot grant one (it is not a valid
+            # scope there; writing it in broke parsing and stalled the
+            # schedule for two days). The fork's workflows are its own, so
+            # upstream's updates to them never ride along.
+            git checkout ORIG_HEAD -- .github/workflows
+            git diff --cached --quiet || git commit -m "keep the fork's workflows"
             if [ "$(git rev-parse HEAD)" = "$before" ]; then
               echo "changed=false" >> "$GITHUB_OUTPUT"
             else

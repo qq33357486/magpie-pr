@@ -56,9 +56,12 @@ func cappedErrorTold(model string, ws []Weighed, now time.Time) (string, time.Ti
 ## CI 链路与三个坑（2026-10-17 修）
 
 1. **workflows 权限**：上游会改自己的 workflow（如 release.yml）。合并提交里
-   带上 workflow 变更时，GITHUB_TOKEN 没有 `workflows: write` 会被拒推
-   （10-14 夜间合并就是这么断的，且表面看不出来）。已在
-   `merge-upstream.yml` 的 permissions 里补上。
+   带上 workflow 变更时 GITHUB_TOKEN 会被拒推（10-14 夜间合并就是这么断的，
+   且表面看不出来）。注意 `permissions:` 块里**写不进** `workflows` 键——
+   那不是 GITHUB_TOKEN 的合法 scope（10-17 写进去后整个 workflow 解析失败，
+   push 触发 0 秒报红、schedule 停注册，停摆两天）。修法是 merge 成功后
+   `git checkout ORIG_HEAD -- .github/workflows` 把 workflow 钉回 fork 自己的
+   版本再提交：push 永不带 workflow 变更，fork 的 workflow 本就自维护。
 2. **冲突必须报红**：早先冲突时靠"开 issue"通知，但仓库 issues 是禁用的，
    `|| true` 把失败吞了，CI 显示绿色 success。已改为冲突直接 `exit 1`。
 3. **test.yml 红则夜间合并不推**：merge-upstream 只跑 gateway/agent/gui 三个
