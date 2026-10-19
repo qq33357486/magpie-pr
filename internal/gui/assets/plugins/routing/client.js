@@ -433,7 +433,7 @@ function routingPage(part) {
   // (WorkBuddy's credits, #659): "355 / 500 credits · 71% used"
   const quota = (w, used, left, vars) => (w.limit > 0 ? quotaCount(w) + " · " : "") + t(quotaLeft ? left : used, { n: pct(share(w)), ...vars });
   const fill = (w) => Math.max(0, Math.min(100, share(w))) + "%";
-  const FAIL = { rate: "rate limited", credit: "out of credit", quota: "quota used up", other: "failed", auth: "sign-in required", canceled: "canceled", foreign: "another account's reasoning", floor: "reply too short", verify: "needs verification", refused: "refused (safety filter)", shape: "request not understood", proxy: "proxy not reachable", effort: "reasoning effort not in its plan", overflow: "too long for its model", slow: "slow to start", prompt: "agent's prompt turned away", restricted: "account restricted by the vendor" };
+  const FAIL = { rate: "rate limited", credit: "out of credit", quota: "quota used up", other: "failed", auth: "sign-in required", canceled: "canceled", foreign: "another account's reasoning", floor: "reply too short", verify: "needs verification", refused: "refused (safety filter)", shape: "request not understood", proxy: "proxy not reachable", effort: "reasoning effort not in its plan", overflow: "too long for its model", room: "reply asked past the window left", slow: "slow to start", prompt: "agent's prompt turned away", restricted: "account restricted by the vendor" };
   const failWord = (why) => t(FAIL[why] || "failed");
   // a try that answered: one whose reply broke off after it began (its 200
   // sent, then the vendor's error, #733) didn't, and has a fail
@@ -465,6 +465,11 @@ function routingPage(part) {
   const LONE = "Only one account or key is on for this, so routing has nothing to choose between. Turn on a second in the provider's editor, and how it routes is set under Several accounts or keys below.";
 
   const agentOf = (id) => (state.clients || state.agents).find((a) => a.id === id);
+  // uaName is a client as the gateway names one it doesn't know
+  // (usage.AgentOf): its User-Agent's product name, before the first / or
+  // space, in lower case as a rule keeps it. "SillyTavern/1.12" is
+  // sillytavern; a comma would part it in two (ParseRule)
+  const uaName = (s) => String(s || "").trim().split(/[\/\s,]/)[0].toLowerCase();
   const agentName = (id) => agentOf(id)?.name || (id && id !== "other" ? id : t("your agent"));
   // who names an account or key in a sentence
   const who = (w) => w.kind === "provider" ? w.name : w.who;
@@ -1057,7 +1062,7 @@ function routingPage(part) {
   // ---------- state ----------
 
   const routes = new Map(); // id → the latest of each route
-  let seq = 0, mine = true, loaded = false, daysAt = 0;
+  let seq = 0, mine = true, loaded = false, daysAt = 0, by = null;
   let traceTotals = { requests: 0, rerouted: 0, errors: 0 };
   let offMsg = ""; // why the trace can't be watched here, when it can't
   // the request the window was opened on (?req=), from the tray panel
@@ -1350,7 +1355,7 @@ function routingPage(part) {
     s.pk = "group/" + info.id;
     s.li.style.setProperty("--depth", d);
     s.name.textContent = info.name || info.id;
-    s.id.textContent = "group/" + info.id;
+    s.id.textContent = info.ref || "group/" + info.id;
     s.mode.textContent = t(modeOf(info.routing || "")[0]);
     s.rules = info.rules ? t(info.rules === 1 ? "1 rule" : "{n} rules", { n: info.rules }) : "";
     return s;
@@ -3385,6 +3390,11 @@ function routingPage(part) {
         noteAccounts(d);
         skew = at(d.now) - Date.now();
         mine = d.mine;
+        // another magpie took the gateway over (#2606): its routes and seq
+        // are its own, so the page starts again from its whole trace
+        const fromOther = loaded && (d.by?.pid || 0) !== (by?.pid || 0);
+        by = d.by || null;
+        if (fromOther) { routes.clear(); seq = 0; loaded = false; hubText(); continue; }
         hubText();
         traceTotals = d.totals || traceTotals;
         if (!mine) {
@@ -3460,7 +3470,17 @@ function routingPage(part) {
     }
   }
 
-  function hubText() { setText(hubSub, (providers?.gateway?.url || "").replace(/^https?:\/\//, "") || t("gateway")); }
+  function hubText() {
+    const g = providers?.gateway;
+    // which magpie is routing, when it isn't this one (#2606): this page plays
+    // that magpie's routing, and its window is the other place it shows. It
+    // is named by the trace the page plays, so it goes with a takeover at once
+    const who = mine && by?.serves
+      ? t("{serves} (pid {pid}) is routing", { serves: by.serves, pid: by.pid }) + " · "
+      : "";
+    setText(hubSub, who + ((g?.url || "").replace(/^https?:\/\//, "") || t("gateway")));
+    hubSub.title = who ? hubSub.textContent : ""; // whole, where the node cuts it short
+  }
 
   // labels in the page's language, and again when it changes
   function words() {
@@ -3724,7 +3744,17 @@ function routingPage(part) {
   const offOf = (id) => { for (const g of groups?.groups || []) { const i = g.memberInfo?.find((x) => x.id === id && x.providerOff); if (i) return i; } };
   const offWords = (i) => t("{name} is switched off: the group skips it until it is on again", { name: i.name });
   const memberIcon = (id) => { const s = subOf(id); return s ? stackIcon(groupIcons(s)) : icon(modelOf(id)?.icon || offOf(id)?.icon || "generic"); };
-  const memberName = (id) => { const s = subOf(id), m = modelOf(id), o = !m && offOf(id); return s ? s.name : m ? m.name || m.id : o ? o.model : id; };
+  // models of one provider that would read alike (several "DeepSeek-V4.1-Flash"
+  // of a plugin's sources) are said with what tells them apart (app.js's
+  // modelTells), worked out once for each list the groups' state brings
+  let tellsFor = null, tellsOf = null;
+  const tellOf = (m) => {
+    if (!m) return "";
+    if (tellsFor !== groups?.models) { tellsFor = groups?.models; tellsOf = modelTells(tellsFor || [], (x) => x.name || x.id, (x) => x.id, (x) => x.provider || x.providerName || ""); }
+    return tellsOf.get(m.id) || "";
+  };
+  const modelName = (m) => { const tell = tellOf(m); return (m.name || m.id) + (tell ? " · " + tell : ""); };
+  const memberName = (id) => { const s = subOf(id), m = modelOf(id), o = !m && offOf(id); return s ? s.name : m ? modelName(m) : o ? o.model : id; };
   const memberNote = (id) => { const o = !subOf(id) && !modelOf(id) && offOf(id); return subOf(id) ? t("routing group") : [modelOf(id)?.providerName || o && `${o.name} · ${t("switched off")}`, fixedOf(id) && fixedWords(fixedOf(id))].filter(Boolean).join(" · "); };
   // a member the group sends in its vendor's fast mode (Group.Fast)
   const fastIn = (g, id) => !!g?.fast?.includes(id) && !subOf(id);
@@ -3732,7 +3762,7 @@ function routingPage(part) {
     const i = g.memberInfo?.find((x) => x.id === id), m = modelOf(id), s = subOf(id), f = fixedOf(id);
     if (s) return `${t("routing group")} · ${s.name}`;
     const at = (f ? ` · ${fixedWords(f)}` : "") + (fastIn(g, id) ? ` · ${t("fast")}` : "");
-    if (m) return `${m.providerName} · ${m.name || m.id}${at}`;
+    if (m) return `${m.providerName} · ${modelName(m)}${at}`;
     if (i?.providerOff) return `${i.name} · ${i.model}${at} (${t("switched off")})`;
     return i?.name ? `${i.name} · ${i.model}${at}` : id;
   }
@@ -3768,7 +3798,7 @@ function routingPage(part) {
     try { return hayMatches(g, words); } catch { return true; } // a group that can't be read is shown, flagged
   }
   function hayMatches(g, words) {
-    const hay = [g.name, g.id, "group/" + g.id, ...g.members.flatMap((id) => [id, memberLabel(g, id)]), ...(g.patterns || []).map((p) => p.pattern)].join("\n").toLowerCase();
+    const hay = [g.name, g.id, "group/" + g.id, g.ref || "", ...g.members.flatMap((id) => [id, memberLabel(g, id)]), ...(g.patterns || []).map((p) => p.pattern)].join("\n").toLowerCase();
     return words.every((w) => hay.includes(w));
   }
   // rowOrFlag: a group's row, or when drawing it fails, a row that says so
@@ -3779,7 +3809,7 @@ function routingPage(part) {
       const row = el("div", "rt-group off rt-gbad");
       row.dataset.id = g.id;
       const main = el("div", "main"), nm = el("div", "nm");
-      nm.append(el("b", "", String(g.name || g.id)), el("code", "mdl", "group/" + g.id));
+      nm.append(el("b", "", String(g.name || g.id)), el("code", "mdl", g.ref || "group/" + g.id));
       main.append(nm, el("div", "mem", t("This group can't be shown: {error}", { error: e?.message || String(e) })));
       row.append(el("span", "ics"), main);
       return row;
@@ -4080,7 +4110,7 @@ function routingPage(part) {
     const ics = el("span", "ics");
     ics.append(stackIcon(groupIcons(g)));
     const main = el("div", "main"), nm = el("div", "nm");
-    nm.append(el("b", "", g.name), el("code", "mdl", "group/" + g.id));
+    nm.append(el("b", "", g.name), el("code", "mdl", g.ref || "group/" + g.id));
     if (g.auto) nm.append(el("small", "auto", t("found by magpie")));
     main.append(nm, el("div", "mem", g.members.map((id) => memberLabel(g, id)).join(g.routing === "order" ? " → " : " · ")));
     row.append(cb, ics, main);
@@ -4102,7 +4132,7 @@ function routingPage(part) {
     s.onclick = (e) => { e.stopPropagation(); setFound(!on, s); };
     const txt = el("div", "txt");
     txt.append(el("b", "", t("Find groups on their own")), el("small", "", on
-      ? t("A model two or more of your providers serve becomes a group of them (auto-…). Switch it off to list and serve only the groups you made or changed.")
+      ? t("A model two or more of your providers serve becomes a group of them (auto/…). Switch it off to list and serve only the groups you made or changed.")
       : t("Off: only the groups you made or changed are listed and served. An agent set to a found group is moved to its model from one provider, and a request still naming one goes there too.")));
     gFound.replaceChildren(txt, s);
   }
@@ -4136,7 +4166,7 @@ function routingPage(part) {
     const ics = groupHandle(g, row);
     const main = el("div", "main");
     const nm = el("div", "nm");
-    nm.append(el("b", "", g.name), el("code", "mdl", "group/" + g.id));
+    nm.append(el("b", "", g.name), el("code", "mdl", g.ref || "group/" + g.id));
     if (g.auto) nm.append(el("small", "auto", t("found by magpie")));
     const manual = g.routing === "manual";
     const sep = g.routing === "order" ? " → " : " · ";
@@ -4381,8 +4411,8 @@ function routingPage(part) {
       return id;
     };
     const showId = () => {
-      idHint.textContent = t("Agents pick it as {id}", { id: "group/" + idOf() }) +
-        (g && idOf() !== g.id ? " · " + t("an agent set to {id} needs setting again", { id: "group/" + g.id }) : "");
+      idHint.textContent = t("Agents pick it as {id}", { id: g?.ref && idOf() === g.id ? g.ref : "group/" + idOf() }) +
+        (g && idOf() !== g.id ? " · " + t("an agent set to {id} needs setting again", { id: g.ref || "group/" + g.id }) : "");
     };
     // what the agents' lists will call it (#868: an agent's narrow menu
     // cut it to "· rou…"); whether "· routing group" follows the name is
@@ -4415,6 +4445,13 @@ function routingPage(part) {
     // More are picked with the model picker the agents use.
     const infoOf = (id) => g?.memberInfo?.find((x) => x.id === id);
     const pickFrom = (label, anchor, ev, options, onPick, value = "") => openPicker({ id: "", name: "", fields: [] }, { key: "rule", label, value, menu: true, options, onPick }, anchor, ev);
+    // the agents magpie heard from in the last 30 days that it doesn't
+    // know, by the names the gateway gave them (usage.AgentOf), asked for
+    // once while the editor is open; none when usage can't be read
+    let heardFrom = null;
+    const heard = () => heardFrom || (heardFrom = api("usage?period=30d")
+      .then((u) => (u?.agents || []).map((a) => uaName(a.id)).filter((id) => id && id !== "other" && id !== "magpie"))
+      .catch(() => []));
     const box = el("div", "fallback");
     const list = el("div", "fbl");
     const addBtn = el("button", "rt-gadd");
@@ -4852,6 +4889,12 @@ function routingPage(part) {
     const openedOf = (r) => { let s = opened.get(r); if (!s) opened.set(r, s = new Set()); return s; };
     // the condition to open once the rules are drawn: {r, k}
     let focusCond = null;
+    // a rule with nothing to match by can't be saved (provider.cleanRules
+    // refuses it too): one Save refused for it says so under it, with the
+    // way out, until it has a condition or is removed
+    const bareRule = (r) => r.pause ? !condSet(r, "time") && !r.agents.length && !r.folders?.length && !r.exceptFolders?.length
+      : !COND_KINDS.some(([k]) => condSet(r, k));
+    const refused = new WeakSet();
     // what a rule can hold, in the order a rule reads: [kind, its name in
     // the menu, whether a pause takes it]. A pause holds by hours, days,
     // agents and folders only: the others are about a request, and a pause
@@ -4946,7 +4989,7 @@ function routingPage(part) {
             // one line of words: a pasted line break is a space
             if (/[\r\n]/.test(ii.value)) { const at = ii.selectionStart; ii.value = ii.value.replace(/\r?\n|\r/g, " "); ii.setSelectionRange(at, at); }
             r.intent = ii.value; it.classList.toggle("on", !!r.intent.trim());
-            size();
+            size(); warn();
             // Jev, when there is one, as the effort picked per turn takes it
             if (r.intent.trim() && !d.classifier && deciders.length) d.classifier = deciders[0].id;
             drawClassifier();
@@ -4988,7 +5031,7 @@ function routingPage(part) {
             { value: "", label: t("any reasoning"), note: t("not a condition") },
             { value: "on", label: t("reasoning on"), note: t("thinking or any effort level") },
             ...EFFORTS.map((v) => ({ value: v, label: t("reasoning ≥ {level}", { level: v }) })),
-          ], (v) => { r.effort = v; ef.textContent = effortName(v); ef.classList.toggle("on", !!v); });
+          ], (v) => { r.effort = v; ef.textContent = effortName(v); ef.classList.toggle("on", !!v); warn(); });
           wrap("effort", ef);
           if (mine === "effort") focus = () => { ef.focus({ preventScroll: true }); ef.onclick({ stopPropagation() {} }); };
         }
@@ -5001,18 +5044,31 @@ function routingPage(part) {
           wrap("compact", cp);
           if (mine === "compact") focus = () => cp.focus({ preventScroll: true });
         }
-        // agents
+        // agents: the ones magpie knows, the others it has heard from, and
+        // any typed by the name the gateway gives a client it doesn't know
+        // (raikyou on Discord: SillyTavern, one's own app)
         if (kinds.includes("agents")) {
           const clients = state.clients || state.agents || [];
           const agentsName = () => r.agents.length ? r.agents.map((id) => clients.find((a) => a.id === id)?.name || id).join(", ") : t("any agent");
           const ag = el("button", "rt-cond" + (r.agents.length ? " on" : ""), agentsName());
-          ag.onclick = (ev) => pickFrom("agent", ag, ev, [
-            { value: "", label: t("any agent"), note: t("not a condition") },
-            ...clients.map((a) => ({ value: a.id, label: a.name, icon: a.icon, note: r.agents.includes(a.id) ? "✓" : "" })),
-          ], (v) => {
-            r.agents = !v ? [] : r.agents.includes(v) ? r.agents.filter((x) => x !== v) : [...r.agents, v];
-            ag.textContent = agentsName(); ag.classList.toggle("on", r.agents.length > 0);
-          });
+          heard();
+          ag.onclick = async (ev) => {
+            ev.stopPropagation();
+            const known = new Set(clients.map((a) => a.id));
+            const others = [...(await heard()), ...r.agents].filter((id, i, all) => !known.has(id) && all.indexOf(id) === i);
+            const tick = (id) => r.agents.includes(id) ? "✓" : "";
+            openPicker({ id: "", name: "", fields: [] }, { key: "rule", label: "agent", value: "", menu: true,
+              placeholder: t("Filter, or type an agent's name…"),
+              typed: (s) => { const id = uaName(s); return id && { value: id, label: id, note: t("the name its User-Agent begins with") }; },
+              options: [
+                { value: "", label: t("any agent"), note: t("not a condition") },
+                ...clients.map((a) => ({ value: a.id, label: a.name, icon: a.icon, note: tick(a.id) })),
+                ...others.map((id) => ({ value: id, label: id, icon: "generic", note: tick(id) || t("heard from in the last 30 days") })),
+              ], onPick: (v) => {
+                r.agents = !v ? [] : r.agents.includes(v) ? r.agents.filter((x) => x !== v) : [...r.agents, v];
+                ag.textContent = agentsName(); ag.classList.toggle("on", r.agents.length > 0); warn();
+              } }, ag, ev);
+          };
           wrap("agents", ag);
           if (mine === "agents") focus = () => { ag.focus({ preventScroll: true }); ag.onclick({ stopPropagation() {} }); };
         }
@@ -5023,7 +5079,7 @@ function routingPage(part) {
           fd.onclick = (e) => { if (e.target === fd || e.target.tagName === "SPAN") fi.focus(); };
           const fi = input((r.folders || []).join(", "), "~/work/acme, ~/oss");
           fd.title = t("The agent works in one of these folders or a folder inside one, as it tells the model (Claude Code, Codex, OpenCode, Pi); an agent that doesn't say isn't matched");
-          fi.oninput = () => { r.folders = fi.value.split(",").map((x) => x.trim()).filter(Boolean); fd.classList.toggle("on", r.folders.length > 0); fitBox(fi); };
+          fi.oninput = () => { r.folders = fi.value.split(",").map((x) => x.trim()).filter(Boolean); fd.classList.toggle("on", r.folders.length > 0); fitBox(fi); warn(); };
           fi.onkeydown = (e) => e.stopPropagation();
           fitBox(fi);
           fd.append(el("span", "", t("in folder")), fi);
@@ -5038,7 +5094,7 @@ function routingPage(part) {
           xf.onclick = (e) => { if (e.target === xf || e.target.tagName === "SPAN") xi.focus(); };
           const xi = input((r.exceptFolders || []).join(", "), "~/big-task");
           xf.title = t("The agent works in none of these folders, nor a folder inside one, as it tells the model; an agent that doesn't say counts as outside them");
-          xi.oninput = () => { r.exceptFolders = xi.value.split(",").map((x) => x.trim()).filter(Boolean); xf.classList.toggle("on", r.exceptFolders.length > 0); fitBox(xi); };
+          xi.oninput = () => { r.exceptFolders = xi.value.split(",").map((x) => x.trim()).filter(Boolean); xf.classList.toggle("on", r.exceptFolders.length > 0); fitBox(xi); warn(); };
           xi.onkeydown = (e) => e.stopPropagation();
           fitBox(xi);
           xf.append(el("span", "", t("not in folder")), xi);
@@ -5115,7 +5171,10 @@ function routingPage(part) {
         ub.onclick = (ev) => pickFrom("member", ub, ev, d.members.map((id) => { const s = subOf(id); return { value: id, label: memberName(id), note: memberNote(id), icon: s ? undefined : modelOf(id)?.icon, icons: s ? groupIcons(s) : undefined }; }),
           (v) => { r.use = v; drawUse(); warn(); });
         const hint = el("span", "rt-rwarn");
+        const need = el("div", "rt-rneed");
         const warn = () => {
+          need.hidden = !(refused.has(r) && bareRule(r));
+          need.textContent = need.hidden ? "" : t(r.pause ? "A pause needs hours, days, agents or folders. Add one with its +, or remove the rule from its ⋯ menu" : "This rule has no condition. Add one with its +, or remove the rule from its ⋯ menu");
           const m = infoOf(r.use), bits = [];
           if (r.pause) bits.push(t("left out of the group then: not tried, not a fallback"));
           if (!r.pause && r.images && m && m.ready && !m.images) bits.push(t("it doesn't take images"));
@@ -5188,7 +5247,7 @@ function routingPage(part) {
             { name: "Remove rule", icon: CROSS, sep: true, run: () => { d.rules.splice(i, 1); drawRules(); } },
           ]);
         };
-        row.append(el("span", "i", String(i + 1)), line, then, more);
+        row.append(el("span", "i", String(i + 1)), line, then, more, need);
         rlist.append(row);
       });
       drawClassifier();
@@ -5369,10 +5428,16 @@ function routingPage(part) {
       // a folder is a whole path (provider.cleanFolder)
       const badDir = d.rules.findIndex((r) => [...(r.folders || []), ...(r.exceptFolders || [])].some((f) => !/^(~$|~[\\/]|\/|\\\\|[A-Za-z]:([\\/]|$))/.test(f)));
       if (badDir >= 0) return status(t("Rule {n}: a folder is a whole path, like ~/work or /Users/me/work", { n: badDir + 1 }), "warn");
-      const bare = d.rules.findIndex((r) => !r.pause && !r.tokens && !r.images && !r.effort && !r.agents.length && !r.intent && !r.compact && !r.time && !r.folders?.length && !r.exceptFolders?.length);
-      if (bare >= 0) return status(t("Rule {n} needs a condition", { n: bare + 1 }), "warn");
-      const bareP = d.rules.findIndex((r) => r.pause && !r.time && !r.agents.length && !r.folders?.length && !r.exceptFolders?.length);
-      if (bareP >= 0) return status(t("Rule {n}: a pause needs hours, days, agents or folders", { n: bareP + 1 }), "warn");
+      // a rule with nothing to match by: said under each such rule, with
+      // the way out (its + or its ⋯'s Remove rule), and in the status line
+      const bares = d.rules.filter(bareRule);
+      if (bares.length) {
+        for (const r of bares) refused.add(r);
+        const n = d.rules.indexOf(bares[0]);
+        focusCond = { r: bares[0], k: "+" };
+        drawRules();
+        return status(t(bares[0].pause ? "Rule {n}: a pause needs hours, days, agents or folders. Add one with its +, or remove the rule from its ⋯ menu" : "Rule {n} has no condition. Add one with its +, or remove the rule from its ⋯ menu", { n: n + 1 }), "warn");
+      }
       if (d.rules.some((r) => r.intent) && !d.classifier) return status(t("Choose the model that tells which intent a message is"), "warn");
       if (d.effort === "auto" && !d.classifier) return status(t("Choose the model that rates how hard a turn is"), "warn");
       if (own && !d.levels.length) return status(t("Pick a level to offer, or leave them to its models"), "warn");
