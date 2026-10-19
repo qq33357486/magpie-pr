@@ -18795,6 +18795,32 @@ function renderBarIcon() {
       .catch((e) => { status(t(e.message), "err"); renderBarIcon(); })));
 }
 
+// renderLoginAllow: Open at login switched off in System Settings, its
+// launch agent still there (#2120, Anoninz). On stays picked, as the record
+// is, and writing it again doesn't undo the user's switch, so the row says
+// it won't open and opens Login Items, where it is allowed again. Coming
+// back to the window reads the settings again (load), so the line goes once
+// it is allowed there.
+const loginItemsURL = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension";
+function renderLoginAllow(s) {
+  const who = $("#loginRow .who");
+  let sub = who.querySelector(".login-allow");
+  if (!s.loginAllow) { sub?.remove(); return; }
+  if (!sub) {
+    sub = document.createElement("div");
+    sub.className = "sub wraps login-allow";
+    who.append(sub);
+  }
+  // the row is hidden on a page served to another computer (web), which
+  // has no System Settings to open
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "login-allow-open";
+  open.textContent = t("Open Login Items");
+  open.onclick = () => api("open", { url: loginItemsURL }).catch((e) => status(t(e.message), "err"));
+  sub.replaceChildren(t("Switched off in System Settings’ Login Items, so magpie won’t open at login"), " ", open);
+}
+
 async function loadSettings() {
   const since = prefsWrites;
   if (!web && fontList === null && !fontListError) loadFonts();
@@ -19206,6 +19232,7 @@ function renderSettings() {
   // the system's record, set on its own, not with the other choices
   $("#loginSegs").replaceChildren(segs([["off", t("Off")], ["on", t("On")]], s.login ? "on" : "off", (v) =>
     writingPrefs(api("settings/login", { on: v === "on" })).then((ns) => { prefs = ns; renderSettings(); }).catch((e) => { status(t(e.message), "err"); renderSettings(); })));
+  renderLoginAllow(s);
   // Codex's and Claude Code's warm-ups and WorkBuddy's check-in, one tab
   // each over one card, the rows' names not saying the service again.
   // A ChatGPT account's next window started as soon as the last resets
