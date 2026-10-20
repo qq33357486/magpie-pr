@@ -3955,6 +3955,8 @@ async function load(again) {
     paintUpdateAll(true);
     loadCLIs(); // after the rows, never holding them up
     loadInstalls();
+    // the Providers page made ready behind the one shown (#1519)
+    if (mode !== "panel" && !(view === "providers" || providersPage(view))) prefetchProviders();
     // the panel brought up on its Allowances tab is the reader opening
     // them (#1588); the page loaded while the panel is still put away is not
     if (mode === "panel") { renderPanelQuota(); panelTab === "usage" && !document.hidden && (again || document.hasFocus()) ? quotasOpened() : loadQuotas(); }
@@ -5581,15 +5583,71 @@ saveCurrent.onclick = () => {
 // every provider becomes "provider/model" in the agents' pickers, served by
 // the local gateway in whichever API the agent speaks.
 
-async function loadProviders() {
+// The list read in the background once the app has started (#1519), for
+// the page's first opening: { read, got } — the read, and the list once in.
+let providersEarly = null;
+function prefetchProviders() {
+  if (providers || providersEarly) return;
+  const e = providersEarly = { read: api("providers") };
+  e.read.then((s) => { e.got = s; }, () => { if (providersEarly === e) providersEarly = null; });
+}
+
+// The page's first reading, while it is on its way, is the one every ask
+// gets (a start on the page asks from load and from show both), not
+// another read: the kept list drawn, a click on a row waits for it.
+function loadProviders() {
+  if ((!providers || providers.last) && loadProviders.first) return loadProviders.first;
+  const first = !providers, p = loadProvidersNow();
+  if (first) {
+    loadProviders.first = p;
+    p.finally(() => { if (loadProviders.first === p) loadProviders.first = null; }).catch(() => {});
+  }
+  return p;
+}
+
+async function loadProvidersNow() {
+  // The page's first opening (#1519, fatkun): a list is drawn at once, as
+  // the Agents page draws the last state, and the fresh one replaces it
+  // when it is in — the one read in the background after the start, else
+  // the one kept from the last read (this run's or the run before's). The
+  // read in the background still on its way is waited for, not asked again.
+  let fresh = null, kept = null;
+  if (!providers) {
+    const early = providersEarly;
+    providersEarly = null;
+    if (early?.got) kept = early.got;
+    else {
+      fresh = early ? early.read : api("providers");
+      if (view === "providers") {
+        kept = await Promise.race([fresh.then(() => null, () => null), api("providers?last=1").catch(() => null)]);
+        if (!kept?.providers?.length || providers) kept = null;
+        // a kept list, whatever it says of itself: a row clicked on it
+        // waits for the fresh one, never opened to be drawn again under
+        // the reader's hands when that comes in
+        else kept.last = true;
+      }
+    }
+  }
+  fresh ||= api("providers");
+  if (kept) {
+    providers = kept;
+    renderSideGw(providers.gateway);
+    if (typeof editing === "string" && !providers.providers.some((p) => p.id === editing)) editing = null;
+    if (providersPage(view)) magpie.call(view, "render", null);
+    else renderProviders();
+  }
   // the skeletons only while there is nothing yet: a reload keeps what is
   // drawn, and where the reader is in it, until the new one is in
-  if (!providers) { if (providersPage(view)) magpie.call(view, "loading"); else renderProvidersLoading(); }
+  else if (!providers) { if (providersPage(view)) magpie.call(view, "loading"); else renderProvidersLoading(); }
   // a plugin's page opened from another that had the list: drawn from it
   // at once (#123)
   else if (providersPage(view)) magpie.call(view, "draft");
   const was = providers;
-  providers = await api("providers");
+  const next = await fresh;
+  // a change saved meanwhile drew the list it was answered with, newer
+  // than this read
+  if (kept && providers !== kept) return;
+  providers = next;
   renderSideGw(providers.gateway);
   // a reload's provider may be gone since
   if (typeof editing === "string" && !providers.providers.some((p) => p.id === editing)) editing = null;
@@ -5820,6 +5878,12 @@ function renderProviders() {
     if (!p.off) row.oncontextmenu = (ev) => { ev.preventDefault(); openProviderMenu(row.querySelector(".pv-handle"), p); };
     row.onclick = async () => {
       if (providerDirty() && !(await confirmDiscard())) return;
+      // a list drawn before the fresh one is in (#1519) leaves out what the
+      // editor shows (headers, proxies): the row opens on the fresh one
+      if (providers.last) {
+        try { await loadProviders(); } catch (e) { status(e.message, "err"); return; }
+        if (!providers.providers.some((x) => x.id === p.id)) return;
+      }
       editing = open ? null : p.id; draft = null; renderProviders();
     }; // the preset sheet stays as it is under the dialog
     list.append(row);
@@ -11542,11 +11606,12 @@ const ROUTINGS = [
   ["usage", "Least used first", "Each request goes to the one used least: a subscription by the share of its allowance used, a key by the tokens it served in the last hours."],
   ["pace", "Weekly pace", "Each request goes to the subscription with the most of its week left per hour until it renews — the one with the most to lose at its reset — so less of each week is lost at its reset; one at 90% or more waits until the others can't answer. A key goes by the tokens it served in the last hours."],
   ["weight", "By weight", "Requests spread over the keys by the weight set beside each: a key weighing 3 takes three requests for every one a key weighing 1 takes, evenly over a few requests. One that fails is passed over while it rests, and the others share its requests; a conversation stays with its key as Stays says."],
+  ["free", "Free first", "Requests go to what costs nothing first: the models their vendor serves at no cost to this subscription's allowance or credits, in their listed order, and only when those can't answer to one that spends them. Nothing that cost nothing is left unused."],
 ];
 // the routings besides Smart are the built-in plugin rotation's
 // (plugins/rotation): off, their options leave the page, as anything marked
 // data-feature does, and Smart is left — one in use keeps it on
-const ROTATION = new Set(["order", "rotate", "usage", "pace", "weight"]);
+const ROTATION = new Set(["order", "rotate", "usage", "pace", "weight", "free"]);
 // jsRoutings: the routings JS gateway plugins serve now ("<plugin>/<name>",
 // settings' jsRoutings, plugins/middleware's), and saved, a routing none
 // serves now, shown as it is: its pool is tried in its listed order
@@ -17992,7 +18057,10 @@ function computerOpts(cs) {
     ...(others.length > 1 ? [{ v: "others", name: t("Other computers"), note: "" }] : []),
     ...others.map((c) => ({ v: c.id, name: c.name || c.id, note: "" }))];
 }
-const ledNum = (n) => (n || 0).toLocaleString(intlLang());
+// one formatter a language: toLocaleString makes one a call (~1 s of 40)
+let ledFmt, ledFmtLang;
+const ledNum = (n) => { const l = intlLang(); return typeof (n ||= 0) != "number" ? n.toLocaleString(l)
+  : (l == ledFmtLang ? ledFmt : (ledFmtLang = l, ledFmt = new Intl.NumberFormat(l))).format(n); };
 // what x's credited requests cost in their plan's credits, as the replies
 // said (WorkBuddy's usage.credit, #2512): nothing when none said
 function ledCredits(x) {
@@ -19198,7 +19266,7 @@ function renderSettings() {
     s.dock ? "on" : s.dockWindow ? "window" : "off", (v) => savePrefs({ ...keep, dock: v === "on", dockWindow: v === "window" })));
   // a closed window's webview let go (#580): the app's windows alone
   $("#lightweightRow").hidden = web;
-  $("#lightweightSegs").replaceChildren(segs([["off", t("Off")], ["on", t("On")]], s.lightweight ? "on" : "off",
+  $("#lightweightSegs").replaceChildren(segs([["off", t("Off")], ["on", t("On")]], s.lightweight !== false ? "on" : "off",
     (v) => savePrefs({ ...keep, lightweight: v === "on" })));
   // the display kept on too (#975): an agent recording the screen found it locked
   $("#keepAwakeSegs").replaceChildren(segs([["off", t("Off")], ["on", t("On")], ["display", t("Screen on too")]],
@@ -21512,6 +21580,8 @@ function renderRedact(s, keep) {
     r.append(who, val);
     box.append(r);
   }
+  // the local model finds more of what the switches above mask
+  if (s.redact || s.redactPersonal) privacyModelRow(box);
   // Routing's and Usage's Hide accounts, here too, where privacy is looked for
   if (window.hideAccounts) row(t("Hide accounts"), t("Email addresses and account names on Usage and Routing are blurred, for a screenshot to share"),
     onOff(window.hideAccounts.on(), (on) => { window.hideAccounts.set(on); renderSettings(); }));
@@ -21532,6 +21602,61 @@ function renderRedact(s, keep) {
   // rides on that event: nothing goes without it
   if (!s.noStats) row(t("Share the agents, providers and models I use"), t("Sent with that event, by magpie's own ids, with how many of each, and how often each partner was shown, opened and added; a provider you added yourself is only “custom”. No names, addresses, accounts, keys or usage"),
     onOff(!s.noUsageStats, (on) => savePrefs({ ...keep, noUsageStats: !on })));
+}
+
+// privacyModelRow: the local masking model (internal/pii), downloaded when
+// it is turned on and then asked beside the rules. Its state is its own
+// (privacy-model): read when the row is drawn, and each second while it
+// downloads or starts.
+let pmState = null, pmTimer = 0;
+function privacyModelRow(box) {
+  const r = el("div", "row pref");
+  r.id = "privacyModelRow";
+  box.append(r);
+  let tries = 0;
+  const draw = (m) => {
+    if (!r.isConnected) return;
+    const who = el("div", "who"), val = el("div", "val");
+    who.append(el("div", "name", t("Find with a local model")), el("div", "sub", pmSub(m)));
+    if (m?.supported || m?.installed) {
+      if (m.downloading) {
+        const c = el("button", "text", t("Cancel"));
+        c.onclick = () => act("cancel");
+        val.append(c);
+      } else if (m.installed && !m.on) {
+        const x = el("button", "text", t("Delete model"));
+        x.onclick = async () => {
+          if (await confirmAction(t("Delete the model?"), t("Turning it on again downloads {size} again.", { size: fmtBytes(m.size) }), t("Delete"))) act("remove");
+        };
+        val.append(x);
+      }
+      val.append(segs([["off", t("Off")], ["on", t("On")]], m.on || m.downloading ? "on" : "off", (v) => act(v)));
+    }
+    r.replaceChildren(who, val);
+    clearTimeout(pmTimer);
+    // a download's progress, and where pf-serve runs once it has started
+    const starting = m?.on && m.installed && !m.running && !m.failed && tries++ < 30;
+    if (m?.downloading || starting) pmTimer = setTimeout(load, 1000);
+  };
+  const load = () => api("privacy-model").then((m) => { pmState = m; draw(m); }).catch(() => {});
+  const act = (doing) => { tries = 0; api("privacy-model", { do: doing }).then((m) => { pmState = m; draw(m); }).catch((e) => { status(t(e.message), "err"); load(); }); };
+  draw(pmState);
+  load();
+}
+function pmSub(m) {
+  const about = t("Names, addresses and passwords no rule can find, found by a model that runs on this computer");
+  if (!m) return about;
+  if (!m.supported && !m.installed) return t("Not available on this system yet");
+  if (m.downloading) return t("Downloading the model: {done} of {total}", { done: fmtBytes(m.done), total: fmtBytes(m.total) });
+  if (m.error) return t("The download stopped: {error}", { error: m.error });
+  if (m.on && m.failed) return t("The model didn't answer, so requests are held back: {error}", { error: m.failed });
+  if (m.on && m.running) {
+    if (m.gpu) return t("On, on the GPU ({device})", { device: m.device });
+    return m.gpuError ? t("On, on the CPU: the GPU failed ({error})", { error: m.gpuError }) : t("On, on the CPU");
+  }
+  if (m.on) return t("On: the model starts with the next request");
+  if (m.installed) return t("Off. The model is downloaded ({size})", { size: fmtBytes(m.size) });
+  return t("Names, addresses and passwords no rule can find, found by a model that runs on this computer. Turning it on downloads {size} once", { size: fmtBytes(m.size) });
 }
 
 function renderOTel(s, keep) {
@@ -22285,7 +22410,7 @@ function wbCheckinLine(r) {
 
 // prefsKeep is what the settings page sends of s, all of it each time.
 function prefsKeep(s) {
-  return { theme: s.theme, colorblind: !!s.colorblind, lang: s.lang, tray: s.tray, dock: !!s.dock, dockWindow: !!s.dockWindow, lightweight: !!s.lightweight, keepAwake: !!s.keepAwake, keepAwakeDisplay: !!s.keepAwakeDisplay, noWSLAgents: !!s.noWSLAgents, proxy: s.proxy || "",
+  return { theme: s.theme, colorblind: !!s.colorblind, lang: s.lang, tray: s.tray, dock: !!s.dock, dockWindow: !!s.dockWindow, lightweight: s.lightweight, keepAwake: !!s.keepAwake, keepAwakeDisplay: !!s.keepAwakeDisplay, noWSLAgents: !!s.noWSLAgents, proxy: s.proxy || "",
     sessionTerminal: s.sessionTerminal || "",
     uiFont: s.uiFont || null, codeFont: s.codeFont || null,
     otel: s.otel || {},
@@ -23424,7 +23549,14 @@ function renderCrumb(items) {
 // the gateway at the sidebar's foot: where it listens, or that it doesn't
 var sideGwAt = null;
 function sideGwRead() {
-  if (sideGwRead.due && sideNav() && !sideGwAt) api("providers").then((r) => renderSideGw(r?.gateway), () => {});
+  if (!(sideGwRead.due && sideNav() && !sideGwAt)) return;
+  // the list is not read yet: the read the Providers page is made ready
+  // with (#1519) serves both, one read, not two
+  if (!providers && mode !== "panel") {
+    prefetchProviders();
+    if (providersEarly) return void providersEarly.read.then((r) => renderSideGw(r?.gateway), () => {});
+  }
+  api("providers").then((r) => renderSideGw(r?.gateway), () => {});
 }
 function renderSideGw(g) {
   const b = $("#sideGw");
@@ -23638,7 +23770,12 @@ function noteAccount(s) {
 function noteAccounts(x, depth = 0) {
   if (!x || typeof x !== "object" || depth > 8) return;
   if (Array.isArray(x)) { for (const v of x) noteAccounts(v, depth + 1); return; }
-  for (const [k, v] of Object.entries(x)) {
+  // for…in, not Object.entries: every answer is walked, Routing's trace a
+  // second, and entries made an array for each object and each key in it,
+  // ~8 MB of garbage a minute on Routing alone (#1481)
+  for (const k in x) {
+    if (!Object.hasOwn(x, k)) continue;
+    const v = x[k];
     if (typeof v === "string") {
       if (k === "user" || k === "account" || k === "alias" || (k === "who" && x.kind === "account")) noteAccount(v);
     } else if (k === "who" && x.kind === "account" && Array.isArray(v)) for (const w of v) noteAccount(w);
