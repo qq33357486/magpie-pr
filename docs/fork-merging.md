@@ -90,3 +90,28 @@ func cappedErrorTold(model string, ws []Weighed, now time.Time) (string, time.Ti
 - `emptyReply` 常量仍是英文（057da9c2 扫描时漏网，客户可见），下次顺手中文化。
 - 上游 `saysPassing` 会在中文文案后追加英文 "(429: you can retry your request)"，
   该英文短语是给 Pi 等客户端的重试识别模式，不能翻译，属有意保留。
+
+## compaction 标记的 twin（2026-10-22 upstream 抽包）
+
+上游把 compaction 标记抽成了 `internal/codexsummary` 包（`Mark = "magpie1:"`），
+gateway 的读写、`sessions/codex_portable.go` 的 rollout 可移植化都用它。fork 的
+脱敏标记 `gw1:` 与 legacy 兼容（`magpie1:`，升级前的会话仍要读回）不能丢，于是
+在**该包内**加了 fork 专属文件 `codexsummary/fork_marks.go`（第一层：上游永不碰）：
+`ForkMark` / `ForkEncrypted`（写 gw1:）/ `ForkMessage`（读双前缀）/ `ForkWritten`
+（扫描判断）。共享文件里的引用点（gateway 写点、读回、快扫、native_compaction
+排除、portable 逐行快扫）各留一行调 twin。教训：**合并时 `codexsummary.Encrypted`
+写点会被 upstream 自动合并进来（写读劈叉）**——解完显式冲突块后必须全局搜
+`magpie1:`、`Encrypted(` 复核写读口径一致。
+
+## Windows 本地测试红名单（以 Linux CI 为准）
+
+`go test` 在 Windows 本机有一批环境性失败/卡死，全部与代码无关、Linux CI 全绿：
+
+- gateway：`TestClaudeMemRunsFromTheCgroup`/`UnknownBoundsNothing`/`RunsMostTheUsersOwn`
+  （上游 #2956：`filepath.Dir` 到不了 `/`，死循环拖满 10 分钟超时——本地跑须
+  `-skip "MemRuns|RunsMost"`）；`TestGrokCallsGiveIntegersOnEveryProtocol`（流 mock
+  卡死）；`TestSweepBridge…`（建符号链接要特权）；`TestClaudeAsRootEnv`（env 排序）。
+- agent：keychain（Windows 凭据管理器真读）、`TestCopilotFolder…`/`TestQoderSettings…`
+  （PATH 上的 CLI fixture 不可执行，后者合并前即红）、`TestClaudeDesktop…`（AppData
+  结构）、`TestIsMagpieKept…`（fs 分配数 256 > 阈值 200）、`TestAsideOffline…`（CLI
+  fixture）、`TestCodexSignInInKeychain`。
