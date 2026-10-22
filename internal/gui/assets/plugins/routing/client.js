@@ -760,7 +760,12 @@ function routingPage(part) {
     return out + "]".repeat(open.length);
   }
   // useName is what a rule sends to: a model, or a group in the group
-  const useName = (r, id) => id?.startsWith("group/") ? t("the group {name}", { name: r.group?.subs?.find((s) => "group/" + s.id === id)?.name || id.slice(6) }) : id;
+  // a group magpie found goes by the id agents pick it by (auto/<model>), not its internal group/auto-…
+  const useName = (r, id) => {
+    if (!id?.startsWith("group/")) return id;
+    const s = r.group?.subs?.find((s) => "group/" + s.id === id);
+    return t("the group {name}", { name: s?.name || (s?.ref && !s.ref.startsWith("group/") ? s.ref : id.slice(6)) });
+  };
   // nestedWhy tells, for each group in the group down to the one that
   // went first, what its own rules did — and which group it came through
   function nestedWhy(r) {
@@ -1533,7 +1538,13 @@ function routingPage(part) {
   // the accounts they weighed, each route's in the order it weighed them —
   // a new order of the same accounts moves them to their places, so it
   // shows. Accounts and agents stay where they are while they stay.
+  // Out of sight none of the stage is drawn: resume() draws it as it is
+  // when the page comes back. Built while hidden, every trace update put
+  // new agents, rows and wires in, and their entrance and live animations,
+  // held by a timeline that doesn't run while the window is hidden, kept
+  // each replaced node alive (#2515, #2513)
   function sync(force) {
+    if (!shown()) return;
     const rs = staged();
     if (!rs.length) return;
     if (force) return steady(() => rebuild(rs, true));
@@ -1884,13 +1895,15 @@ function routingPage(part) {
     log.hidden = !r;
     if (!r) return;
     const on = () => listed().filter((x) => x.id >= logR.id);
-    const head = JSON.stringify([document.documentElement.lang, !!rp, pinned?.id, r.id, r.time, r.done, !!pinned && on().length > 1, bodiesFor === r.id]);
+    const head = JSON.stringify([document.documentElement.lang, !!rp, pinned?.id, r.id, r.time, r.done, !!pinned && on().length > 1, bodiesFor === r.id, r.masked?.key, r.masked?.n]);
     if (headKey !== head) {
       headKey = head;
       logHead.replaceChildren(
         el("span", "", rp ? t("How the request at {time} was routed", { time: clock(r.time) })
-          : pinned ? t("How the request at {time} was routed", { time: clock(r.time) }) : t("How the last request was routed")),
-        el("span", "grow"));
+          : pinned ? t("How the request at {time} was routed", { time: clock(r.time) }) : t("How the last request was routed")));
+      // what masking kept from the vendor, its record a click away
+      if ((r.masked?.n || r.masked?.warned) && !rp) logHead.append(maskedBadge(r.masked));
+      logHead.append(el("span", "grow"));
       if (!rp && r.done) {
         const usage = el("button", "text", t("View usage"));
         usage.dataset.feature = "usage"; // it opens on the Usage page
@@ -2580,6 +2593,7 @@ function routingPage(part) {
     return els;
   }
   function renderHist() {
+    if (!shown()) return; // drawn by resume()'s renderAll, as the stage
     const rs = listed();
     renderStats(rs);
     const all = allListed();
@@ -3230,6 +3244,12 @@ function routingPage(part) {
     if (aside) say(aside, true);
     renderAll();
     const A = agents.get(r.agent);
+    // an agent past the stage's four (staged) isn't drawn: its request is
+    // listed, not flown
+    if (!A) {
+      if (playing.get(id) === g) playing.delete(id);
+      return;
+    }
     const dot = packet();
     dot.style.setProperty("--agent", hueOf(r.agent));
     // from: where in magpie the dot is, once it is — the way it came in
@@ -3577,6 +3597,7 @@ function routingPage(part) {
   // Visibility events can arrive after the browser has suspended frames, so
   // finish hidden work here too. The first visible frame alone owns resume.
   function start() {
+    inSightAgain();
     if (!shown()) { pause(); return; }
     kick();
   }
@@ -3596,6 +3617,7 @@ function routingPage(part) {
   }
 
   function empty() {
+    if (!shown()) return; // resume() empties it in sight, as sync
     offline("");
     what.replaceChildren(el("b", "", t(purpose.length || day ? "No requests match these filters." : "Waiting for a request")));
     mode.textContent = t("Send one from any agent routed through magpie and it plays here as it happens: who routing put first and why, each try, and what each answered.");
@@ -3631,11 +3653,26 @@ function routingPage(part) {
     for (const d of document.querySelectorAll(".rt-livedot")) d.classList.toggle("on", on);
   }
 
+  // the trace is asked for only while the page or the tray panel's Routing
+  // tab is in sight: a hidden page held a long-poll open and was answered
+  // on every change, 4 to 8 times a second under traffic, for nothing it
+  // drew. Out of sight it asks nothing; in sight again it asks once for all
+  // that changed meanwhile, and plays only the requests still under way
+  const inSight = () => !document.hidden && (shown() || !!(pBox && pShown()));
+  let heard = false, sightWait = null, caught = false;
+  function inSightAgain() {
+    if (sightWait && inSight()) { const go = sightWait; sightWait = null; go(); }
+  }
   async function poll() {
     for (;;) {
+      if (heard && !inSight()) {
+        await new Promise((r) => { sightWait = r; });
+        caught = true;
+      }
       try {
         const res = await fetch(`/api/gateway/trace?after=${seq}${loaded ? "&wait=1" : ""}`);
         const d = await res.json();
+        heard = true;
         noteAccounts(d);
         skew = at(d.now) - Date.now();
         mine = d.mine;
@@ -3667,7 +3704,16 @@ function routingPage(part) {
           if (!routes.has(r.id) && !first) fresh.push(r.id);
           routes.set(r.id, whole(r));
         }
+        // one heard of as under way that the gateway has let go of since
+        // (finished and trimmed while the page was out of sight) is not
+        // under way forever: the gateway lists every id it still keeps
+        if (Array.isArray(d.ids)) {
+          const kept = new Set(d.ids);
+          for (const [id, r] of routes) if (!r.done && !kept.has(id)) routes.delete(id);
+        }
         for (const id of [...routes.keys()].sort((a, b) => a - b).slice(0, -60)) routes.delete(id);
+        const back = caught;
+        caught = false;
         loaded = true;
         offMsg = "";
         renderPanel(first || d.routes.some((r) => r.done));
@@ -3707,11 +3753,13 @@ function routingPage(part) {
           }
           // played only in sight: coming back into it plays those still
           // under way, not all that came meanwhile (#302)
-          const go = !pinned && !rp && !day && shown() ? fresh.filter((id) => matchesPurpose(routes.get(id))) : [];
+          const go = !back && !pinned && !rp && !day && shown() ? fresh.filter((id) => matchesPurpose(routes.get(id))) : [];
           for (const id of go) playing.set(id, gen);
           if (go.length) sync(); // the stage once for them all (#308)
           for (const id of go) play(id, true);
-          for (const id of fresh.slice(-4)) pPlay(id);
+          // back in sight, those still under way fly, not all that came
+          for (const id of (back ? fresh.filter((id) => !routes.get(id).done) : fresh).slice(-4)) pPlay(id);
+          if (back && seen && shown()) for (const u of underWay()) if (!playing.has(u.id)) play(u.id);
           wake();
           renderAll();
         }
@@ -4637,9 +4685,12 @@ function routingPage(part) {
     if (g && d.id === undefined) d.id = g.id;
     // an open group folds back into its row from its heading, as it opened
     // from the row (ARNO on Discord) — only while nothing in it has
-    // changed, so a stray click never throws an edit away; Cancel does that
+    // changed, so a stray click never throws an edit away; Cancel does that.
+    // Its own class, not .fold: that is the Models head's chip, whose
+    // padding and corners made the heading's line curve at its ends and
+    // its space above differ from below (the owner, 10-21)
     if (g) {
-      h.classList.add("fold");
+      h.classList.add("folds");
       h.setAttribute("role", "button");
       h.tabIndex = 0;
       h.setAttribute("aria-expanded", "true");
@@ -5830,6 +5881,7 @@ function routingPage(part) {
     renderPanel();
   }
   window.panelRoutingShown = () => {
+    inSightAgain();
     if (pShown() && performance.now() - todayAt > 5e3) loadToday();
     // a group switched on the Routing page or by `magpie group pick`
     // since: the tab shows the model it goes to now

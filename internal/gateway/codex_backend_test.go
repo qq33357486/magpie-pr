@@ -16,6 +16,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/yetone/magpie/internal/codexcat"
+	"github.com/yetone/magpie/internal/codexsummary"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/usage"
 )
@@ -57,7 +58,7 @@ func TestCodexOwnModelPassesThrough(t *testing.T) {
 			`data: {"type":"response.created","response":{"id":"r1"}}`,
 			`data: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":9,"output_tokens":2}}}`))
 	})
-	sum := magpieCompaction + base64.StdEncoding.EncodeToString([]byte("did X, next Y"))
+	sum := codexsummary.ForkMark + base64.StdEncoding.EncodeToString([]byte("did X, next Y"))
 	code, body := codexPost(t, `{"model":"gpt-5.5","stream":true,"input":[
 	  {"type":"compaction","encrypted_content":"`+sum+`"},
 	  {"type":"compaction","encrypted_content":"openai-own"},
@@ -399,7 +400,7 @@ func TestCodexOwnModelCompactionPassesThrough(t *testing.T) {
 		t.Fatalf("own compact: %d %s; upstream %q", code, body, got)
 	}
 
-	sum := magpieCompaction + base64.StdEncoding.EncodeToString([]byte("prior summary"))
+	sum := codexsummary.ForkMark + base64.StdEncoding.EncodeToString([]byte("prior summary"))
 	code, body = codexPost(t, `{"model":"gpt-6-sol","stream":true,"tools":[{"type":"function","name":"shell"}],"input":[{"type":"compaction","encrypted_content":"`+sum+`"},{"type":"compaction_trigger"}]}`)
 	if code != 200 || len(got) != 2 {
 		t.Fatalf("mixed compact: %d %s; %d upstream requests", code, body, len(got))
@@ -486,12 +487,12 @@ func TestCodexCompactsMagpieModel(t *testing.T) {
 		}
 	}
 	enc, _ := item["encrypted_content"].(string)
-	b, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(enc, magpieCompaction))
-	if item["type"] != "compaction" || !strings.HasPrefix(enc, magpieCompaction) || string(b) != "SUMMARY" || !completed {
+	b, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(enc, codexsummary.ForkMark))
+	if item["type"] != "compaction" || !strings.HasPrefix(enc, codexsummary.ForkMark) || string(b) != "SUMMARY" || !completed {
 		t.Errorf("events: %s", body)
 	}
 	code, _ = codexPost(t, `{"model":"fake/new-model","stream":true,"input":[{"type":"compaction","encrypted_content":"`+enc+`"},{"type":"message","role":"user","content":"continue"}]}`)
-	if code != 200 || !strings.Contains(string(f.got), "SUMMARY") || !strings.Contains(string(f.got), codexSummaryPrefix) || strings.Contains(string(f.got), magpieCompaction) {
+	if code != 200 || !strings.Contains(string(f.got), "SUMMARY") || !strings.Contains(string(f.got), codexSummaryPrefix) || strings.Contains(string(f.got), codexsummary.ForkMark) {
 		t.Errorf("compacted conversation was not restored: %d %s", code, f.got)
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +20,7 @@ import (
 	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/codexcat"
+	"github.com/yetone/magpie/internal/codexsummary"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
@@ -39,14 +39,10 @@ const CodexPath = "/backend-api/codex"
 // point it elsewhere.
 var codexAPIBase = "https://api.openai.com/v1"
 
-// magpieCompaction marks a compaction item the gateway made: its summary,
-// which only it reads back. The mark says no name a customer could tell
-// the stack by; legacyMagpieCompaction is the one it wrote before, read
-// still so a conversation held over an upgrade keeps working.
-const (
-	magpieCompaction       = "gw1:"
-	legacyMagpieCompaction = "magpie1:"
-)
+// magpieCompaction marks a compaction item magpie made: its summary, which
+// only magpie reads back (codexsummary). What the gateway writes is this
+// fork's own mark instead (codexsummary.ForkMark).
+const magpieCompaction = codexsummary.Mark
 
 var nativeSealedAgentPayload = regexp.MustCompile(`^gAAAAA[A-Za-z0-9_-]+={0,2}$`)
 
@@ -62,7 +58,7 @@ Include:
 
 Be concise, structured, and focused on helping the next LLM seamlessly continue the work.`
 
-const codexSummaryPrefix = `Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:`
+const codexSummaryPrefix = codexsummary.Prefix
 
 func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 	// Responses over a WebSocket: 426 sends Codex to plain HTTP at once
@@ -167,6 +163,13 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 		// the ChatGPT backend checks every item id as OpenAI does
 		body = plainItemIDs(boundCallIDs(callItemIDs(body)))
 		if rest == "/responses/compact" {
+			// Codex compacts a thread before its first turn back on one of
+			// its own models; the thread's reasoning from another vendor
+			// goes, as it does from a turn: with its text in it, the
+			// backend refuses the whole compaction over "input[n].content:
+			// array too long", and Codex shows it as the turn's error
+			// (jue on Discord). A summary magpie made goes as its text.
+			body, _ = codexInput(body, false)
 			// a key held to some accounts (#905) may not spend the sign-in
 			// compaction still relays on: refused as its turns are (#967),
 			// with nothing asked of OpenAI — and refused when the sign-in
@@ -843,13 +846,14 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	start := time.Now()
 	usage.Saw(agentOf(r))
 	w0, body0 := w, body // as they came, for the fallbacks (codexFallBack)
+	var maskedHits maskHits
 	if r.Method == http.MethodPost {
 		var unmask func()
 		var err error
-		w, body, unmask, err = redacted(w, body)
+		w, body, unmask, maskedHits, err = redactedHits(w, body)
 		defer unmask()
 		if err != nil {
-			writeError(w, provider.Responses, http.StatusServiceUnavailable, err.Error())
+			writeError(w, provider.Responses, maskStatus(err), err.Error())
 			return
 		}
 	}
@@ -891,6 +895,10 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	effort := "" // the reasoning Codex asked for, which goes on as it is
 	end := func(status int, msg string, tokens, out int) {}
 	var tools *toolScan // whether the reply calls a tool, for a turn's end
+	if rest != "/responses" {
+		// no route of its own (a compaction, a memory): recorded alone
+		noteMasked(r, "chat", maskedHits, string(body), 0, "openai", modelOf(body))
+	}
 	if rest == "/responses" {
 		imageProvider := ""
 		if !apiKey(r.Header) {
@@ -909,6 +917,9 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 		tools = scan
 		tr = s.trace.beginFor(r, Route{turn: turn, dirOf: dirOf(provider.Responses, body), tools: tools, imageTurn: drawingTurnID(metadata.Turn), imageCaller: codexTurnKey(r, callerOf(r).agent), imageProvider: imageProvider, TitleLink: link, Time: start, Agent: agentOf(r), Session: sessionOf(r.Header), Conv: convOf(r.Header, body), ParentSession: titleParentSession(r.Header, metadata, kind), Kind: kind, Model: model, Effort: effort, Tier: bodyTier(provider.Responses, body), Provider: "openai", Subagent: subagentPickOf(r),
 			Order: []Weighed{seat}, Tries: []Try{{ID: seat.ID, Model: model, Effort: effort, Start: start}}})
+		if m := noteMasked(r, "chat", maskedHits, string(body), tr.ID, "openai", model); m != nil {
+			s.trace.update(tr, func(t *Route) { t.Masked = m })
+		}
 		promptRead := s.inspectPrompt(tr, provider.Responses, body, body)
 		end = func(status int, msg string, tokens, out int) {
 			ms := time.Since(start).Milliseconds()
@@ -1293,6 +1304,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	}
 	end(call.Status, call.Error, uu.Input+uu.Output+uu.CacheRead+uu.CacheWrite, uu.Output)
 	call.Route = tr.ID
+	call.Masked = s.trace.maskedOf(tr)
 	s.record(call)
 	servedProvider, servedAccount := codexServed(base, r.Header, on)
 	rec := usage.Record{RouteID: tr.ID, Time: start, Agent: call.Agent,
@@ -1822,17 +1834,14 @@ func codexInputAs(body []byte, magpieModel, native bool) (_ []byte, compact bool
 		switch it["type"] {
 		case "compaction", "compaction_summary":
 			enc, _ := it["encrypted_content"].(string)
-			sum, ok := strings.CutPrefix(enc, magpieCompaction)
-			if !ok {
-				sum, ok = strings.CutPrefix(enc, legacyMagpieCompaction)
-			}
-			if !ok {
+			msg, ours := codexsummary.ForkMessage(enc)
+			if !ours {
 				out = append(out, it) // OpenAI's own, for OpenAI
 				continue
 			}
 			changed = true
-			if b, err := base64.StdEncoding.DecodeString(sum); err == nil {
-				out = append(out, userMessage(codexSummaryPrefix+"\n"+string(b)))
+			if msg != nil {
+				out = append(out, msg)
 			}
 		case "compaction_trigger":
 			if !magpieModel || native {
@@ -1899,7 +1908,9 @@ func codexInputItemChanges(it []byte, magpieModel, native bool) bool {
 	switch {
 	case string(typ) == "compaction" || string(typ) == "compaction_summary":
 		enc, _ := stringBytes(memberOrNil(it, "encrypted_content"))
-		return hasPrefix(enc, magpieCompaction)
+		// either mark is ours: the fork's (ForkMark), and magpie1: from
+		// before it (codexInputAs reads both)
+		return hasPrefix(enc, codexsummary.ForkMark) || hasPrefix(enc, magpieCompaction)
 	case string(typ) == "compaction_trigger":
 		return magpieModel && !native
 	case string(typ) == "reasoning":
@@ -2501,10 +2512,7 @@ func forVendorChanges(body []byte) bool {
 	})
 }
 
-func userMessage(text string) map[string]any {
-	return map[string]any{"type": "message", "role": "user",
-		"content": []map[string]any{{"type": "input_text", "text": text}}}
-}
+func userMessage(text string) map[string]any { return codexsummary.UserMessage(text) }
 
 // codexCompact compacts a conversation held by a magpie model: the model
 // summarises it, and the summary goes back to Codex as the compaction item
@@ -2629,7 +2637,7 @@ func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byt
 		id = fmt.Sprintf("resp_magpie_%d", time.Now().UnixNano())
 	}
 	item := map[string]any{"type": "compaction", "id": "cmp_" + strings.TrimPrefix(id, "resp_"),
-		"encrypted_content": magpieCompaction + base64.StdEncoding.EncodeToString([]byte(sum.String()))}
+		"encrypted_content": codexsummary.ForkEncrypted(sum.String())}
 	done := map[string]any{"id": id, "object": "response", "status": "completed", "output": []any{item}}
 	if len(res.Usage) > 0 {
 		done["usage"] = res.Usage

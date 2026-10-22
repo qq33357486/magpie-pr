@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/codexsummary"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -142,11 +143,11 @@ var codexMarks = []func(it map[string]any){
 	func(it map[string]any) { it["type"] = "reasoning"; it["content"] = map[string]any{} },
 	func(it map[string]any) {
 		it["type"] = "compaction"
-		it["encrypted_content"] = magpieCompaction + base64.StdEncoding.EncodeToString([]byte("sum"))
+		it["encrypted_content"] = codexsummary.ForkMark + base64.StdEncoding.EncodeToString([]byte("sum"))
 	},
 	func(it map[string]any) {
 		it["type"] = "compaction_summary"
-		it["encrypted_content"] = magpieCompaction + "!!"
+		it["encrypted_content"] = codexsummary.ForkMark + "!!"
 	},
 	func(it map[string]any) { it["type"] = "compaction"; it["encrypted_content"] = "gAAAA" },
 	func(it map[string]any) { it["type"] = "compaction_trigger" },
@@ -290,7 +291,7 @@ func wasCodexInputAs(body []byte, magpieModel, native bool) (_ []byte, compact b
 		switch it["type"] {
 		case "compaction", "compaction_summary":
 			enc, _ := it["encrypted_content"].(string)
-			sum, ok := strings.CutPrefix(enc, magpieCompaction)
+			sum, ok := strings.CutPrefix(enc, codexsummary.ForkMark)
 			if !ok {
 				out = append(out, it) // OpenAI's own, for OpenAI
 				continue

@@ -200,6 +200,50 @@ func modelSearches(p provider.Provider, proto provider.Protocol, model string) b
 	return slices.Contains(searchModels[id][proto], model)
 }
 
+// modelSearchesAny is whether model of p searches by itself on one of
+// p's APIs (modelSearches), where the gateway sends a search for it.
+func modelSearchesAny(p provider.Provider, model string) bool {
+	return slices.ContainsFunc(p.Speaks(), func(proto provider.Protocol) bool { return modelSearches(p, proto, model) })
+}
+
+// pluginSearches is whether p's plugin says model searches the web by
+// itself when asked in plain words (m.searches, as catalog.Model's
+// WebSearch "native"): the gateway asks it with no search tool, and takes
+// what it says with the links in it (searchWith).
+func pluginSearches(p provider.Provider, model string) bool {
+	if !p.IsPlugin() {
+		return false
+	}
+	i := slices.IndexFunc(p.Available(), func(m catalog.Model) bool { return m.ID == model })
+	return i >= 0 && p.Available()[i].WebSearch == searchNative
+}
+
+// searchesAlone is whether model of p searches by itself where the rest
+// of p's models don't: one of searchModels, or a plugin's it marks.
+func searchesAlone(p provider.Provider, model string) bool {
+	return modelSearchesAny(p, model) || pluginSearches(p, model)
+}
+
+// partSearcher is a provider of searchModels that searches by itself for
+// those of its models alone, on no API for every model, or a plugin's
+// that marks some of its models as ones that search (pluginSearches): one
+// magpie may search with, with those models only (searchableModel).
+// Command Code's searched for themselves but were left out of the
+// searcher picker and magpie's own pick (01huadalang on Discord), and so
+// was every plugin's, Trae's search model among them (01huadalang, 10-20).
+func partSearcher(p provider.Provider) bool {
+	if p.IsPlugin() {
+		return slices.ContainsFunc(p.Available(), func(m catalog.Model) bool { return m.WebSearch == searchNative })
+	}
+	if p.Account != nil || slices.ContainsFunc([]provider.Protocol{provider.Anthropic, provider.Responses, provider.Chat}, func(proto provider.Protocol) bool { return searchesItself(p, proto) }) {
+		return false
+	}
+	if _, ok := searchModels[p.Preset]; ok {
+		return true
+	}
+	return slices.ContainsFunc(p.Speaks(), func(proto provider.Protocol) bool { return searchModelsHosts[provider.HostOf(p.Base(proto))] != "" })
+}
+
 // searchHosts are the APIs that search by themselves: OpenAI's, xAI's,
 // DeepSeek's, Zhipu's and Z.ai's web_search tool (Zhipu's on its Responses
 // API only, DeepSeek's on its Responses and Anthropic APIs: their Chat APIs
@@ -269,6 +313,8 @@ func searchRank(p provider.Provider) int {
 	case searchesItself(p, provider.Responses):
 		return 3
 	case searchesItself(p, provider.Chat):
+		return 4
+	case partSearcher(p) && slices.ContainsFunc(p.Available(), func(m catalog.Model) bool { return searchesAlone(p, m.ID) }):
 		return 4
 	case googleAccount(p):
 		// Gemini on a Google sign-in, by googleSearch (#757)
@@ -582,7 +628,7 @@ func searcherReady(p provider.Provider) (string, bool) {
 	// what searchableModel says of a model is the model's and the
 	// provider's list's, which keptSmallCands is kept by
 	var keep func(catalog.Model) bool
-	if googleAccount(p) || p.IsRemoteMagpie() {
+	if googleAccount(p) || p.IsRemoteMagpie() || partSearcher(p) {
 		keep = func(m catalog.Model) bool { return searchableModel(p, m.ID) }
 	}
 	c, ready := smallReadyOf(p, keptSmallCands(p, "search", keep), provider.Anthropic)

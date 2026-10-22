@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/yetone/magpie/internal/codexsummary"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -100,7 +101,7 @@ func TestProtectionRefusedCompactionAsText(t *testing.T) {
 	codexSignedIn(t, "two@example.com")
 	tried := protectionUp(t, `{"error":{"message":"response protection is unavailable","type":"server_error"}}`)
 	code, body := codexPost(t, strings.Replace(protectedCompaction, "%q", `"codex/gpt-5.5"`, 1))
-	if code != 200 || !strings.Contains(body, `"type":"compaction"`) || !strings.Contains(body, magpieCompaction) {
+	if code != 200 || !strings.Contains(body, `"type":"compaction"`) || !strings.Contains(body, codexsummary.ForkMark) {
 		t.Fatalf("status %d: %s", code, body)
 	}
 	if len(*tried) != 2 {
@@ -167,7 +168,7 @@ func TestProtectionBrokenOffCompactionAsText(t *testing.T) {
 	codexSignedIn(t, "two@example.com")
 	tried := brokenOffUp(t, false)
 	code, body := codexPost(t, strings.Replace(protectedCompaction, "%q", `"codex/gpt-6.1-sol"`, 1))
-	if code != 200 || !strings.Contains(body, `"type":"compaction"`) || !strings.Contains(body, magpieCompaction) {
+	if code != 200 || !strings.Contains(body, `"type":"compaction"`) || !strings.Contains(body, codexsummary.ForkMark) {
 		t.Fatalf("status %d: %s", code, body)
 	}
 	if len(*tried) != 2 {
@@ -186,7 +187,7 @@ func TestProtectionBrokenOffTwiceCompactsLocally(t *testing.T) {
 	if code != 200 || !strings.Contains(body, `"type":"compaction"`) {
 		t.Fatalf("status %d: %s", code, body)
 	}
-	_, enc, _ := strings.Cut(body, magpieCompaction)
+	_, enc, _ := strings.Cut(body, codexsummary.ForkMark)
 	enc, _, _ = strings.Cut(enc, `"`)
 	sum, _ := base64.StdEncoding.DecodeString(enc)
 	if !strings.Contains(string(sum), "本次会话压缩由网关在本地完成") || !strings.Contains(string(sum), "refactor the parser") {

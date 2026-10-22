@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/codexsummary"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -57,7 +58,7 @@ func TestCodexCompactsThroughCodexRelay(t *testing.T) {
 		}
 	}
 	enc, _ := item["encrypted_content"].(string)
-	b, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(enc, magpieCompaction))
+	b, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(enc, codexsummary.ForkMark))
 	if item["type"] != "compaction" || string(b) != "SUMMARY" || done == nil || done["id"] != "resp_r1" || done["usage"] == nil {
 		t.Errorf("events: %s", body)
 	}

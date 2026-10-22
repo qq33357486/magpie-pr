@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/codexsummary"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -43,7 +44,7 @@ func TestCodexCompactionTriggerOnV1(t *testing.T) {
 		t.Fatalf("Codex wants exactly one compaction output item, got %v\n%s", done, body)
 	}
 	enc, _ := done[0]["encrypted_content"].(string)
-	if b, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(enc, magpieCompaction)); string(b) != "SUMMARY" {
+	if b, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(enc, codexsummary.ForkMark)); string(b) != "SUMMARY" {
 		t.Errorf("compaction holds %q", enc)
 	}
 
@@ -54,7 +55,7 @@ func TestCodexCompactionTriggerOnV1(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("%d %s", code, body)
 	}
-	if strings.Contains(string(f.got), magpieCompaction) || !strings.Contains(string(f.got), "SUMMARY") {
+	if strings.Contains(string(f.got), codexsummary.ForkMark) || !strings.Contains(string(f.got), "SUMMARY") {
 		t.Errorf("relay got %s", f.got)
 	}
 }

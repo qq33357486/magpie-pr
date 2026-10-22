@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/tidwall/gjson"
+	"github.com/yetone/magpie/internal/codexsummary"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/steady"
@@ -68,7 +69,7 @@ func sealedCompactions(body []byte) []string {
 		if !slices.Contains(compactionKinds, it.Get("type").Str) {
 			continue
 		}
-		if enc := it.Get("encrypted_content").Str; enc != "" && !strings.HasPrefix(enc, magpieCompaction) {
+		if enc := it.Get("encrypted_content").Str; enc != "" && !codexsummary.ForkWritten(enc) {
 			out = append(out, enc)
 		}
 	}
@@ -505,7 +506,7 @@ func (c *compactionWatch) sealed() string {
 	fromItems := func(items []gjson.Result) {
 		for _, it := range items {
 			if slices.Contains(compactionKinds, it.Get("type").Str) {
-				if enc := it.Get("encrypted_content").Str; enc != "" && !strings.HasPrefix(enc, magpieCompaction) {
+				if enc := it.Get("encrypted_content").Str; enc != "" && !codexsummary.ForkWritten(enc) {
 					found = enc
 				}
 			}

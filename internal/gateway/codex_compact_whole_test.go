@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/codexsummary"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -121,7 +122,7 @@ func TestCodexCompactCutSummaryIsNoSummary(t *testing.T) {
 			f := &fake{t: t, reply: cut}
 			setup(t, provider.Responses, f)
 			code, body := codexPost(t, compact404Request)
-			if code < 400 || strings.Contains(body, magpieCompaction) {
+			if code < 400 || strings.Contains(body, codexsummary.ForkMark) {
 				t.Fatalf("%d %s", code, body)
 			}
 		})

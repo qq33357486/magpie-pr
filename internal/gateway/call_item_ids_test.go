@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/codexsummary"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -183,7 +184,7 @@ func TestResponsesRelayCallIDs(t *testing.T) {
 					if string(sent["tools"]) != "[]" || !strings.Contains(last, "CONTEXT CHECKPOINT COMPACTION") {
 						t.Errorf("not a compaction request: %s", last)
 					}
-					if !strings.Contains(rec.Body.String(), `"type":"compaction"`) || !strings.Contains(rec.Body.String(), magpieCompaction) {
+					if !strings.Contains(rec.Body.String(), `"type":"compaction"`) || !strings.Contains(rec.Body.String(), codexsummary.ForkMark) {
 						t.Errorf("not a compaction response: %s", rec.Body)
 					}
 				} else if !strings.Contains(rec.Body.String(), "on it") {
