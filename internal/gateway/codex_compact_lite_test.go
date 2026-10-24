@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/yetone/magpie/internal/codexsummary"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -97,7 +98,7 @@ func TestCodexLiteCompactionOffersNoTools(t *testing.T) {
 		}
 	}
 	enc, _ := item["encrypted_content"].(string)
-	sum, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(enc, magpieCompaction))
+	sum, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(enc, codexsummary.ForkMark))
 	if item["type"] != "compaction" || string(sum) != "SUMMARY of the work" {
 		t.Errorf("compaction: %s", rec.Body.String())
 	}
