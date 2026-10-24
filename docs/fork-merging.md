@@ -110,7 +110,10 @@ gateway 的读写、`sessions/codex_portable.go` 的 rollout 可移植化都用�
 - gateway：`TestClaudeMemRunsFromTheCgroup`/`UnknownBoundsNothing`/`RunsMostTheUsersOwn`
   （上游 #2956：`filepath.Dir` 到不了 `/`，死循环拖满 10 分钟超时——本地跑须
   `-skip "MemRuns|RunsMost"`）；`TestGrokCallsGiveIntegersOnEveryProtocol`（流 mock
-  卡死）；`TestSweepBridge…`（建符号链接要特权）；`TestClaudeAsRootEnv`（env 排序）。
+  卡死）；`TestSweepBridge…`（建符号链接要特权）；`TestClaudeAsRootEnv`（env 排序）；
+  `TestHandedOverGatewayFinishesItsStream`（socket handover 报 Windows 设备错）；
+  `TestMaskedRecordKeepsSentAndBack`（`Took` 记 0：Windows 时钟粒度，Linux CI 绿）；
+  `TestSlowStartsRestTheModelOnItsAccount`（上游 398803e3 新增，流 mock 卡死）。
 - agent：keychain（Windows 凭据管理器真读）、`TestCopilotFolder…`/`TestQoderSettings…`
   （PATH 上的 CLI fixture 不可执行，后者合并前即红）、`TestClaudeDesktop…`（AppData
   结构）、`TestIsMagpieKept…`（fs 分配数 256 > 阈值 200）、`TestAsideOffline…`（CLI
