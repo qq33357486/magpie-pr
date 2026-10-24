@@ -1112,6 +1112,11 @@ func modelRetired(status int, body []byte) bool {
 	default:
 		return false
 	}
+	// the safety filter turning the request away (#3274) is about the
+	// request, whatever its message says of the model
+	if _, refused := policyRefusal(body); refused {
+		return false
+	}
 	// the words are matched decoded, too (#1669)
 	body = wordsOf(body)
 	return retiredWords.Match(body) && !quotaWords.Match(body)
@@ -3141,6 +3146,30 @@ func policyRefusal(raw []byte) (string, bool) {
 // an answer.
 const highRiskRefusal = "The request was rejected because it was considered high risk"
 
+// filterRefused is a stream's error event (its data) as an Event carries
+// it when it is the vendor's safety filter refusing the request: its code
+// (refusedCode), status refusedStatus, and an error of the request's own
+// (Said) with that code. A client answered whole is then told it as a 400
+// refusal, which the hold reads as one (policyRefusal) and asks the next
+// account, resting nobody; without the status it was answered 502
+// api_error, asked again on every account, and each one rested (#3274: a
+// Codex account's response.failed cyber_policy, its error with no type).
+// A code policyRefusal doesn't know as a refusal goes as content_filter,
+// for the hold to know it still. Not a refusal, it is "", 0 and nil.
+func filterRefused(data string) (string, int, json.RawMessage) {
+	code := refusedCode(data)
+	if code == "" {
+		return "", 0, nil
+	}
+	said := code
+	c, _ := json.Marshal(map[string]string{"code": code})
+	if _, ok := policyRefusal(c); !ok {
+		said = "content_filter"
+	}
+	b, _ := json.Marshal(map[string]any{"error": map[string]string{"type": "invalid_request_error", "code": said}})
+	return code, refusedStatus, b
+}
+
 // refusedCode is the code of a stream's error event (its data) when it is
 // the vendor's safety filter refusing, for a translation of it to keep:
 // said in another protocol as only its message, ChatGPT's bio_policy read
@@ -3315,4 +3344,52 @@ func pinTo(want string, cands []candidate, pl planned) ([]candidate, planned, in
 		log.Printf("%s: no account %q serves this model; its accounts are %s", AccountHeader, want, strings.Join(have, ", "))
 	}
 	return nil, pl, http.StatusNotFound, "没有该名称的账号可服务此模型"
+}
+
+// unservedTry says c's try failed as the vendor refusing the model as one
+// it doesn't serve the account or key (modelRefused, codeAssistModelMissing):
+// what restAfterMarked rests for that model alone.
+func unservedTry(c candidate, status int, body []byte) bool {
+	return failure(status, body) == failOther && (modelRefused(status, body) || codeAssistModelMissing(c.p, status, body))
+}
+
+// unlistedNext takes out of a plan's unlisted accounts (planned.unlisted,
+// their rows in ws) those of key, "<provider>/<model>", not resting for the
+// model: the next ones asked once the accounts whose own list has the model
+// refused it as one they don't serve. The rest are returned too, for
+// none to be asked twice.
+func unlistedNext(cs []candidate, ws []Weighed, key string) (next []candidate, nextW []Weighed, restCs []candidate, restWs []Weighed) {
+	for i, c := range cs {
+		_, resting := restingOf(c)
+		if c.p.ID+"/"+c.model != key || resting {
+			restCs = append(restCs, c)
+			if i < len(ws) {
+				restWs = append(restWs, ws[i])
+			}
+			continue
+		}
+		next = append(next, c)
+		if i < len(ws) {
+			w := ws[i]
+			w.Unlisted = false // asked, after those that list the model
+			nextW = append(nextW, w)
+		}
+	}
+	return next, nextW, restCs, restWs
+}
+
+// askUnlisted moves the rows of the unlisted accounts asked next (ws) from
+// a route's left to its order, after the row of c, the one that refused
+// the model: the Routing page has them asked, not "unlisted, skipped".
+func askUnlisted(order, left []Weighed, c candidate, ws []Weighed) ([]Weighed, []Weighed) {
+	asked := make(map[string]bool, len(ws))
+	for _, w := range ws {
+		asked[w.ID+"/"+w.Model] = true
+	}
+	left = slices.DeleteFunc(slices.Clone(left), func(w Weighed) bool { return w.Unlisted && asked[w.ID+"/"+w.Model] })
+	at := slices.IndexFunc(order, func(w Weighed) bool { return w.ID == c.rest && w.Model == c.model })
+	if at < 0 {
+		return append(slices.Clip(order), ws...), left
+	}
+	return slices.Concat(order[:at+1], ws, order[at+1:]), left
 }

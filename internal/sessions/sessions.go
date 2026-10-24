@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -148,6 +149,9 @@ type Session struct {
 	// WSL is the WSL distro the session ran in, its files read through
 	// \\wsl.localhost (see wsl.go); "" for this computer's own
 	WSL string `json:"wsl,omitempty"`
+	// Convs are the ids magpie's gateway keys the session's requests by
+	// when they carry no session id of their own (dshConvs)
+	Convs []string `json:"-"`
 }
 
 // PriceOf is the effective price of a model as a session names it, at the
@@ -171,7 +175,7 @@ const All = 5000
 // state is what one file's parse has come to, enough to read on from Off.
 type state struct {
 	Codex                 *codexUsageState  `json:"-"`
-	Claude                *claudeUsageState `json:"-"`
+	Claude                *claudeUsageState `json:"claude,omitempty"`
 	DBRevision            string            `json:"db_revision,omitempty"`
 	Head                  string            `json:"head,omitempty"`
 	HeadSize              int               `json:"head_size,omitempty"`
@@ -192,6 +196,7 @@ type state struct {
 	Named                 string            `json:"named,omitempty"`  // the agent's own title for it
 	Custom                string            `json:"custom,omitempty"` // the name the user gave it
 	First                 string            `json:"first,omitempty"`  // the first message, when no prompt looked typed
+	Convs                 []string          `json:"convs,omitempty"`  // the gateway's ids for its requests (dshConvs)
 	Start                 time.Time         `json:"start"`
 	Last                  time.Time         `json:"last"`
 	Models                map[string]Tokens `json:"models,omitempty"`
@@ -362,6 +367,7 @@ func (s *state) clone() *state {
 		t := *s.Total
 		c.Total = &t
 	}
+	c.Convs = slices.Clone(s.Convs)
 	c.CodexSpawnNames = maps.Clone(s.CodexSpawnNames)
 	c.CodexSpawnConflicts = maps.Clone(s.CodexSpawnConflicts)
 	c.CodexAgentIDs = maps.Clone(s.CodexAgentIDs)
@@ -498,6 +504,22 @@ func allFiles() []file {
 		grokFiles(), workbuddyFiles(), codebuddyFiles(), droidFiles(), ompFiles(), cursorFiles(), hermesFiles(), almaFiles(), kimiFiles()} {
 		out = append(out, fs...)
 	}
+	return distinctPaths(out)
+}
+
+// distinctPaths is fs with each path kept once, the first time it is
+// listed. A path is one file to read and count: a session a database
+// holds twice under one id (a TEXT and a BLOB row, #2932), or a folder
+// two agents are told to share, would otherwise be counted twice.
+func distinctPaths(fs []file) []file {
+	seen := make(map[string]bool, len(fs))
+	out := fs[:0]
+	for _, f := range fs {
+		if !seen[f.path] {
+			seen[f.path] = true
+			out = append(out, f)
+		}
+	}
 	return out
 }
 
@@ -505,6 +527,7 @@ func allFiles() []file {
 // Codex's, and the other agents' where they keep sessions on this computer.
 func Dirs() []string {
 	out := []string{ClaudeDir(), CodexDir()}
+	var named []os.FileInfo
 	for _, d := range []struct{ dir, sessions string }{
 		{OpenCodeDir(), OpenCodeDir()},
 		{PiDir(), PiDir()},
@@ -525,9 +548,18 @@ func Dirs() []string {
 		{MiniMaxDir(), minimaxSessions()},
 		{KimiCodeDir(), kimiSessions()},
 	} {
-		if _, err := os.Stat(d.sessions); err == nil {
-			out = append(out, d.dir)
+		if _, err := os.Stat(d.sessions); err != nil {
+			continue
 		}
+		// a folder two agents share is named once
+		// (CODEBUDDY_CONFIG_DIR set to ~/.workbuddy, #2932)
+		if fi, err := os.Stat(d.dir); err == nil {
+			if slices.ContainsFunc(named, func(o os.FileInfo) bool { return os.SameFile(o, fi) }) {
+				continue
+			}
+			named = append(named, fi)
+		}
+		out = append(out, d.dir)
 	}
 	out = append(out, HermesDirs()...)
 	out = append(out, wslDirs()...)
@@ -658,7 +690,8 @@ func CachePath() string { return filepath.Join(filepath.Dir(catalog.CachePath())
 // 19: the names the user gave Claude Code's and WorkBuddy's (custom-title).
 // 20: Codex's source and direct parent thread identity.
 // 21: Codex subagent nicknames and parent spawn task names.
-const cacheVersion = 21
+// 22: dsh's gateway conversation ids (Convs).
+const cacheVersion = 22
 
 type cacheFile struct {
 	Version int               `json:"version"`
@@ -789,13 +822,18 @@ func refresh(want, all []file) {
 		}
 		if s := cache[f.path]; s == nil || s.Size != f.size || s.Mod != f.mod.UnixNano() || (f.agent == "hermes" && (f.hermes == nil || f.rev == "" || s.DBRevision != f.rev)) || ((f.agent == "alma" || f.agent == "cursor") && s.DBRevision != f.rev) {
 			if parsing[f.path] != nil {
-				// another refresh is reading it: its last parse stands
-				// until that one is in, and one never read is waited for
+				// a refresh is reading it, another or this one (a path
+				// listed twice): its last parse stands until that one is
+				// in, and one never read is waited for
 				if s == nil {
 					waits = append(waits, f)
 				}
 				continue
 			}
+			// marked as it is taken, so a second listing of the path is
+			// not a second job: two jobs shared one entry, and the second
+			// publish closed a nil channel (#2932)
+			parsing[f.path] = make(chan struct{})
 			todo = append(todo, f)
 		}
 	}
@@ -827,7 +865,7 @@ func refresh(want, all []file) {
 	// the whole scan finishes.
 	windows := summaryRevisionWindows(todo, time.Now())
 	// the biggest first, so no long file is left to run on alone at the
-	// end; and twice the cores, as the reading waits on the disk
+	// end; with half the cores (scanReaders)
 	sort.Slice(todo, func(i, j int) bool { return todo[i].size-offOf(todo[i]) > todo[j].size-offOf(todo[j]) })
 	left := make(map[string]int64, len(todo))
 	var total int64
@@ -844,13 +882,12 @@ func refresh(want, all []file) {
 	jobs := make([]job, len(todo))
 	for i, f := range todo {
 		jobs[i] = job{f: f, old: cache[f.path]}
-		parsing[f.path] = make(chan struct{})
 	}
 	generation := cacheGeneration
 	mu.Unlock()
 	ch := make(chan int)
 	finished := make(chan int, len(jobs))
-	for i := 0; i < min(max(8, 2*runtime.NumCPU()), 32, len(todo)); i++ {
+	for i := 0; i < min(scanReaders(), len(todo)); i++ {
 		go func() {
 			for i := range ch {
 				j := &jobs[i]
@@ -1068,6 +1105,18 @@ func Reset() {
 // List reads the latest sessions of every agent, the most recently active
 // first, at most limit of them (Limit when 0).
 func List(limit int) []Session {
+	// read before the locks: it reads settings.json
+	alias := provider.UsageAlias()
+	out := listSessions(limit)
+	if alias != nil {
+		for i := range out {
+			aliasSession(&out[i], alias)
+		}
+	}
+	return out
+}
+
+func listSessions(limit int) []Session {
 	storeMu.RLock()
 	defer storeMu.RUnlock()
 	if limit <= 0 {
@@ -1198,6 +1247,7 @@ func assembleListed(fs []file, price func(string) *catalog.Price) (Session, bool
 			if first == "" {
 				first = st.First
 			}
+			s.Convs = append(s.Convs, st.Convs...)
 		}
 		if s.Agent == "codex" && st.CodexNickname != "" {
 			s.Nickname = st.CodexNickname
@@ -1344,7 +1394,14 @@ func parseWith(f file, old *state, calls *callsRide) *state {
 	if calls != nil {
 		head, line = calls.ride(head, line)
 	}
-	off, err := scanAt(f.path, s.Off, head, line)
+	var thin func([]byte) (thinner, bool)
+	switch {
+	case parser.claude:
+		thin = thinClaude
+	case f.agent == "codex":
+		thin = thinCodex
+	}
+	off, err := scanThin(f.path, s.Off, head, thin, line)
 	if err == nil {
 		s.Off = off
 	}
@@ -1385,6 +1442,14 @@ func scanHead(path string, off int64, head func([]byte) bool, fn func([]byte)) (
 // A compressed file's places are those of its lines decompressed; it is read
 // from its start, what comes before off passed over.
 func scanAt(path string, off int64, head func([]byte) bool, fn func(b []byte, start, end int64) bool) (int64, error) {
+	return scanThin(path, off, head, nil, fn)
+}
+
+// scanThin is scanAt handing fn a long line thin says yes to, from its
+// first chunk, with its strings cut to thinKeep bytes (thinner):
+// what the line holds besides long strings is kept as it was, and the
+// line is never gathered whole. A nil thin thins nothing.
+func scanThin(path string, off int64, head func([]byte) bool, thin func([]byte) (thinner, bool), fn func(b []byte, start, end int64) bool) (int64, error) {
 	if scanHook != nil {
 		scanHook(path, off)
 	}
@@ -1418,13 +1483,27 @@ func scanAt(path string, off int64, head func([]byte) bool, fn func(b []byte, st
 	defer parts.release()
 	var n int64 // bytes of the line so far
 	skip, seen := false, false
+	var th thinner // the line's state while it is thinned
+	thinning := false
 	for {
 		chunk, err := r.ReadSlice('\n')
+		first := n == 0
 		n += int64(len(chunk))
 		if errors.Is(err, bufio.ErrBufferFull) {
 			if !seen && head != nil {
 				seen = true
 				skip = skip || !head(chunk)
+			}
+			if first && !skip && thin != nil {
+				th, thinning = thin(chunk)
+			}
+			if thinning {
+				if n > maxLine {
+					skip, thinning, long = true, false, long[:0]
+				} else if !skip {
+					long = th.add(long, chunk)
+				}
+				continue
 			}
 			if plain && !skip && len(long) == 0 {
 				// gathered in one buffer of the line's own size, not grown a
@@ -1465,7 +1544,10 @@ func scanAt(path string, off int64, head func([]byte) bool, fn func(b []byte, st
 			parts.release()
 		}
 		b := chunk
-		if len(long) > 0 {
+		if thinning {
+			long = th.add(long, chunk)
+			b = long
+		} else if len(long) > 0 {
 			long = append(long, chunk...)
 			b = long
 		}
@@ -1477,7 +1559,7 @@ func scanAt(path string, off int64, head func([]byte) bool, fn func(b []byte, st
 			}
 		}
 		off += n
-		n, skip, seen, long = 0, false, false, long[:0]
+		n, skip, seen, thinning, long = 0, false, false, false, long[:0]
 	}
 }
 
@@ -1924,7 +2006,16 @@ func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''
 // it: the Sessions page shows it, and its conversation, Markdown and
 // Terminal open from it as from any other (#2273).
 func Find(agent, id string) (Session, bool) {
-	for _, s := range List(0) {
+	alias := provider.UsageAlias()
+	s, ok := findListed(agent, id)
+	if ok && alias != nil {
+		aliasSession(&s, alias)
+	}
+	return s, ok
+}
+
+func findListed(agent, id string) (Session, bool) {
+	for _, s := range listSessions(0) {
 		if s.Agent == agent && s.ID == id {
 			return s, true
 		}
@@ -2017,7 +2108,11 @@ func Titles(keys []string) map[string]string {
 // Get is the session whose files are grouped under key (a Summary's Key),
 // however long ago it was at work.
 func Get(key string) (Session, bool) {
+	alias := provider.UsageAlias()
 	s, ok, _ := get(key)
+	if ok && alias != nil {
+		aliasSession(&s, alias)
+	}
 	return s, ok
 }
 
