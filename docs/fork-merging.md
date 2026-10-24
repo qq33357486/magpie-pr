@@ -114,4 +114,6 @@ gateway 的读写、`sessions/codex_portable.go` 的 rollout 可移植化都用�
 - agent：keychain（Windows 凭据管理器真读）、`TestCopilotFolder…`/`TestQoderSettings…`
   （PATH 上的 CLI fixture 不可执行，后者合并前即红）、`TestClaudeDesktop…`（AppData
   结构）、`TestIsMagpieKept…`（fs 分配数 256 > 阈值 200）、`TestAsideOffline…`（CLI
-  fixture）、`TestCodexSignInInKeychain`。
+  fixture）、`TestCodexSignInInKeychain`、`TestWorkBuddyRestartOnMac`（在 Windows 进程
+  表里找 Mac 的 .app 路径，10-25 上游 d08b6118 新增）、`TestCodexSyncMendsGoneCatalog`
+  （Windows 盘符路径写回 config.toml 的格式差异，10-25 上游 ef6f3749 新增）。
