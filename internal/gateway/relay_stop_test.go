@@ -124,7 +124,7 @@ func TestRelayStreamEndedShort(t *testing.T) {
 	if chatFinish(body) == "stop" {
 		t.Errorf("a cut reply finished as whole: %s", body)
 	}
-	if !strings.Contains(body, "回复提前结束，请重试") {
+	if !strings.Contains(body, "ended before it was complete") {
 		t.Errorf("no error for the cut reply: %s", body)
 	}
 	// a stream with a stop_reason and no message_stop said it was done
@@ -167,10 +167,10 @@ func TestResponsesUpstreamEndedShort(t *testing.T) {
 		`{"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}`,
 		`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","content":[]}}`,
 		`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"Let me look at the"}`)
-	if chatFinish(body) == "stop" && !strings.Contains(body, "回复提前结束，请重试") {
+	if chatFinish(body) == "stop" && !strings.Contains(body, "ended before it was complete") {
 		t.Errorf("a cut reply finished as whole: %s", body)
 	}
-	if !strings.Contains(body, "回复提前结束，请重试") {
+	if !strings.Contains(body, "ended before it was complete") {
 		t.Errorf("no error for the cut reply: %s", body)
 	}
 	// a stream whose response.completed came said it was done

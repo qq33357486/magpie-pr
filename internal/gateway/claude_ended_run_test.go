@@ -1,9 +1,7 @@
 package gateway
 
 import (
-	"bytes"
 	"fmt"
-	"log"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -93,21 +91,13 @@ exit 3`)
 	body := `{"model":"claude-sonnet-5","max_tokens":100,` + safeguards + `"messages":[{"role":"user","content":"hi"}]}`
 	rec := httptest.NewRecorder()
 	var u Usage
-	// the stderr tail is the operator's to read, not the customer's:
-	// endedBefore clips it into the log alone
-	var logs bytes.Buffer
-	log.SetOutput(&logs)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	code, msg := h.s.serveClaudeSubscription(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)), provider.Anthropic, h.p, "claude-sonnet-5", []byte(body), &u)
 	if code != 502 {
 		t.Fatalf("%d %s", code, msg)
 	}
-	for _, want := range []string{"initialize", "exit status 3"} {
+	for _, want := range []string{"initialize", "exit status 3", "sign-in is gone; run claude auth login"} {
 		if !strings.Contains(msg, want) || !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("the error doesn't say %q: %s\n%s", want, msg, rec.Body)
 		}
-	}
-	if !strings.Contains(logs.String(), "sign-in is gone; run claude auth login") {
-		t.Errorf("the log doesn't carry the stderr tail: %s", logs.String())
 	}
 }

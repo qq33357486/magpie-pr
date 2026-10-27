@@ -300,14 +300,12 @@ func TestNativeCompactionWriterAtItsCap(t *testing.T) {
 	if tried, _ := b.seen(); code != 429 || tried != "" {
 		t.Fatalf("%d tried %q: %s", code, tried, body)
 	}
-	for _, want := range []string{"rate_limit_error", "服务额度暂时用尽", "已绑定当前通道"} {
+	// the refusal's shape is asserted here; masking what it says of
+	// accounts and the gateway is the front proxy's (TransformVetter),
+	// not magpie's, since the fork gave its copy layer up
+	for _, want := range []string{"rate_limit_error", "usage limit reached", "past its 70% cap"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("no %q in %s", want, body)
-		}
-	}
-	for _, not := range []string{"every account", "me@example.com", "70% cap", "routing mode"} {
-		if strings.Contains(body, not) {
-			t.Errorf("%q in %s", not, body)
 		}
 	}
 	if calls := srv.Recent(); len(calls) == 0 || calls[0].Status != 429 || calls[0].Error != "native compaction's account at its usage cap" {
@@ -502,11 +500,10 @@ func TestNativeCompactionWriterGoneSaysWhy(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			// want holds words both the upstream copy and the fork's
-			// masked rendering keep, so a reworded sentence stays green;
-			// that the address and the name are masked is the not list
+			// want holds words the refusal keeps; masking the address
+			// and the name is the front proxy's (TransformVetter)
 			[]string{"switched off", "on again", "the others can stay on beside it"},
-			[]string{"no longer signed in", "paused", "magpie"}},
+			[]string{"no longer signed in", "paused"}},
 		{"own paused", "me@example.com",
 			func(t *testing.T) {
 				if err := provider.SetLoginOn("codex", "me@example.com", false); err != nil {
@@ -542,7 +539,7 @@ func TestNativeCompactionWriterGoneSaysWhy(t *testing.T) {
 					t.Errorf("no %q in %s", want, body)
 				}
 			}
-			for _, not := range append(c.not, "switched off, removed, or no longer serves", "Switch codex@", "@example.com") {
+			for _, not := range c.not {
 				if strings.Contains(body, not) {
 					t.Errorf("%q in %s", not, body)
 				}

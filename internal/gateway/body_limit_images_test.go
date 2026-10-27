@@ -71,7 +71,7 @@ func TestOverLimitSaysWhoseAndWhatToDo(t *testing.T) {
 		t.Fatalf("status %d, want 413", w.Code)
 	}
 	got := w.Body.String()
-	for _, want := range []string{"the gateway limit of 1 KB", "the provider was not asked", "/compact", "not the model's context"} {
+	for _, want := range []string{"magpie's gateway limit of 1 KB", "the provider was not asked", "/compact", "not the model's context"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("413 body %s doesn't say %q", got, want)
 		}

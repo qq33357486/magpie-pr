@@ -27,7 +27,7 @@ func TestSwitchedOffGroup(t *testing.T) {
 	}
 	s := New()
 	code, body := postAs(t, s, "", `{"model":"group/inner","messages":[{"role":"user","content":"hi"}]}`)
-	if code != 404 || !strings.Contains(body, "服务分组已停用") || len(a.tried) != 0 {
+	if code != 404 || !strings.Contains(body, "switched off") || len(a.tried) != 0 {
 		t.Fatalf("to the group switched off: %d %s, tried %v", code, body, a.tried)
 	}
 	code, body = postAs(t, s, "", `{"model":"group/outer","messages":[{"role":"user","content":"hi"}]}`)

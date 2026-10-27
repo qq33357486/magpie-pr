@@ -190,7 +190,7 @@ func TestProtectionBrokenOffTwiceCompactsLocally(t *testing.T) {
 	_, enc, _ := strings.Cut(body, codexsummary.ForkMark)
 	enc, _, _ = strings.Cut(enc, `"`)
 	sum, _ := base64.StdEncoding.DecodeString(enc)
-	if !strings.Contains(string(sum), "本次会话压缩由网关在本地完成") || !strings.Contains(string(sum), "refactor the parser") {
+	if !strings.Contains(string(sum), "compacted this conversation without a model") || !strings.Contains(string(sum), "refactor the parser") {
 		t.Errorf("local summary: %s", sum)
 	}
 }

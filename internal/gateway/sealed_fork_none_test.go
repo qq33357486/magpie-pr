@@ -63,9 +63,11 @@ func TestSealedTaskWithForkTurnsNoneSaysTheTaskItselfIsSealed(t *testing.T) {
 	if rec.Code != 400 || *asked != 0 || strings.Contains(rec.Body.String(), "gAAAAA") {
 		t.Fatalf("subagent: %d %s (ag asked %d times)", rec.Code, rec.Body.String(), *asked)
 	}
-	if !strings.Contains(msg, "已由上游加密绑定") ||
-		!strings.Contains(msg, "（ag/dfmodel）无法读取") ||
-		!strings.Contains(msg, "重新下发") {
+	if !strings.Contains(msg, "sealed by the ChatGPT backend that answered its lead") ||
+		!strings.Contains(msg, "What is sealed is the task itself") ||
+		!strings.Contains(msg, "spawn_agent") ||
+		!strings.Contains(msg, `fork_turns="none" keeps the lead's earlier turns out of the subagent, but not the seal on its task`) ||
+		!strings.Contains(msg, "Give the subagent the lead's model") {
 		t.Fatalf("the refusal doesn't say the task itself is sealed whatever fork_turns says: %s", msg)
 	}
 }
@@ -111,20 +113,15 @@ func TestSealedTaskNamesSubagentsOnAnyModel(t *testing.T) {
 		}
 		return got.Error.Message
 	}
-	// the fork's customer refusal is Chinese either way (fork_errors.go);
-	// the setting's guidance is the operator's, in the logged detail
-	if msg := refusal(); !strings.Contains(msg, "已由上游加密绑定") || !strings.Contains(msg, "（ag/dfmodel）无法读取") {
-		t.Fatalf("the refusal doesn't say the task is sealed: %s", msg)
-	}
-	if msg := sealedTaskError("ag/dfmodel", "", ""); !strings.Contains(msg, `turn on "Codex subagents on any model" in Codex's settings on magpie's Agents page and start a new thread`) {
-		t.Fatalf("the logged detail doesn't name the setting: %s", msg)
+	if msg := refusal(); !strings.Contains(msg, `turn on "Codex subagents on any model" in Codex's settings on magpie's Agents page and start a new thread`) {
+		t.Fatalf("the refusal doesn't name the setting: %s", msg)
 	}
 	st := settings.Load()
 	st.CodexAgentsV1 = true
 	if err := settings.Save(st); err != nil {
 		t.Fatal(err)
 	}
-	if msg := sealedTaskError("ag/dfmodel", "", ""); !strings.Contains(msg, `"Codex subagents on any model" is on in Codex's settings on magpie's Agents page`) || !strings.Contains(msg, "features.multi_agent_v2") || strings.Contains(msg, "turn on") {
-		t.Fatalf("with the setting on, the logged detail doesn't say why the thread is still sealed: %s", msg)
+	if msg := refusal(); !strings.Contains(msg, `"Codex subagents on any model" is on in Codex's settings on magpie's Agents page`) || !strings.Contains(msg, "features.multi_agent_v2") || strings.Contains(msg, "turn on") {
+		t.Fatalf("with the setting on, the refusal doesn't say why the thread is still sealed: %s", msg)
 	}
 }

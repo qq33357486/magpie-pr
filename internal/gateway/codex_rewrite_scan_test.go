@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yetone/magpie/internal/codexsummary"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -143,11 +142,11 @@ var codexMarks = []func(it map[string]any){
 	func(it map[string]any) { it["type"] = "reasoning"; it["content"] = map[string]any{} },
 	func(it map[string]any) {
 		it["type"] = "compaction"
-		it["encrypted_content"] = codexsummary.ForkMark + base64.StdEncoding.EncodeToString([]byte("sum"))
+		it["encrypted_content"] = magpieCompaction + base64.StdEncoding.EncodeToString([]byte("sum"))
 	},
 	func(it map[string]any) {
 		it["type"] = "compaction_summary"
-		it["encrypted_content"] = codexsummary.ForkMark + "!!"
+		it["encrypted_content"] = magpieCompaction + "!!"
 	},
 	func(it map[string]any) { it["type"] = "compaction"; it["encrypted_content"] = "gAAAA" },
 	func(it map[string]any) { it["type"] = "compaction_trigger" },
@@ -157,6 +156,9 @@ var codexMarks = []func(it map[string]any){
 	func(it map[string]any) { it["type"] = "custom_tool_call"; it["id"] = "fc_9" },
 	func(it map[string]any) { it["type"] = "custom_tool_call"; it["id"] = "ctc" },
 	func(it map[string]any) { it["encrypted_function_args"] = "sealed" },
+	func(it map[string]any) { it["encrypted_content"] = "gAAAA-output" },
+	func(it map[string]any) { it["encrypted_content"] = nil },
+	func(it map[string]any) { it["type"] = "context_compaction"; it["encrypted_content"] = "gAAAA" },
 	func(it map[string]any) { it["internal_chat_message_metadata_passthrough"] = nil },
 }
 
@@ -172,6 +174,9 @@ var codexRawMarks = [][2]string{
 	{`"type":"function_call_output"`, `"type":"configuration_update"`},
 	{`"internal_chat_message_metadata_passthrough"`, `"internal_chat_message_metadata_passthrough"`},
 	{`"input":[`, `"input":[null,`},
+	{`"include":["reasoning.encrypted_content"]`, `"include":["reasoning.encrypted_content","output.encrypted_content"]`},
+	{`"include":["reasoning.encrypted_content"]`, `"include":["output.encrypted_content"]`},
+	{`"include":["reasoning.encrypted_content"]`, `"include":"output.encrypted_content"`},
 	{`"input":[`, `"input":[1,`},
 	{`"input":[`, `"input":["x",[],`},
 	{`"input":[`, `"input":null,"x":[`},
@@ -291,7 +296,7 @@ func wasCodexInputAs(body []byte, magpieModel, native bool) (_ []byte, compact b
 		switch it["type"] {
 		case "compaction", "compaction_summary":
 			enc, _ := it["encrypted_content"].(string)
-			sum, ok := strings.CutPrefix(enc, codexsummary.ForkMark)
+			sum, ok := strings.CutPrefix(enc, magpieCompaction)
 			if !ok {
 				out = append(out, it) // OpenAI's own, for OpenAI
 				continue
@@ -540,6 +545,15 @@ func wasForVendor(p provider.Provider, body []byte) []byte {
 			}
 		}
 	}
+	var include []string
+	if json.Unmarshal(q["include"], &include) == nil && slices.Contains(include, "output.encrypted_content") {
+		changed = true
+		if include = slices.DeleteFunc(include, func(v string) bool { return v == "output.encrypted_content" }); len(include) == 0 {
+			delete(q, "include")
+		} else {
+			q["include"], _ = wasMarshalPlain(include)
+		}
+	}
 	var items []json.RawMessage
 	if json.Unmarshal(q["input"], &items) == nil {
 		out := items[:0]
@@ -555,10 +569,18 @@ func wasForVendor(p provider.Provider, body []byte) []byte {
 			}
 			_, meta := it["internal_chat_message_metadata_passthrough"]
 			_, sealed := it["encrypted_function_args"]
-			if meta || sealed {
+			_, replay := it["encrypted_content"]
+			switch string(it["type"]) {
+			case `"reasoning"`, `"compaction"`, `"compaction_summary"`, `"context_compaction"`:
+				replay = false
+			}
+			if meta || sealed || replay {
 				changed = true
 				delete(it, "internal_chat_message_metadata_passthrough")
 				delete(it, "encrypted_function_args")
+				if replay {
+					delete(it, "encrypted_content")
+				}
 				raw, _ = wasMarshalPlain(it)
 			}
 			out = append(out, raw)

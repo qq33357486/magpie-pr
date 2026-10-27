@@ -139,7 +139,7 @@ func (s *Server) visionMCPRun(r *http.Request, image, prompt string) (string, er
 		if r.Context().Err() == nil {
 			log.Printf("vision MCP: %v", err)
 		}
-		return "", searchMCPError(fmt.Sprintf("模型 %s 暂时无法读取图片，请稍后重试", model))
+		return "", searchMCPError(fmt.Sprintf("magpie couldn't look at the image with %s: %v%s", model, err, missingSeerNote()))
 	}
 	return said, nil
 }

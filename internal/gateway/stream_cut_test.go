@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -12,9 +13,16 @@ import (
 	"github.com/yetone/magpie/internal/provider"
 )
 
+// dshTransport is how dsh's pi-ai adapter tells a failure it retries as a
+// dropped connection (classifyPiAiError's TRANSPORT); anything it can't
+// place is PI_AI_ERROR, which it never retries.
+var dshTransport = regexp.MustCompile(`(?i)\b(?:network|connection|socket|fetch)\b|\bECONN[A-Z]+\b|\bterminated\b|premature close|stream ended (?:before|without)\b`)
+
 // A Chat upstream whose connection drops mid-reply under several sessions
-// at once, as OpenCode Go's did for dsh (#470): each is told of the cut,
-// in the fork's Chinese copy, and the connection error itself is logged.
+// at once, as OpenCode Go's did for dsh: every session on the connection
+// that dropped got "OpenCode Go: unexpected EOF", which dsh took for an
+// error it can't retry, and the session's turn failed (#470). Each is told
+// it lost the connection, which it retries.
 func TestStreamCutSaysConnection(t *testing.T) {
 	fresh(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -54,11 +62,11 @@ func TestStreamCutSaysConnection(t *testing.T) {
 				msg, _ = e["message"].(string)
 			}
 		}
-		// the customer is told in Chinese, no provider named (057da9c2's
-		// rules); which provider lost the connection, and why, are the
-		// log's to hold
-		if msg != "回复中途连接中断，请重试" {
-			t.Fatalf("%s: a stream cut mid-reply ended without the cut's message: %q in %s", c.model, msg, body)
+		if !strings.HasPrefix(msg, c.name+": ") || !strings.Contains(msg, "unexpected EOF") {
+			t.Fatalf("%s: a stream cut mid-reply ended without an error naming the provider and the cause: %q in %s", c.model, msg, body)
+		}
+		if !dshTransport.MatchString(msg) {
+			t.Fatalf("%s: a dropped connection is told as %q, which dsh doesn't retry", c.model, msg)
 		}
 	}
 }

@@ -29,7 +29,7 @@ func TestCodexOwnModelEmptyError(t *testing.T) {
 	if code != 502 || json.Unmarshal([]byte(body), &e) != nil {
 		t.Fatalf("%d %q", code, body)
 	}
-	for _, want := range []string{"上游服务返回了错误（502 Bad Gateway）", "请稍后重试"} {
+	for _, want := range []string{"502 Bad Gateway", "gpt-5.6-terra is one of Codex's own models", "pick one of magpie's models"} {
 		if !strings.Contains(e.Error.Message, want) {
 			t.Errorf("no %q in %q", want, e.Error.Message)
 		}

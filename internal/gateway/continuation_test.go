@@ -385,7 +385,7 @@ func TestStreamCutAfterToolCallEndsAsBefore(t *testing.T) {
 	if _, _, errs := messageStops(body); errs != 1 {
 		t.Fatalf("no error event in the stream: %s", body)
 	}
-	if !strings.Contains(body, "回复中途连接中断") {
+	if !strings.Contains(body, "connection lost mid-reply") {
 		t.Fatalf("the error doesn't say the connection was lost: %s", body)
 	}
 }

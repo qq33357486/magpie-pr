@@ -399,11 +399,11 @@ func claudeWorkDir() (string, error) {
 	case err != nil:
 		return "", err
 	case !fi.IsDir():
-		return "", fmt.Errorf("the run's folder is not a folder")
+		return "", fmt.Errorf("%s is not a folder", dir)
 	case othersCanWrite(fi):
-		return "", fmt.Errorf("the run's folder can be written by others (%v)", fi.Mode().Perm())
+		return "", fmt.Errorf("%s can be written by others (%v)", dir, fi.Mode().Perm())
 	case !ownedByMe(fi):
-		return "", fmt.Errorf("the run's folder belongs to another user")
+		return "", fmt.Errorf("%s belongs to another user", dir)
 	}
 	return dir, nil
 }
@@ -3952,7 +3952,7 @@ func (r *subscriptionRun) endedBefore(what string) error {
 	defer r.mu.Unlock()
 	why := "exited before it " + what
 	if r.killed {
-		why = "was ended before it " + what
+		why = "was ended by magpie before it " + what
 	} else if r.exit != nil {
 		why += " (" + r.exit.Error() + ")"
 	}
@@ -3967,9 +3967,7 @@ func (r *subscriptionRun) endedBefore(what string) error {
 		return &cliSchemaRefused{why + ": " + said}
 	}
 	if said != "" {
-		// the tail is the operator's to read, not the customer's: it can
-		// hold paths and addresses
-		log.Printf("claude run %s: %s", why, clipTail(said, 300))
+		why += ": " + clipTail(said, 300)
 	}
 	return errors.New(why)
 }

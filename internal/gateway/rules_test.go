@@ -623,7 +623,7 @@ func TestImageRuleFallbackCantHaveTheImageDescribedByTheFailedMember(t *testing.
 	b.mu.Unlock()
 	img := `{"model":"group/r","messages":[{"role":"user","content":[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}]}]}`
 	code, out := postAs(t, s, "image-fallback", img)
-	if code != 502 || !strings.Contains(out, "图片描述服务也暂时不可用") || a.n() != 0 {
+	if code != 502 || !strings.Contains(out, "couldn't describe the image") || a.n() != 0 {
 		t.Fatalf("%d %s, a %d", code, out, a.n())
 	}
 }

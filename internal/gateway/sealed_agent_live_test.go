@@ -62,7 +62,7 @@ func TestLiveCodexSealedAgentGuidance(t *testing.T) {
 		handler.ServeHTTP(rec, r)
 		mu.Lock()
 		childStatus = rec.Code
-		sawGuidance = sawGuidance || strings.Contains(rec.Body.String(), "已由上游加密绑定")
+		sawGuidance = sawGuidance || strings.Contains(rec.Body.String(), "sealed by the ChatGPT backend that answered its lead")
 		leaked = leaked || bytes.Contains(rec.Body.Bytes(), []byte("gAAAAA"))
 		mu.Unlock()
 		for key, values := range rec.Header() {
@@ -83,7 +83,7 @@ func TestLiveCodexSealedAgentGuidance(t *testing.T) {
 	mu.Lock()
 	gotCiphertext, gotGuidance, gotLeak, status := sawCiphertext, sawGuidance, leaked, childStatus
 	mu.Unlock()
-	cliGuidance := strings.Contains(string(output), "已由上游加密绑定")
+	cliGuidance := strings.Contains(string(output), "sealed by the ChatGPT backend that answered its lead")
 	if !gotCiphertext || !gotGuidance || gotLeak || status != 400 || upstreamCalls.Load() != 0 || !cliGuidance || err != nil {
 		t.Errorf("live guidance: sealed=%v status=%d errorShown=%v leaked=%v upstreamCalls=%d cliShowsGuidance=%v cliError=%v", gotCiphertext, status, gotGuidance, gotLeak, upstreamCalls.Load(), cliGuidance, err)
 	}

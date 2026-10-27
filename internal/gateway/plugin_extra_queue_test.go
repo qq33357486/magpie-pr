@@ -143,12 +143,12 @@ func TestPluginSecondAccountKeepsTheQueue(t *testing.T) {
 	// the queue holds one: c is turned away at once
 	send("c")
 	r := next()
-	if r.tag != "c" || r.status != 429 || !strings.Contains(r.body, "并发已满") {
+	if r.tag != "c" || r.status != 429 || !strings.Contains(r.body, "queue is full") {
 		t.Fatalf("c = %+v, want an immediate 429 saying the queue is full", r)
 	}
 	// b waits its second, and is turned away
 	r = next()
-	if r.tag != "b" || r.status != 429 || !strings.Contains(r.body, "排队超时") {
+	if r.tag != "b" || r.status != 429 || !strings.Contains(r.body, "waited") {
 		t.Fatalf("b = %+v, want a 429 for waiting as long as it may", r)
 	}
 	let()

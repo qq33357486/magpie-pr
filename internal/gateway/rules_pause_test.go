@@ -77,7 +77,7 @@ func TestEveryMemberPaused(t *testing.T) {
 	t.Cleanup(func() { ruleClock = time.Now })
 	s, a, b := ruled(t, provider.Rule{Use: "a/small", Pause: true, Time: peak}, provider.Rule{Use: "b/big", Pause: true, Time: peak})
 	code, out := postAs(t, s, "s", chat("hello", nil, 0, ""))
-	if code != 503 || !strings.Contains(out, "服务暂停中") || strings.Contains(out, "a/small") || strings.Contains(out, "rule 1") {
+	if code != 503 || !strings.Contains(out, "paused now") || !strings.Contains(out, "a/small (rule 1: time 09:00–18:00 Mon–Fri)") || !strings.Contains(out, "b/big (rule 2") {
 		t.Fatalf("%d %s", code, out)
 	}
 	if a.n()+b.n() != 0 {
@@ -86,7 +86,7 @@ func TestEveryMemberPaused(t *testing.T) {
 	// embeddings go by the same rules
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/embeddings", strings.NewReader(`{"model":"group/r","input":"x"}`)))
-	if rec.Code != 503 || !strings.Contains(rec.Body.String(), "服务暂停中") {
+	if rec.Code != 503 || !strings.Contains(rec.Body.String(), "paused now") {
 		t.Fatalf("embeddings: %d %s", rec.Code, rec.Body.String())
 	}
 }

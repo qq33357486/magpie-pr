@@ -162,17 +162,17 @@ func TestSealedTaskLogDoesNotOpenItToAnotherProvider(t *testing.T) {
 	}
 	forgetSticks(t)
 	rec := codexSubTurn(s, "xxxx/gpt-6-astra", "worker-1", "lead-1", sealedTaskFernet)
-	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "（xxxx/gpt-6-astra）无法读取") || strings.Contains(rec.Body.String(), "gAAAA") {
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "(other)") || strings.Contains(rec.Body.String(), "gAAAA") {
 		t.Fatalf("subagent on another provider: %d %s", rec.Code, rec.Body.String())
 	}
 	// refused twice: the refusal itself is no answer by xxxx
 	for range 2 {
 		rec = codexSubTurn(s, "xxxx/gpt-6-astra", "worker-2", "lead-never", sealedTaskFernet)
-		if rec.Code != 400 || !strings.Contains(rec.Body.String(), "（xxxx/gpt-6-astra）无法读取") {
+		if rec.Code != 400 || !strings.Contains(rec.Body.String(), "xxxx/gpt-6-astra is neither") {
 			t.Fatalf("unknown lead: %d %s", rec.Code, rec.Body.String())
 		}
 	}
-	if !strings.Contains(rec.Body.String(), "重新下发") {
+	if !strings.Contains(rec.Body.String(), "no record of it answering the lead in the last 30 days") || !strings.Contains(rec.Body.String(), "spawn the subagent again") {
 		t.Fatalf("unknown lead, the way on not said: %s", rec.Body.String())
 	}
 	// an answer older than the log is read back for counts for nothing

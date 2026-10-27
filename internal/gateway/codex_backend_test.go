@@ -944,7 +944,7 @@ func TestCodexThirdPartyCompactEndpointRejected(t *testing.T) {
 		w.WriteHeader(400)
 	})
 	code, body := post(t, CodexPath+"/responses/compact", `{"model":"fake/m1","input":[]}`)
-	if code != 400 || !strings.Contains(body, "不支持 /responses/compact") || f.calls != 0 {
+	if code != 400 || !strings.Contains(body, "/responses/compact is not supported") || f.calls != 0 {
 		t.Fatalf("%d %s, calls %d", code, body, f.calls)
 	}
 }

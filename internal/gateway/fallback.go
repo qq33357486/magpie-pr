@@ -722,10 +722,7 @@ func capHeld(p, acct provider.Provider, model string, now time.Time) *capHold {
 
 // cappedError says why a request for model went nowhere when every account
 // that could take it is held at its usage cap, as the vendor's own refusal
-// would when all are used up; the soonest one is back is the wait. A
-// relayed gateway's error is read by paying strangers, so the customer is
-// told only that the service is out and when it is back, in their words;
-// the accounts, their shares and their addresses stay in the log.
+// would when all are used up; the soonest one is back is the wait.
 func cappedError(model string, ws []Weighed, now time.Time) (string, time.Time) {
 	held, soonest := heldReasons(ws, now)
 	capped, noCredits := heldBy(ws)
@@ -866,9 +863,7 @@ func barredOf(cs []candidate, q provider.Provider, fallback bool, from provider.
 }
 
 // barredError says why a request for model went nowhere when every account
-// or key that could take it was set not to serve it. Whose lists leave it
-// out is the operator's to read in the log; the customer is told the model
-// alone is unavailable.
+// or key that could take it was set not to serve it.
 func barredError(model string, ws []Weighed) string {
 	var names []string
 	for _, w := range ws {
@@ -876,8 +871,7 @@ func barredError(model string, ws []Weighed) string {
 			names = append(names, w.Name)
 		}
 	}
-	log.Printf("model not served: %q is set not to be served by any account or key of %s", model, strings.Join(names, ", "))
-	return fmt.Sprintf("模型 %s 暂不可用", model)
+	return fmt.Sprintf("model %q is set not to be served by any account or key of %s: each one's own list of models leaves it out. Add it to an account's models in magpie (Providers → the account's Models), or pick another model", model, strings.Join(names, ", "))
 }
 
 // asideOf is how the trace tells the keys made for another protocol than
@@ -1707,16 +1701,6 @@ type holdWriter struct {
 	failMsg    string
 	sharedPool bool // an OpenRouter upstream pool rejected this attempt
 
-	// cutBody: this try never reached the vendor (writeCut — the gateway's
-	// own connection failed before a reply began). The failure's own class,
-	// 502 with the connection error's words, is what code(), errBody() and
-	// rest read on; what the agent is told instead, when the held error is
-	// released (or as the stream's error under a keepalive), is 504, in
-	// Chinese, no provider named — a relay in front (new-api) sends a 504
-	// straight back to the agent rather than over to another provider, so
-	// the agent's own retry comes here again
-	cutBody []byte
-
 	// turnedAway: the account is asked with the system prompt Antigravity
 	// answers with a 429 whatever quota it has left — Claude Code's, its
 	// Agent SDK's — so the account isn't at fault and doesn't rest (#666)
@@ -1902,7 +1886,7 @@ func (h *holdWriter) pass() {
 	}
 	dst := h.w.Header()
 	for k, v := range h.header {
-		if k != resetsHeader && k != refusedHeader && k != zdrHeader && k != answeredThereHeader { // magpie's own notes, for restAfter and settle
+		if k != resetsHeader && k != refusedHeader && k != zdrHeader && k != answeredThereHeader && k != keyLimitThereHeader { // magpie's own notes, for restAfter and settle
 			dst[k] = v
 		}
 	}
@@ -2312,7 +2296,7 @@ func (h *holdWriter) keepAlive() {
 		}
 		dst := h.w.Header()
 		for k, v := range src {
-			if k != resetsHeader && k != refusedHeader && k != zdrHeader && k != answeredThereHeader && k != "Content-Length" {
+			if k != resetsHeader && k != refusedHeader && k != zdrHeader && k != answeredThereHeader && k != keyLimitThereHeader && k != "Content-Length" {
 				dst[k] = slices.Clone(v)
 			}
 		}
@@ -2531,14 +2515,8 @@ func (h *holdWriter) release() {
 			who := cmp.Or(h.header.Get(providerHeader), "the provider")
 			streamError(h.w, h.alive.proto, h.alive.model, h.failure, who+" "+h.failMsg)
 		case h.status >= 400:
-			// an error status, once the agent has the stream: told as its error
-			if h.cutBody != nil {
-				// a connection that died before the reply began (writeCut):
-				// told 504, in Chinese, not as the held 502 and its words
-				streamError(h.w, h.alive.proto, h.alive.model, http.StatusGatewayTimeout, cutToldNoConn)
-			} else {
-				streamError(h.w, h.alive.proto, h.alive.model, h.status, provider.APIError(h.held.Bytes(), http.StatusText(h.status)))
-			}
+			// an error status, once the agent has a stream: told as its error
+			streamError(h.w, h.alive.proto, h.alive.model, h.status, provider.APIError(h.held.Bytes(), http.StatusText(h.status)))
 		default:
 			// a reply given whole by a vendor that ignored stream:true,
 			// after the agent was kept alive: sent as the stream it asked
@@ -2546,13 +2524,6 @@ func (h *holdWriter) release() {
 			wholeAsStream(h.w, h.alive.proto, h.held.Bytes())
 		}
 		return
-	}
-	if h.cutBody != nil {
-		// writeCut: the agent is told 504, in Chinese; the class was read
-		// as the held 502 before this, off code() and errBody()
-		h.status = http.StatusGatewayTimeout
-		h.held.Reset()
-		h.held.Write(h.cutBody)
 	}
 	h.pass()
 	h.w.Write(h.held.Bytes())
@@ -3440,21 +3411,18 @@ func pinTo(want string, cands []candidate, pl planned) ([]candidate, planned, in
 		return out, planned{order: order}, 0, ""
 	}
 	if len(rests) > 0 {
-		log.Printf("%s: %s", AccountHeader, strings.Join(rests, "; "))
-		return nil, pl, http.StatusTooManyRequests, "指定的账号暂不可用，请稍后重试"
+		return nil, pl, http.StatusTooManyRequests, AccountHeader + ": " + strings.Join(rests, "; ") + "; no other account is tried in its place"
 	}
 	for _, w := range pl.left {
 		if match(w) && w.Held {
-			log.Printf("%s: the gateway key may not use %s's account", AccountHeader, w.Who)
-			return nil, pl, http.StatusForbidden, "该访问密钥无权使用指定账号"
+			return nil, pl, http.StatusForbidden, fmt.Sprintf("%s: the gateway key may not use %s's account", AccountHeader, w.Who)
 		}
 		if match(w) && w.Capped > 0 {
-			msg, _ := cappedErrorTold(w.Model, []Weighed{w}, time.Now())
-			return nil, pl, http.StatusTooManyRequests, msg
+			msg, _ := cappedError(w.Model, []Weighed{w}, time.Now())
+			return nil, pl, http.StatusTooManyRequests, AccountHeader + ": " + msg + "; no other account is tried in its place"
 		}
 		if match(w) {
-			log.Printf("%s: %s's plan doesn't list %s", AccountHeader, w.Who, w.Model)
-			return nil, pl, http.StatusBadRequest, "指定账号暂不支持该模型"
+			return nil, pl, http.StatusBadRequest, fmt.Sprintf("%s: %s's plan doesn't list %s", AccountHeader, w.Who, w.Model)
 		}
 	}
 	var have []string
@@ -3463,10 +3431,11 @@ func pinTo(want string, cands []candidate, pl planned) ([]candidate, planned, in
 			have = append(have, w.Who)
 		}
 	}
+	msg := fmt.Sprintf("%s: no account %q serves this model", AccountHeader, want)
 	if len(have) > 0 {
-		log.Printf("%s: no account %q serves this model; its accounts are %s", AccountHeader, want, strings.Join(have, ", "))
+		msg += "; its accounts are " + strings.Join(have, ", ")
 	}
-	return nil, pl, http.StatusNotFound, "没有该名称的账号可服务此模型"
+	return nil, pl, http.StatusNotFound, msg
 }
 
 // unservedTry says c's try failed as the vendor refusing the model as one

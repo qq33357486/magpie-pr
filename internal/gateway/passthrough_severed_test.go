@@ -29,8 +29,8 @@ func TestPassthroughStreamSeveredUpstream(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("status = %d, want 200; body: %s", code, body)
 	}
-	if !strings.Contains(body, "event: error") || !strings.Contains(body, cutToldMid) {
-		t.Fatalf("a severed stream ended without the cut's error event: %s", body)
+	if !strings.Contains(body, "event: error") || !strings.Contains(body, "UP:") {
+		t.Fatalf("a severed stream ended without an error event naming the provider: %s", body)
 	}
 	if strings.Contains(body, "message_stop") {
 		t.Fatalf("a severed stream was finished as if complete: %s", body)
@@ -111,7 +111,7 @@ func TestLoopCutMidLine(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("status = %d, want 200; body: %s", code, body)
 	}
-	if !strings.Contains(body, "陷入循环") {
+	if !strings.Contains(body, "stuck in a loop") {
 		t.Fatalf("the run-on reply was not cut by the loop guard: %s", body[:min(600, len(body))])
 	}
 	// the upstream's own last line is the only event the client may read
@@ -146,7 +146,7 @@ func TestPassthroughResponsesEndsShort(t *testing.T) {
 		`event: response.output_text.delta`+"\n"+`data: {"type":"response.output_text.delta","delta":"hel"}`)}
 	setup(t, "responses", f)
 	code, body := post(t, "/v1/responses", `{"model":"fake/m1","stream":true,"input":"hi"}`)
-	if code != 200 || !strings.Contains(body, `"type":"response.failed"`) || !strings.Contains(body, cutToldShort) {
+	if code != 200 || !strings.Contains(body, `"type":"response.failed"`) || !strings.Contains(body, "Fake:") {
 		t.Fatalf("a Responses stream cut short did not fail: %d %s", code, body)
 	}
 }

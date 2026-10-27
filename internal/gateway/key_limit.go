@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"slices"
 	"strconv"
@@ -57,21 +56,16 @@ func keyLimited(next http.Handler) http.Handler {
 		now := limitClock()
 		release, err := reserveFor(who, size, model, now)
 		if err != nil {
-			log.Printf("key limit: %s", err)
-			// the key's name and numbers are the operator's; the customer
-			// is told the limit is met and when it lifts (fork_errors.go)
 			status, errType := http.StatusServiceUnavailable, "gateway_key_limit_off"
 			var refused gwbudget.Refusal
-			told := keyLimitOffTold()
 			if errors.As(err, &refused) {
 				status, errType = http.StatusTooManyRequests, "gateway_key_limit"
-				told = keyLimitTold(refused, now)
 				w.Header().Set("Retry-After", strconv.Itoa(refused.RetryAfter(now)))
 				w.Header().Set(remoteKeyLimitHeader, refused.ResetAt().Format(time.RFC3339))
 			}
 			// the Anthropic and OpenAI SDKs would otherwise retry a 429 or 503
 			w.Header().Set("X-Should-Retry", "false")
-			writeError(w, protoOfPath(r.URL.Path), status, told)
+			writeError(w, protoOfPath(r.URL.Path), status, err.Error())
 			c := callerOf(r)
 			appendUsage(r, usage.Record{Time: now, Agent: c.agent, Via: c.via, Requested: model, Status: status, Rejected: true,
 				Error: err.Error(), ErrType: errType, Endpoint: r.URL.Path, Session: sessionOf(r.Header), NativeSession: nativeSessionOf(r.Header)})

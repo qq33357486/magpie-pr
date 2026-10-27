@@ -36,7 +36,7 @@ func TestGeminiRelayEndedShort(t *testing.T) {
 	if code != 200 || !strings.Contains(body, "because it is") {
 		t.Fatalf("status %d: %s", code, body)
 	}
-	const cut = `data: {"error":{"code":502,"message":"回复提前结束，请重试","status":"UNAVAILABLE"}}`
+	const cut = `data: {"error":{"code":502,"message":"UP: the reply ended before it was complete","status":"UNAVAILABLE"}}`
 	if !strings.HasSuffix(strings.TrimSpace(body), cut) {
 		t.Errorf("a cut relay ended as if whole: %s", body)
 	}

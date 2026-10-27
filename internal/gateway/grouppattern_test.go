@@ -60,7 +60,7 @@ func TestEmptyPatternGroupSaysSo(t *testing.T) {
 	if !ok {
 		t.Fatal("group/none not found as empty")
 	}
-	if msg := emptyGroupError(g); !strings.Contains(msg, "分组 None 当前没有可用模型") {
+	if msg := emptyGroupError(g); !strings.Contains(msg, "nobody/*") || !strings.Contains(msg, "match no model") {
 		t.Fatal(msg)
 	}
 }

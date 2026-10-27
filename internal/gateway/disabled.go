@@ -17,23 +17,21 @@ import (
 // was on it, a fallback, a sub-agent's pick, count_tokens, a decision
 // model — and candidates() never plans one (perKeyBarred).
 
-// disabledError is what a request for a disabled model is told: the
-// service is off, and the way back in is the operator's, not the
-// customer's.
+// disabledError is what a request for a disabled model is told.
 func disabledError(id, pat string) string {
-	return fmt.Sprintf("模型 %s 当前已停用，请更换其他模型", id)
+	return fmt.Sprintf("model %s is disabled in magpie (it matches %q in Settings › Models › Disabled models); enable it there or with `magpie model enable %s`. Only requests through magpie are refused", id, pat, pat)
 }
 
 // unknownDisabledError is what every request is told while settings.json
 // can't be read and no list of disabled models was read before it.
 func unknownDisabledError(id string) string {
-	return fmt.Sprintf("模型 %s 暂时不可用，请稍后重试或更换模型", id)
+	return fmt.Sprintf("model %s is disabled in magpie for now: settings.json can't be read, so magpie doesn't know which models are disabled; fix or restore settings.json", id)
 }
 
 // groupDisabledError is what a request for a group whose every model is
 // disabled is told.
 func groupDisabledError(id string, g provider.Group, off []string) string {
-	return fmt.Sprintf("模型 %s 当前已停用（其分组下的模型均已停用），请更换其他模型", id)
+	return fmt.Sprintf("model %s is disabled in magpie: every model of the routing group %s is (%s); enable one in Settings › Models › Disabled models or with `magpie model enable`. Only requests through magpie are refused", id, g.Name, strings.Join(off, ", "))
 }
 
 // modelOff is the refusal for p's model, resolved, as id names it to the

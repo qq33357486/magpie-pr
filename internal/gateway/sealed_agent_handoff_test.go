@@ -36,9 +36,9 @@ func TestCodexSealedAgentHandoffGuidesBeforeRouting(t *testing.T) {
 				t.Fatal(err)
 			}
 			if rec.Code != 400 || response.Error.Type != "invalid_request_error" ||
-				!strings.Contains(response.Error.Message, "已由上游加密绑定") ||
-				!strings.Contains(response.Error.Message, "（fake/m1）无法读取") ||
-				!strings.Contains(response.Error.Message, "重新下发") {
+				!strings.Contains(response.Error.Message, "sealed by the ChatGPT backend that answered its lead") ||
+				!strings.Contains(response.Error.Message, "fake/m1 is neither") ||
+				!strings.Contains(response.Error.Message, "Give the subagent the lead's model") {
 				t.Fatalf("guidance: status=%d response=%s", rec.Code, rec.Body.String())
 			}
 			if strings.Contains(rec.Body.String(), "gAAAAA") || f.calls != 0 || nativeCalls != 0 {

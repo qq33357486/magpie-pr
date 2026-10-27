@@ -224,7 +224,7 @@ func TestStreamCutOnNoPrefillModel(t *testing.T) {
 	if got := chatTextOf(body); got != "hel" {
 		t.Fatalf("client's text = %q, want %q", got, "hel")
 	}
-	if strings.Contains(body, "prefill") || !strings.Contains(body, cutToldMid) {
+	if strings.Contains(body, "prefill") || !strings.Contains(body, "UP") {
 		t.Fatalf("the reply didn't end with what cut it: %s", body)
 	}
 	f.cut, f.bodies = true, nil

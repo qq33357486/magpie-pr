@@ -137,7 +137,7 @@ func TestCodexWebRunChatGPTFailsSearchedByMagpie(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := readSearchReply(t, codexSearchPost(New().Handler(), "/v1/alpha/search", codexSearchBody("codex/gpt-5.5")))
-	if !strings.Contains(got.Output, "上游搜索暂不可用") ||
+	if !strings.Contains(got.Output, "ChatGPT's web search failed") || !strings.Contains(got.Output, "500") ||
 		!strings.Contains(got.Output, "go1.27.1 is the latest release.") {
 		t.Fatalf("answered %q", got.Output)
 	}
@@ -160,7 +160,7 @@ func TestCodexWebRunOnOtherModelSearchedByMagpie(t *testing.T) {
 	t.Cleanup(func() { provider.CodexBase = was })
 	h := New().Handler()
 	got := readSearchReply(t, codexSearchPost(h, "/v1/alpha/search", codexSearchBody("deepseek/deepseek-v4")))
-	if !strings.Contains(got.Output, "网页搜索暂时不可用") || got.EncryptedOutput != nil {
+	if !strings.Contains(got.Output, "Settings → Models → Web search") || got.EncryptedOutput != nil {
 		t.Fatalf("no searcher: %+v", got)
 	}
 	apis := newSearchAPIs(t)

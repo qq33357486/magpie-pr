@@ -171,8 +171,8 @@ func TestQueueFullAndWaitedOut(t *testing.T) {
 	var oe struct {
 		Error struct{ Message, Type string } `json:"error"`
 	}
-	if json.Unmarshal([]byte(r.body), &oe) != nil || !strings.Contains(oe.Error.Message, "并发已满") || oe.Error.Type == "" {
-		t.Fatalf("c's body = %s, want the queue-full refusal", r.body)
+	if json.Unmarshal([]byte(r.body), &oe) != nil || !strings.Contains(oe.Error.Message, "queue is full") || oe.Error.Type == "" {
+		t.Fatalf("c's body = %s, want OpenAI's error saying the queue is full", r.body)
 	}
 	// in Anthropic's shape on its Messages
 	g.send(context.Background(), "/v1/messages", "slow/m", "d")
@@ -181,13 +181,13 @@ func TestQueueFullAndWaitedOut(t *testing.T) {
 		Type  string                         `json:"type"`
 		Error struct{ Type, Message string } `json:"error"`
 	}
-	if r.status != 429 || json.Unmarshal([]byte(r.body), &ae) != nil || ae.Type != "error" || ae.Error.Type != "rate_limit_error" || !strings.Contains(ae.Error.Message, "并发已满") {
+	if r.status != 429 || json.Unmarshal([]byte(r.body), &ae) != nil || ae.Type != "error" || ae.Error.Type != "rate_limit_error" || !strings.Contains(ae.Error.Message, "queue is full") {
 		t.Fatalf("d = %d %s, want Anthropic's rate_limit_error", r.status, r.body)
 	}
 
 	// b waits its second and is turned away, out of the queue
 	r = g.reply()
-	if r.tag != "b" || r.status != 429 || !strings.Contains(r.body, "排队超时") {
+	if r.tag != "b" || r.status != 429 || !strings.Contains(r.body, "waited") {
 		t.Fatalf("b = %+v, want a 429 for waiting too long", r)
 	}
 	if l := lane(); l.Busy != 1 || l.Waiting != 0 {

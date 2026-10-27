@@ -64,11 +64,11 @@ func TestProviderOff(t *testing.T) {
 
 	s := New()
 	code, body := postAs(t, s, "", `{"model":"b/vendor/m","messages":[{"role":"user","content":"hi"}]}`)
-	if code != 404 || !strings.Contains(body, "服务通道已停用") || len(b.tried) != 0 {
+	if code != 404 || !strings.Contains(body, "switched off in Magpie") || len(b.tried) != 0 {
 		t.Fatalf("b/vendor/m with b off: %d %s, b tried %v", code, body, b.tried)
 	}
 	code, body = postAs(t, s, "", `{"model":"only-b","messages":[{"role":"user","content":"hi"}]}`)
-	if code != 404 || !strings.Contains(body, "服务通道已停用") || len(b.tried) != 0 {
+	if code != 404 || !strings.Contains(body, "switched off in Magpie") || len(b.tried) != 0 {
 		t.Fatalf("only-b with b off: %d %s, b tried %v", code, body, b.tried)
 	}
 	code, body = postAs(t, s, "", `{"model":"group/mine","messages":[{"role":"user","content":"hi"}]}`)
@@ -121,7 +121,7 @@ func TestProviderOffStandIn(t *testing.T) {
 	}
 	now = "b/m"
 	code, body = postAs(t, s, "", `{"model":"b/m","messages":[{"role":"user","content":"hi"}]}`)
-	if code != 404 || !strings.Contains(body, "服务通道已停用") || len(b.tried) != 0 {
+	if code != 404 || !strings.Contains(body, "switched off in Magpie") || len(b.tried) != 0 {
 		t.Fatalf("b/m with its agent still on it: %d %s, b tried %v", code, body, b.tried)
 	}
 }

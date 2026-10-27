@@ -64,7 +64,7 @@ func claudeLapseOf(user string) string {
 
 func TestClaudeLegacyLapseIsNotRunOrBlamedOnLogout(t *testing.T) {
 	p, side := claudeAuthFixture(t, legacyClaudeLogoutLapse)
-	if _, err := sideToken(t, p, side.User); err == nil || !strings.Contains(err.Error(), "signing in again") {
+	if _, err := sideToken(t, p, side.User); err == nil || !strings.Contains(err.Error(), "sign in again") {
 		t.Fatalf("lapsed login run: %v", err)
 	}
 	if _, err := os.Stat(claudeAccountDir(side.User)); !os.IsNotExist(err) {

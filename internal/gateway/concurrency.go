@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -185,16 +186,16 @@ func (s *Server) ready(c candidate) bool {
 }
 
 // laneMessage tells the agent why its request was turned away by c's
-// queue: full, or waited out. Which provider's lane it was, and its
-// numbers, are the operator's — the customer is told to come back later.
+// queue: full, or waited out.
 func laneMessage(c candidate, err error, queued int64) string {
 	if e := (*errRPM)(nil); errors.As(err, &e) {
-		return "请求过于频繁，请稍后重试"
+		return fmt.Sprintf("%s: %s; try again then", c.label(), e.Error())
 	}
+	lim := c.p.LaneLimit()
 	if errors.Is(err, errQueueFull) {
-		return "当前服务繁忙（并发已满），请稍后重试"
+		return fmt.Sprintf("%s: %d requests at once is its limit, and its queue is full (%d waiting); try again shortly", c.label(), lim, c.p.QueueLimit)
 	}
-	return "当前服务繁忙（排队超时），请稍后重试"
+	return fmt.Sprintf("%s: %d requests at once is its limit, and this one waited %.1fs for a free slot, as long as it may (%ds); try again shortly", c.label(), lim, float64(queued)/1000, c.p.QueueWait)
 }
 
 // releaser gives the slot back, once however often it is called.

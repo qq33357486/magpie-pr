@@ -154,7 +154,7 @@ func TestImageThatCantBeDescribed(t *testing.T) {
 	s, u := eyed(t)
 	u.fail = true
 	code, body := postAs(t, s, "", `{"model":"probe/text","messages":[{"role":"user","content":[{"type":"text","text":"read"},{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}]}]}`)
-	if code != 502 || !strings.Contains(body, "图片描述服务也暂时不可用") || len(u.sent("text")) != 0 {
+	if code != 502 || !strings.Contains(body, "couldn't describe the image") || len(u.sent("text")) != 0 {
 		t.Fatalf("current image: %d %s; text model sent %d", code, body, len(u.sent("text")))
 	}
 	// an older turn's image that can't be described is left out

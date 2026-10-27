@@ -1,9 +1,7 @@
 package gateway
 
 import (
-	"bytes"
 	"context"
-	"log"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -82,17 +80,12 @@ func TestClaudeEndedBeforeItsInputSaysWhy(t *testing.T) {
 		return run.setEffort("high")
 	}
 	warnings := strings.Repeat("echo '(node:1) Warning: something deprecated that node prints before anything else' >&2\n", 8)
-	// the stderr tail is the operator's to read, not the customer's:
-	// endedBefore clips it into the log alone
-	var logs bytes.Buffer
-	log.SetOutput(&logs)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	err := write("#!/bin/sh\nread -r line\n"+warnings+"echo 'Not logged in · Please run /login' >&2\nexit 3\n", nil)
-	if err == nil || !strings.Contains(err.Error(), "exit status 3") || !strings.Contains(logs.String(), "Not logged in · Please run /login") || !strings.Contains(logs.String(), "…") {
-		t.Errorf("a write after Claude Code exited: %v; logs: %s", err, logs.String())
+	if err == nil || !strings.Contains(err.Error(), "exit status 3") || !strings.HasSuffix(err.Error(), "Not logged in · Please run /login") || !strings.Contains(err.Error(), "…") {
+		t.Errorf("a write after Claude Code exited: %v", err)
 	}
 	err = write("#!/bin/sh\nread -r line\nsleep 30\n", func(run *subscriptionRun) { run.abort() })
-	if err == nil || !strings.Contains(err.Error(), "was ended before it") || strings.Contains(err.Error(), "signal") {
+	if err == nil || !strings.Contains(err.Error(), "ended by magpie") || strings.Contains(err.Error(), "signal") {
 		t.Errorf("a write after magpie ended Claude Code: %v", err)
 	}
 	// at once, before Claude Code has been reaped (red on ubuntu CI, where
@@ -102,7 +95,7 @@ func TestClaudeEndedBeforeItsInputSaysWhy(t *testing.T) {
 		t.Fatal(err)
 	}
 	run.abort()
-	if err := run.setEffort("high"); err == nil || !strings.Contains(err.Error(), "was ended before it") {
+	if err := run.setEffort("high"); err == nil || !strings.Contains(err.Error(), "ended by magpie") {
 		t.Errorf("a write right after magpie ended Claude Code: %v", err)
 	}
 }

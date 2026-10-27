@@ -23,7 +23,8 @@ func TestCodexOwnModelUnreached(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer sk-relay-key")
 	New().Handler().ServeHTTP(rec, req)
 	body := rec.Body.String()
-	if rec.Code != 502 || !strings.Contains(body, "上游服务暂时无法访问") || strings.Contains(body, "OpenAI can't be reached") {
+	if rec.Code != 502 || !strings.Contains(body, "OpenAI can't be reached") || !strings.Contains(body, "gpt-5.5 is one of Codex's own models") ||
+		!strings.Contains(body, "pick one of magpie's models") {
 		t.Fatalf("%d %s", rec.Code, body)
 	}
 }

@@ -87,14 +87,14 @@ func TestDisabledModelRefusedOnEveryRoute(t *testing.T) {
 			Error struct{ Message, Type string }
 		}
 		json.Unmarshal(w.Body.Bytes(), &e)
-		if w.Code != 403 || e.Error.Type != "permission_error" || !strings.Contains(e.Error.Message, "当前已停用") || strings.Contains(e.Error.Message, "magpie") {
+		if w.Code != 403 || e.Error.Type != "permission_error" || !strings.Contains(e.Error.Message, "is disabled in magpie") {
 			t.Fatalf("%s: %d %s", what, w.Code, w.Body.String())
 		}
 	}
 	for _, model := range []string{"spare/m2", "m2", "SPARE/M2", "group/spare-only", "spare-only"} {
 		refused(model, chat(model))
 	}
-	if w := chat("group/spare-only"); !strings.Contains(w.Body.String(), "分组下的模型均已停用") || strings.Contains(w.Body.String(), "spare/m2") {
+	if w := chat("group/spare-only"); !strings.Contains(w.Body.String(), "routing group") || !strings.Contains(w.Body.String(), "spare/m2") {
 		t.Fatal("an emptied group says why", w.Body.String())
 	}
 	// each API in its own shape
@@ -103,7 +103,7 @@ func TestDisabledModelRefusedOnEveryRoute(t *testing.T) {
 		Type  string
 		Error struct{ Type, Message string }
 	}
-	if json.Unmarshal(w.Body.Bytes(), &a); w.Code != 403 || a.Type != "error" || a.Error.Type != "permission_error" || !strings.Contains(a.Error.Message, "已停用") {
+	if json.Unmarshal(w.Body.Bytes(), &a); w.Code != 403 || a.Type != "error" || a.Error.Type != "permission_error" || !strings.Contains(a.Error.Message, "disabled") {
 		t.Fatal("anthropic", w.Code, w.Body.String())
 	}
 	refused("responses", do("POST", "/v1/responses", `{"model":"spare/m2","input":"hi"}`))
@@ -116,7 +116,7 @@ func TestDisabledModelRefusedOnEveryRoute(t *testing.T) {
 				Message string
 			}
 		}
-		if w.Code != 403 || json.Unmarshal(w.Body.Bytes(), &g) != nil || g.Error.Status != "PERMISSION_DENIED" || !strings.Contains(g.Error.Message, "已停用") {
+		if w.Code != 403 || json.Unmarshal(w.Body.Bytes(), &g) != nil || g.Error.Status != "PERMISSION_DENIED" || !strings.Contains(g.Error.Message, "disabled") {
 			t.Fatalf("%s: %d %s", what, w.Code, w.Body.String())
 		}
 	}
@@ -159,10 +159,10 @@ func TestDisabledModelRefusedOnEveryRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	jp := *jpp
-	if _, _, _, err := New().postDecide(context.Background(), jp, "jev-latest", []byte(ask)); err == nil || !strings.Contains(err.Error(), "已停用") {
+	if _, _, _, err := New().postDecide(context.Background(), jp, "jev-latest", []byte(ask)); err == nil || !strings.Contains(err.Error(), "disabled") {
 		t.Fatal("magpie's own decision call", err)
 	}
-	if err := jp.AskSystemOne(context.Background(), "jev-latest"); err == nil || !strings.Contains(err.Error(), "已停用") {
+	if err := jp.AskSystemOne(context.Background(), "jev-latest"); err == nil || !strings.Contains(err.Error(), "disabled") {
 		t.Fatal("the provider check", err)
 	}
 	if decided != 0 {
@@ -214,7 +214,7 @@ func TestDisabledEmbeddingsModelRefused(t *testing.T) {
 	}
 	for _, model := range []string{"lib/embed-1", "embed-1"} {
 		code, raw := postRetrieval(t, s, "/v1/embeddings", `{"model":"`+model+`","input":"hi"}`)
-		if code != 403 || !strings.Contains(raw, "当前已停用") {
+		if code != 403 || !strings.Contains(raw, "is disabled in magpie") {
 			t.Fatalf("%s: %d %s", model, code, raw)
 		}
 	}
@@ -246,7 +246,7 @@ func TestDisabledCodexModels(t *testing.T) {
 		t.Fatalf("trace %+v", r.Subagent)
 	}
 	rec = codexAsks(s, "gpt-6-astra", "", leadAsk)
-	if rec.Code != 403 || !strings.Contains(rec.Body.String(), "当前已停用") {
+	if rec.Code != 403 || !strings.Contains(rec.Body.String(), "is disabled in magpie") {
 		t.Fatalf("lead on a disabled model: %d %s", rec.Code, rec.Body.String())
 	}
 	if got := up.asked(); len(got) != 1 {

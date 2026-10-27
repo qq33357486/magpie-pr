@@ -65,7 +65,7 @@ func TestResponsesFileIDRouting(t *testing.T) {
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
 			}
-			if tc.wantStatus == 400 && !strings.Contains(rec.Body.String(), "image") && !strings.Contains(rec.Body.String(), "图片") {
+			if tc.wantStatus == 400 && !strings.Contains(rec.Body.String(), "image") {
 				t.Fatalf("unclear rejection: %s", rec.Body.String())
 			}
 			if tc.wantUpstream == "" {

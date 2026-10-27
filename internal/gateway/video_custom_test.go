@@ -260,7 +260,7 @@ func TestCustomProviderVideoKeys(t *testing.T) {
 	before := len(up.log())
 	// held to kA: kB's video is not its to ask after
 	for _, path := range []string{"/v1/videos/" + id, "/v1/videos/" + id + "/content"} {
-		if code, obj, raw = asKey(t, h, secrets[1], "GET", path, ""); code != 403 || !strings.Contains(errorOf(obj), "无权使用所需的账号") {
+		if code, obj, raw = asKey(t, h, secrets[1], "GET", path, ""); code != 403 || !strings.Contains(errorOf(obj), "not allowed to use the accounts") {
 			t.Fatalf("held to kA, %s: %d %s", path, code, raw)
 		}
 	}
@@ -269,7 +269,7 @@ func TestCustomProviderVideoKeys(t *testing.T) {
 	}
 	// held to other models: neither the poll nor the bytes
 	for _, path := range []string{"/v1/videos/" + id, "/v1/videos/" + id + "/content"} {
-		if code, obj, raw = asKey(t, h, secrets[2], "GET", path, ""); code != 403 || !strings.Contains(errorOf(obj), "无权使用模型 studio/vid-1") {
+		if code, obj, raw = asKey(t, h, secrets[2], "GET", path, ""); code != 403 || !strings.Contains(errorOf(obj), "may not use studio/vid-1") {
 			t.Fatalf("held to other models, %s: %d %s", path, code, raw)
 		}
 	}
@@ -314,7 +314,7 @@ func TestGrokVideoPollHeldByKeyModels(t *testing.T) {
 		t.Fatalf("start: %d %s", code, raw)
 	}
 	for _, path := range []string{"/v1/videos/" + id, "/v1/videos/" + id + "/content"} {
-		if code, obj, raw = asKey(t, h, secrets[0], "GET", path, ""); code != 403 || !strings.Contains(errorOf(obj), "无权使用模型 grok/") {
+		if code, obj, raw = asKey(t, h, secrets[0], "GET", path, ""); code != 403 || !strings.Contains(errorOf(obj), "may not use grok/") {
 			t.Fatalf("held, %s: %d %s", path, code, raw)
 		}
 	}

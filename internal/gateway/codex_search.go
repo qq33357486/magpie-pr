@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -62,11 +63,11 @@ func (s *Server) alphaSearch(w http.ResponseWriter, r *http.Request) {
 func (s *Server) alphaSearchBody(w http.ResponseWriter, r *http.Request, body []byte) {
 	var q alphaSearchRequest
 	if err := json.Unmarshal(body, &q); err != nil {
-		writeError(w, provider.Responses, http.StatusBadRequest, "搜索请求格式无效："+err.Error())
+		writeError(w, provider.Responses, http.StatusBadRequest, "magpie couldn't read the web search request: "+err.Error())
 		return
 	}
 	if q.Model == "" {
-		writeError(w, provider.Responses, http.StatusBadRequest, "搜索请求未指定模型")
+		writeError(w, provider.Responses, http.StatusBadRequest, "the web search request names no model")
 		return
 	}
 	note := ""
@@ -75,9 +76,9 @@ func (s *Server) alphaSearchBody(w http.ResponseWriter, r *http.Request, body []
 		if answered {
 			return
 		}
-		// a failure would end the turn: the gateway searches in its place
+		// a failure would end the turn: magpie searches in its place
 		log.Printf("web search on ChatGPT for %s: %s", q.Model, why)
-		note = "（上游搜索暂不可用，已由备用搜索完成本次查询。）\n\n"
+		note = "ChatGPT's web search failed (" + why + "); magpie searched in its place.\n\n"
 	}
 	s.alphaSearchHere(w, r, q, note)
 }
@@ -206,7 +207,7 @@ func (s *Server) alphaSearchHere(w http.ResponseWriter, r *http.Request, q alpha
 		queries = append(queries, text)
 	}
 	if len(queries) == 0 {
-		writeJSON(w, http.StatusOK, alphaSearchReply{Output: note + "本次仅执行了网页搜索：请求未提供 search_query，打开网页等操作暂不支持。"})
+		writeJSON(w, http.StatusOK, alphaSearchReply{Output: note + "magpie can only search the web for " + q.Model + ": give web.run a search_query. Opening, clicking or finding in a page goes to the ChatGPT backend, for a ChatGPT account's model in magpie."})
 		return
 	}
 	ctx := context.WithValue(r.Context(), searchForKey{}, &CallFor{Agent: callerOf(r).agent, Model: q.Model})
@@ -217,8 +218,12 @@ func (s *Server) alphaSearchHere(w http.ResponseWriter, r *http.Request, q alpha
 			if r.Context().Err() != nil {
 				return
 			}
-			log.Printf("web search for %s (%s): %v", q.Model, query, err)
-			said = append(said, "网页搜索暂时不可用，请稍后重试")
+			log.Printf("web search for %s: %v", q.Model, err)
+			msg := "magpie couldn't search the web for " + query + ": " + err.Error()
+			if errors.Is(err, errNoSearcher) {
+				msg += ": add a search API in magpie's Settings → Models → Web search (or magpie search add <api> <key>), or a provider that can search"
+			}
+			said = append(said, msg)
 			continue
 		}
 		if len(queries) > 1 {

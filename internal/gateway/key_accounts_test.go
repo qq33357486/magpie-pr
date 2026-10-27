@@ -105,8 +105,8 @@ func TestGatewayKeyAccountsHoldAKey(t *testing.T) {
 		Error struct{ Message, Type string }
 	}
 	json.Unmarshal([]byte(body), &e)
-	if code != 403 || e.Error.Type != "permission_error" || !strings.Contains(e.Error.Message, "无权使用所需的账号") ||
-		strings.Contains(e.Error.Message, "example.com") || strings.Contains(e.Error.Message, `"Held"`) {
+	if code != 403 || e.Error.Type != "permission_error" || !strings.Contains(e.Error.Message, `"Held"`) ||
+		!strings.Contains(e.Error.Message, "is not allowed to use the accounts behind") || !strings.Contains(e.Error.Message, "codex/me@example.com") {
 		t.Fatalf("every account held out: %d %s", code, body)
 	}
 	if len(*heads) != 0 {
@@ -126,7 +126,7 @@ func TestGatewayKeyAccountsHoldAKey(t *testing.T) {
 	}
 	*heads = nil
 	code, body = post(secrets[0])
-	if code != 429 || !strings.Contains(body, "服务额度暂时用尽") || strings.Contains(body, "example.com") {
+	if code != 429 || !strings.Contains(body, "usage cap reached") || !strings.Contains(body, "me@example.com") {
 		t.Fatalf("a cap before the accounts: %d %s", code, body)
 	}
 	if err := provider.SetAccountCap("codex", "me@example.com", 0); err != nil {
@@ -142,7 +142,7 @@ func TestGatewayKeyAccountsHoldAKey(t *testing.T) {
 	}
 	*heads = nil
 	code, body = post(secrets[0])
-	if code != 403 || !strings.Contains(body, "暂不可用") {
+	if code != 403 || !strings.Contains(body, "own list of models") {
 		t.Fatalf("barred before the accounts held nothing: %d %s", code, body)
 	}
 	if err := provider.SetAccountModels("codex", "me@example.com", nil); err != nil {
@@ -457,7 +457,7 @@ func TestGatewayKeyAccountsSystemOne(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := ask(secrets[0])
-	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "无权使用所需的账号") || decided != 2 {
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "is not allowed to use the accounts behind") || decided != 2 {
 		t.Fatalf("a barred account: %d %s, decided %d", w.Code, w.Body.String(), decided)
 	}
 }

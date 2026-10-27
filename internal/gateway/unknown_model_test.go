@@ -22,14 +22,16 @@ func TestUnknownModelSaysWhatToAsk(t *testing.T) {
 	if code != http.StatusNotFound {
 		t.Fatalf("%d %s", code, body)
 	}
-	if !strings.Contains(body, "相近的模型：opencode-zen-free/space-bunny-free") {
+	if !strings.Contains(body, "did you mean opencode-zen-free/space-bunny-free") {
 		t.Fatalf("the id meant isn't named first: %s", body)
 	}
-	if strings.Contains(body, "provider") || strings.Contains(body, "magpie") {
-		t.Fatalf("says the naming scheme or the stack: %s", body)
+	for _, form := range []string{"provider/model", "routing group's id or name", "bare model id", "Providers order"} {
+		if !strings.Contains(body, form) {
+			t.Fatalf("doesn't say %q: %s", form, body)
+		}
 	}
 	// the provider's name alone matches nothing
-	if _, body := postAs(t, s, "", `{"model":"zen-nothing","messages":[{"role":"user","content":"hi"}]}`); strings.Contains(body, "相近的模型") {
+	if _, body := postAs(t, s, "", `{"model":"zen-nothing","messages":[{"role":"user","content":"hi"}]}`); strings.Contains(body, "did you mean") {
 		t.Fatalf("a provider's name alone was a match: %s", body)
 	}
 }

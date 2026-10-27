@@ -290,13 +290,10 @@ func TestPluginFactoryStandardOnlyCaps(t *testing.T) {
 			if code != 429 || len(seen) != 0 {
 				t.Fatalf("both capped: %d %s (tried %v)", code, body, seen)
 			}
-			for _, want := range []string{"rate_limit", "服务额度暂时用尽", "后恢复，请稍后重试"} {
+			for _, want := range []string{"rate_limit", "usage cap reached", "a@fake", "at 99% of a usage window, past its 99% cap", "b@fake", "at 100% of a usage window", "account-cap"} {
 				if !strings.Contains(body, want) {
 					t.Errorf("no %q in %s", want, body)
 				}
-			}
-			if strings.Contains(body, "@fake") {
-				t.Errorf("the customer is shown an account: %s", body)
 			}
 			// the sooner back is A, at its 5 hours' reset
 			ra, err := strconv.Atoi(h.Get("Retry-After"))

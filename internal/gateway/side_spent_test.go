@@ -179,11 +179,11 @@ func TestVisionDoesNotAskSpentDescriber(t *testing.T) {
 	keyWindows(t, windows)
 	body := `{"model":"probe/text","messages":[{"role":"user","content":[{"type":"text","text":"read"},{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}]}]}`
 	code, out := postAs(t, s, "", body)
-	if code < 400 || !strings.Contains(out, "图片描述服务也暂时不可用") {
+	if code < 400 || !strings.Contains(out, "out of its allowance") {
 		t.Fatalf("spent describer: %d %s", code, out)
 	}
 	m := readMCP(t, visionPost(lanGuard(s.Handler()), "127.0.0.1:50000", analyzeCall("data:image/png;base64,aGVsbG8=", "")))
-	if !m.Result.IsError || !strings.Contains(m.Result.Content[0].Text, "暂时无法读取图片") {
+	if !m.Result.IsError || !strings.Contains(m.Result.Content[0].Text, "out of its allowance") {
 		t.Fatalf("spent MCP describer: %+v", m)
 	}
 	if n := len(u.sent("eye")); n != 0 {

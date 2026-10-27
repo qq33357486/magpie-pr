@@ -489,7 +489,7 @@ func TestQueuedStreamWaitedOutIsTheStreamsError(t *testing.T) {
 	go askHeard(gw, queueAsks[2].path, queueAsks[2].body, nil)
 	waitSeen(t, v, 1) // the first has the slot
 	code, body, _, err := askHeard(gw, queueAsks[2].path, queueAsks[2].body, nil)
-	if err != nil || code != 200 || !strings.Contains(body, ": keepalive") || !strings.Contains(body, "event: error") || !strings.Contains(body, "排队超时") {
+	if err != nil || code != 200 || !strings.Contains(body, ": keepalive") || !strings.Contains(body, "event: error") || !strings.Contains(body, "requests at once is its limit") {
 		t.Fatalf("waited out = %d %v %q, want keepalives, then the limit as the stream's error", code, err, body)
 	}
 }

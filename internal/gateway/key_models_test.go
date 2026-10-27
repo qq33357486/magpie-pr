@@ -79,8 +79,7 @@ func TestGatewayKeyModelsHoldAKey(t *testing.T) {
 			Error struct{ Message, Type string }
 		}
 		json.Unmarshal(w.Body.Bytes(), &e)
-		if w.Code != 403 || e.Error.Type != "permission_error" || !strings.Contains(e.Error.Message, "无权使用模型") ||
-			strings.Contains(e.Error.Message, `"Held"`) || strings.Contains(e.Error.Message, "plan/*") {
+		if w.Code != 403 || e.Error.Type != "permission_error" || !strings.Contains(e.Error.Message, `"Held"`) || !strings.Contains(e.Error.Message, "plan/*") {
 			t.Fatalf("%s: %d %s", model, w.Code, w.Body.String())
 		}
 		if rec := lastUsage(t); !rec.Rejected || rec.Status != 403 || rec.CallerKeyID != keys[0].ID {
@@ -289,8 +288,7 @@ func TestGatewayKeyModelsHoldCountTokensAndSystemOne(t *testing.T) {
 			Error struct{ Message, Type string }
 		}
 		json.Unmarshal(w.Body.Bytes(), &e)
-		if w.Code != 403 || e.Error.Type != "permission_error" || !strings.Contains(e.Error.Message, "无权使用模型") ||
-			strings.Contains(e.Error.Message, `"Held"`) || strings.Contains(e.Error.Message, "plan/*") {
+		if w.Code != 403 || e.Error.Type != "permission_error" || !strings.Contains(e.Error.Message, `"Held"`) || !strings.Contains(e.Error.Message, "plan/*") {
 			t.Fatalf("counting %s: %d %s", model, w.Code, w.Body.String())
 		}
 	}
@@ -327,7 +325,7 @@ func TestGatewayKeyModelsHoldCountTokensAndSystemOne(t *testing.T) {
 		Error struct{ Message, Type string }
 	}
 	json.Unmarshal(w.Body.Bytes(), &e)
-	if w.Code != 403 || e.Error.Type != "permission_error" || !strings.Contains(e.Error.Message, "无权使用模型") || strings.Contains(e.Error.Message, `"Held"`) {
+	if w.Code != 403 || e.Error.Type != "permission_error" || !strings.Contains(e.Error.Message, `"Held"`) {
 		t.Fatalf("system one held: %d %s", w.Code, w.Body.String())
 	}
 	if decided != 0 {

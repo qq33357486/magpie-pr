@@ -142,7 +142,7 @@ func TestStrictAffinityHeldForCreditsIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, body, tried := strictPost(t, srv, b, "s1")
-	if code != 429 || tried != "" || strings.Contains(body, "me@example.com") || !strings.Contains(body, "固定通道") {
+	if code != 429 || tried != "" || !strings.Contains(body, "me@example.com") || !strings.Contains(body, "Stays: Strict") {
 		t.Fatalf("strict, held for its credits: %d %s tried %q", code, body, tried)
 	}
 	if code, _, tried := strictPost(t, srv, b, "s2"); code != 200 || tried != "acct-2" {

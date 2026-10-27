@@ -357,8 +357,7 @@ func TestMaxRPMTooLongIs429WithRetryAfter(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	// the fork's twin says the limit in Chinese (concurrency.go)
-	if r.code != 429 || r.header.Get("Retry-After") != "2" || !strings.Contains(r.body, "请求过于频繁") {
+	if r.code != 429 || r.header.Get("Retry-After") != "2" || !strings.Contains(r.body, "1 requests a minute is its limit") {
 		t.Fatalf("second = %d Retry-After %q %s, want a 429 saying the limit, Retry-After 2", r.code, r.header.Get("Retry-After"), r.body)
 	}
 	if n := len(v.times()); n != 1 {

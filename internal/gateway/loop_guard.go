@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
-	"log"
 	"sort"
 	"strings"
 	"unicode"
@@ -86,25 +85,26 @@ type loopTrip struct {
 	runOn bool
 }
 
-// message is what the agent and the logs are told. The customer is told
-// the reply looped and was cut; the units it looped on are the log's.
+// message is what the agent and the logs are told.
 func (t loopTrip) message() string {
 	what := "text"
 	if t.reasoning {
 		what = "reasoning"
 	}
+	quoted := make([]string, 0, 6)
 	for i, u := range t.units {
 		if i == 6 {
+			quoted = append(quoted, "…")
 			break
 		}
-		log.Printf("loop: %s repeats %q", what, u)
+		quoted = append(quoted, fmt.Sprintf("%q", u))
 	}
 	if t.runOn {
-		return fmt.Sprintf("网关已终止本次回复：模型的%s陷入循环（最后 %d 个字符不断重复无停顿），已达输出上限。请重试，或稍后再试",
-			what, t.window)
+		return fmt.Sprintf("magpie ended this reply: the model's %s was stuck in a loop, its last %d characters the same over and over without a break (%s), and would have run on to its output limit. Ask again, or set Settings › Models › Replies › Stop looping replies off",
+			what, t.window, strings.Join(quoted, " "))
 	}
-	return fmt.Sprintf("网关已终止本次回复：模型的%s陷入循环（最后 %d 行/句均为重复内容，共 %d 个重复单元），已达输出上限。请重试，或稍后再试",
-		what, t.window, len(t.units))
+	return fmt.Sprintf("magpie ended this reply: the model's %s was stuck in a loop, its last %d lines and sentences all among the same %d (%s), and would have run on to its output limit. Ask again, or set Settings › Models › Replies › Stop looping replies off",
+		what, t.window, len(t.units), strings.Join(quoted, " "))
 }
 
 // feed reads b, the next of the reply as the agent is sent it.

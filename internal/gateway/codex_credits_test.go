@@ -51,9 +51,8 @@ func TestCodexNoCreditsMovesOn(t *testing.T) {
 }
 
 // Every account held, as none may spend its credits or one is at its cap:
-// the client is refused as when all are used up (429), told the service
-// is out and when it is back — what holds each account is the operator's
-// to read in the log, kept out of the reply; nothing reaches the vendor.
+// the client is refused as when all are used up (429), told why in the
+// words of what holds each, and how to go on; nothing reaches the vendor.
 func TestCodexNoCreditsEveryAccount(t *testing.T) {
 	codexSignedIn(t, "spare@example.com")
 	b := newResetBackend(t)
@@ -68,15 +67,13 @@ func TestCodexNoCreditsEveryAccount(t *testing.T) {
 	if tried, _ := b.seen(); code != 429 || tried != "" {
 		t.Fatalf("%d tried %q: %s", code, tried, body)
 	}
-	for _, want := range []string{"rate_limit_error", "服务额度暂时用尽", "后恢复，请稍后重试"} {
+	for _, want := range []string{"rate_limit_error", "set in magpie not to spend its credits", "me@example.com", "spare@example.com", "if an account holds credits, let it spend them", "quota credits"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("no %q in %s", want, body)
 		}
 	}
-	for _, leak := range []string{"example.com", "credits", "magpie", "usage cap"} {
-		if strings.Contains(body, leak) {
-			t.Errorf("%q told outside: %s", leak, body)
-		}
+	if strings.Contains(body, "usage cap reached") {
+		t.Errorf("told as a cap: %s", body)
 	}
 	// the request's record says the same as the client was told
 	if c := srv.Recent()[0]; c.Status != 429 || c.Error != "every account held: set not to spend its credits" {
@@ -91,14 +88,9 @@ func TestCodexNoCreditsEveryAccount(t *testing.T) {
 	if tried, _ := b.seen(); code != 429 || tried != "" {
 		t.Fatalf("%d tried %q: %s", code, tried, body)
 	}
-	for _, want := range []string{"服务额度暂时用尽"} {
+	for _, want := range []string{"held by magpie", "past its 70% cap", "(spare@example.com) has used up a usage window and is set not to spend its credits", "account-cap", "if an account holds credits, let it spend them", "quota credits"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("no %q in %s", want, body)
-		}
-	}
-	for _, leak := range []string{"example.com", "% cap", "credits", "magpie", "account-cap"} {
-		if strings.Contains(body, leak) {
-			t.Errorf("%q told outside: %s", leak, body)
 		}
 	}
 	if c := srv.Recent()[0]; c.Status != 429 || c.Error != "every account held: at its usage cap or set not to spend its credits" {
@@ -122,7 +114,7 @@ func TestCodexNoCreditsSpendsAReset(t *testing.T) {
 	}
 	srv := New()
 	code, body := resetPost(t, srv)
-	if tried, spent := b.seen(); code != 429 || !strings.Contains(body, "服务额度暂时用尽") || tried != "" || spent != "" {
+	if tried, spent := b.seen(); code != 429 || !strings.Contains(body, "not to spend its credits") || tried != "" || spent != "" {
 		t.Fatalf("no auto-reset: %d %s tried %q spent %q", code, body, tried, spent)
 	}
 

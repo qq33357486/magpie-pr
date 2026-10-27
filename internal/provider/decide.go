@@ -919,7 +919,7 @@ func (p Provider) decideAsked(ctx context.Context) ([]catalog.Model, error) {
 // decision API, and says why it wasn't answered.
 func (p Provider) AskSystemOne(ctx context.Context, model string) error {
 	if pat, off := ModelDisabled(p.ID, model); off { // never asked (#1867)
-		return fmt.Errorf("模型 %s/%s 当前已停用（匹配 %q）", p.ID, model, pat)
+		return fmt.Errorf("model %s/%s is disabled in magpie (it matches %q)", p.ID, model, pat)
 	}
 	u, err := p.DecideModelURL(ctx, model)
 	if err != nil {

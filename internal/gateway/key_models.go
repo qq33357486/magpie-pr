@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"slices"
 	"strings"
@@ -355,18 +354,16 @@ func (s *Server) onKeys(r *http.Request, p provider.Provider, model, asked strin
 }
 
 // keyModelError is what a request for a model its key may not use is told.
-// What the key may use is the operator's to read in the log; the customer
-// is told the model is not theirs to use.
 func keyModelError(who access.Identity, model string) string {
-	log.Printf("key held: %q may not use %s; it may use %s", who.KeyName, model, strings.Join(who.Models, ", "))
-	return fmt.Sprintf("当前密钥无权使用模型 %s", model)
+	return fmt.Sprintf("The gateway key %q may not use %s; it may use %s. Change the key's models in magpie's Gateway page, or use a model it has.",
+		who.KeyName, model, strings.Join(who.Models, ", "))
 }
 
 // keyAccountsError is what a request every candidate of which was an
 // account or key its key may not use is told.
 func keyAccountsError(who access.Identity, model string) string {
-	log.Printf("key held: %q may not use the accounts behind %s; it may use %s", who.KeyName, model, keyAccountNames(who))
-	return "当前密钥无权使用所需的账号"
+	return fmt.Sprintf("The gateway key %q is not allowed to use the accounts behind %s: no account or key behind it is one the key may use; it may use %s. Change the key's accounts in magpie's Gateway page, or use an account it has.",
+		who.KeyName, model, keyAccountNames(who))
 }
 
 // keyAccountNames is the key's accounts as an error message shows them:

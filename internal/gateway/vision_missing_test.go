@@ -112,8 +112,8 @@ func TestMissingImageRecognitionModelIsSaid(t *testing.T) {
 	}
 	for _, model := range []string{"probe/text", "group/mixed"} {
 		code, out = postAs(t, s, "", `{"model":"`+model+`","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,bm9uZQ=="}}]}]}`)
-		if code != 400 || !strings.Contains(out, "不支持图片输入") || strings.Contains(out, "gone/bigeye") {
-			t.Errorf("%s with no describer: %d %s, want 400 without naming the missing gone/bigeye", model, code, out)
+		if code != 400 || !strings.Contains(out, "gone/bigeye") || !strings.Contains(out, "Image recognition") {
+			t.Errorf("%s with no describer: %d %s, want 400 naming the missing gone/bigeye", model, code, out)
 		}
 	}
 }

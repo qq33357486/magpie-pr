@@ -98,7 +98,7 @@ func TestKeyLimitRefusesBeforeUpstream(t *testing.T) {
 		Error struct{ Message, Type string }
 	}
 	json.Unmarshal(w.Body.Bytes(), &e)
-	if e.Error.Type != "rate_limit_error" || !strings.Contains(e.Error.Message, "该密钥本周期用量已达上限") || strings.Contains(e.Error.Message, "Capped") || strings.Contains(e.Error.Message, "700 of its 700") {
+	if e.Error.Type != "rate_limit_error" || !strings.Contains(e.Error.Message, `"Capped"`) || !strings.Contains(e.Error.Message, "700 of its 700") || !strings.Contains(e.Error.Message, "resets at") {
 		t.Fatal("refusal says", w.Body.String())
 	}
 	// it resets at the next midnight after the check
@@ -359,7 +359,7 @@ func TestKeyLimitDaysCycleAndReset(t *testing.T) {
 	if w.Code != 429 || calls.Load() != 2 {
 		t.Fatal("spent key let in", w.Code, calls.Load())
 	}
-	if !strings.Contains(w.Body.String(), "本周期用量已达上限") {
+	if !strings.Contains(w.Body.String(), "this 1-day cycle") {
 		t.Fatal("refusal says", w.Body.String())
 	}
 	if got := w.Header().Get("X-Magpie-Limit-Reset"); got != set.Add(24*time.Hour).Format(time.RFC3339) {
@@ -482,7 +482,7 @@ func TestKeyLimitHoursCycle(t *testing.T) {
 		}
 	}
 	w := call("POST", "/v1/chat/completions", chatReq)
-	if w.Code != 429 || calls.Load() != 2 || !strings.Contains(w.Body.String(), "该密钥本周期用量已达上限") {
+	if w.Code != 429 || calls.Load() != 2 || !strings.Contains(w.Body.String(), "this 5-hour cycle") {
 		t.Fatal("spent key:", w.Code, calls.Load(), w.Body.String())
 	}
 	if got := w.Header().Get("X-Magpie-Limit-Reset"); got != set.Add(5*time.Hour).Format(time.RFC3339) {

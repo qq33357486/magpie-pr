@@ -52,12 +52,14 @@ func TestKnownTextOnlyModelRejectsImagesBeforeUpstream(t *testing.T) {
 	for _, tc := range cases {
 		rec := httptest.NewRecorder()
 		s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", tc.path, strings.NewReader(tc.body)))
-		if rec.Code != 400 || !strings.Contains(rec.Body.String(), "不支持图片输入") {
+		if rec.Code != 400 || !strings.Contains(rec.Body.String(), "does not support image input") {
 			t.Errorf("%s: %d %s", tc.path, rec.Code, rec.Body.String())
 		}
-		// why magpie takes it for text-only, and where that is changed
-		// (KimYx0207 on X), is the operator's: said to the log alone
-		// (fork_errors.go's rules), the customer told the Chinese of it
+		// it says why magpie takes it for text-only, and where that is
+		// changed (KimYx0207 on X)
+		if b := rec.Body.String(); !strings.Contains(b, "Probe's model list marks it as not taking images") || !strings.Contains(b, "Providers → Probe → Names & levels") {
+			t.Errorf("%s: doesn't say why or where: %s", tc.path, b)
+		}
 	}
 	if sent != 0 {
 		t.Fatalf("text-only images reached upstream %d times", sent)
@@ -518,11 +520,14 @@ func TestTextOnlyRefusalSaysWhyAndWhere(t *testing.T) {
 	}
 	s := New()
 	body := `{"model":"MODEL","messages":[{"role":"user","content":[{"type":"text","text":"read"},{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}]}]}`
-	for _, model := range []string{"probe/sol", "group/words"} {
+	for model, want := range map[string]string{
+		"probe/sol":   "Accepts images is turned off for it in magpie, in Providers → Probe → Names & levels",
+		"group/words": "no model in the group Words is marked as taking images",
+	} {
 		rec := httptest.NewRecorder()
 		s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(strings.Replace(body, "MODEL", model, 1))))
-		if rec.Code != 400 || !strings.Contains(rec.Body.String(), "不支持图片输入") {
-			t.Errorf("%s: %d %s", model, rec.Code, rec.Body.String())
+		if rec.Code != 400 || !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("%s: %d %s, want %q", model, rec.Code, rec.Body.String(), want)
 		}
 	}
 }

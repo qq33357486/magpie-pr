@@ -97,7 +97,7 @@ func TestSealedTaskRefusedByAnotherRelay(t *testing.T) {
 		t.Fatalf("lead: %d %s", rec.Code, rec.Body.String())
 	}
 	rec := codexSubTurn(s, "s2a/gpt-6-astra", "worker-1", "lead-1", sealedHandoff)
-	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "已由上游加密绑定") || strings.Contains(rec.Body.String(), "Magpie-served") || strings.Contains(rec.Body.String(), "gAAAAA") {
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "(s2b)") || strings.Contains(rec.Body.String(), "Magpie-served") || strings.Contains(rec.Body.String(), "gAAAAA") {
 		t.Fatalf("subagent: %d %s", rec.Code, rec.Body.String())
 	}
 	if n := len(s2a.requests()); n != 0 || len(other.requests()) != 1 {
@@ -105,7 +105,7 @@ func TestSealedTaskRefusedByAnotherRelay(t *testing.T) {
 	}
 	// nor does a subagent whose lead magpie never answered go to a relay
 	rec = codexSubTurn(s, "s2a/gpt-6-astra", "worker-2", "lead-elsewhere", sealedHandoff)
-	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "（s2a/gpt-6-astra）无法读取") || len(s2a.requests()) != 0 {
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "s2a/gpt-6-astra is neither") || len(s2a.requests()) != 0 {
 		t.Fatalf("unknown lead: %d %s, s2a asked %d times", rec.Code, rec.Body.String(), len(s2a.requests()))
 	}
 }
@@ -154,11 +154,11 @@ func TestSealedReplyRefusedWhereTheLeadWasNotAnswered(t *testing.T) {
 		t.Fatalf("lead: %d %s", rec.Code, rec.Body.String())
 	}
 	rec := codexSubTurn(s, "other/gpt-6-astra", "lead-1", "", leadAsk+","+sealedReply)
-	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "（other/gpt-6-astra）无法读取") || strings.Contains(rec.Body.String(), "gAAAAA") {
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "(third)") || !strings.Contains(rec.Body.String(), "other/gpt-6-astra can't") || strings.Contains(rec.Body.String(), "gAAAAA") {
 		t.Fatalf("lead moved to another provider: %d %s", rec.Code, rec.Body.String())
 	}
 	rec = codexSubTurn(s, "third/gpt-6-astra", "lead-unknown", "", leadAsk+","+sealedReply)
-	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "（third/gpt-6-astra）无法读取") {
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "third/gpt-6-astra is neither") {
 		t.Fatalf("unknown lead: %d %s", rec.Code, rec.Body.String())
 	}
 	if n, m := len(relay.requests()), len(other.requests()); n != 1 || m != 0 {
@@ -185,8 +185,8 @@ func TestSealedTaskFromChatGPTLeadStillRefused(t *testing.T) {
 		t.Fatalf("lead: %d %s (ChatGPT asked %d times)", rec.Code, rec.Body.String(), native)
 	}
 	rec := codexSubTurn(s, "third/gpt-6-astra", "worker-1", "lead-1", sealedHandoff)
-	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "已由上游加密绑定") ||
-		!strings.Contains(rec.Body.String(), "（third/gpt-6-astra）无法读取") || strings.Contains(rec.Body.String(), "gAAAAA") {
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "sealed by the ChatGPT backend that answered its lead") ||
+		!strings.Contains(rec.Body.String(), "third/gpt-6-astra is neither") || strings.Contains(rec.Body.String(), "gAAAAA") {
 		t.Fatalf("subagent: %d %s", rec.Code, rec.Body.String())
 	}
 	if n := len(relay.requests()); n != 0 {

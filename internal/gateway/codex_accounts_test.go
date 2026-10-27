@@ -315,8 +315,7 @@ func TestGatewayKeyAccountsHoldCodexOwnModel(t *testing.T) {
 		Error struct{ Message, Type string }
 	}
 	json.Unmarshal([]byte(body), &e)
-	if code != 403 || e.Error.Type != "permission_error" || !strings.Contains(e.Error.Message, "无权使用所需的账号") ||
-		strings.Contains(e.Error.Message, `"Held"`) || strings.Contains(e.Error.Message, "example.com") {
+	if code != 403 || e.Error.Type != "permission_error" || !strings.Contains(e.Error.Message, `"Held"`) || !strings.Contains(e.Error.Message, "is not allowed to use the accounts behind") {
 		t.Fatalf("held to a gone account: %d %s", code, body)
 	}
 	if len(heads) != 0 {
@@ -384,16 +383,16 @@ func TestGatewayKeyAccountsHoldCodexCompact(t *testing.T) {
 		return rec.Code, rec.Body.String()
 	}
 	// the sign-in isn't the key's: refused, nothing asked of OpenAI, the
-	// message keeping the ways out — and the accounts — for the operator's
-	// log alone
+	// message saying the two ways out
 	setAccounts(t, keys[0].ID, "codex/spare@example.com")
 	code, body := post(secrets[0])
 	var e struct {
 		Error struct{ Message, Type string }
 	}
 	json.Unmarshal([]byte(body), &e)
-	if code != 403 || e.Error.Type != "permission_error" || !strings.Contains(e.Error.Message, "无权使用压缩所需的账号") ||
-		strings.Contains(e.Error.Message, "example.com") || strings.Contains(e.Error.Message, `"Held"`) {
+	if code != 403 || e.Error.Type != "permission_error" || !strings.Contains(e.Error.Message, `"Held"`) || !strings.Contains(e.Error.Message, "may not use") ||
+		!strings.Contains(e.Error.Message, "it may use codex/spare@example.com") || !strings.Contains(e.Error.Message, "add the signed-in account to the key") ||
+		!strings.Contains(e.Error.Message, "compaction_trigger on /responses") {
 		t.Fatalf("held off the sign-in: %d %s", code, body)
 	}
 	if len(asked) != 0 {
@@ -525,8 +524,7 @@ func TestGatewayKeyModelsHoldCodexOwnModel(t *testing.T) {
 		Error struct{ Message, Type string }
 	}
 	json.Unmarshal([]byte(body), &e)
-	if code != 403 || e.Error.Type != "permission_error" || !strings.Contains(e.Error.Message, "无权使用模型 codex/gpt-5.5") ||
-		strings.Contains(e.Error.Message, "relay/m1") || strings.Contains(e.Error.Message, `"Held"`) {
+	if code != 403 || e.Error.Type != "permission_error" || !strings.Contains(e.Error.Message, `"Held"`) || !strings.Contains(e.Error.Message, "may not use codex/gpt-5.5") || !strings.Contains(e.Error.Message, "relay/m1") {
 		t.Fatalf("a native model the key doesn't list: %d %s", code, body)
 	}
 	if len(heads) != 0 {

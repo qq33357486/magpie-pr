@@ -87,7 +87,7 @@ func TestAccountPinnedUnknown(t *testing.T) {
 	s := New()
 	for path, model := range pinPaths {
 		code, body := pinnedPost(t, s, path, model, "nobody@example.com")
-		if code != 404 || !strings.Contains(body, "没有该名称的账号") || strings.Contains(body, "example.com") || strings.Contains(body, "Magpie") {
+		if code != 404 || !strings.Contains(body, "nobody@example.com") || !strings.Contains(body, "spare@example.com") {
 			t.Fatalf("%s: %d %s", path, code, body)
 		}
 	}
@@ -113,7 +113,7 @@ func TestAccountPinnedResting(t *testing.T) {
 	s := New()
 	for path, model := range pinPaths {
 		code, body := pinnedPost(t, s, path, model, "me@example.com")
-		if code != 429 || !strings.Contains(body, "指定的账号暂不可用") || strings.Contains(body, "example.com") {
+		if code != 429 || !strings.Contains(body, "rests until") {
 			t.Fatalf("%s: %d %s", path, code, body)
 		}
 	}

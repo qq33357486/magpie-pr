@@ -79,7 +79,7 @@ func TestSealedMessageToALeadOnAChatProviderIsLeftOut(t *testing.T) {
 	if len(got) != 2 || native != 0 {
 		t.Fatalf("token was asked %d times, the ChatGPT backend %d", len(got), native)
 	}
-	if strings.Contains(got[1], "gAAAAA") || !strings.Contains(got[1], "/root/worker") || !strings.Contains(got[1], "已略去") {
+	if strings.Contains(got[1], "gAAAAA") || !strings.Contains(got[1], "/root/worker") || !strings.Contains(got[1], "left out") {
 		t.Fatalf("the lead's request to token: %s", got[1])
 	}
 }
@@ -101,7 +101,7 @@ func TestSealedMessageToASubagentOnAChatProviderIsLeftOut(t *testing.T) {
 		t.Fatalf("subagent: %d %s", rec.Code, rec.Body.String())
 	}
 	got := token.requests()
-	if len(got) != 2 || strings.Contains(got[1], "gAAAAA") || !strings.Contains(got[1], "read the README") || !strings.Contains(got[1], "已略去") {
+	if len(got) != 2 || strings.Contains(got[1], "gAAAAA") || !strings.Contains(got[1], "read the README") || !strings.Contains(got[1], "left out") {
 		t.Fatalf("token was sent %d requests; the subagent's: %v", len(got), got[len(got)-1:])
 	}
 }
@@ -120,7 +120,7 @@ func TestSealedTaskOnAChatProviderStillTurnedAway(t *testing.T) {
 	if rec.Code != 400 || len(token.requests()) != 1 {
 		t.Fatalf("subagent: %d %s (token asked %d times)", rec.Code, rec.Body.String(), len(token.requests()))
 	}
-	if body := rec.Body.String(); strings.Contains(body, "the lead has since been on") || !strings.Contains(body, "（token/gpt-6.1-sol）无法读取") {
+	if body := rec.Body.String(); strings.Contains(body, "the lead has since been on") || !strings.Contains(body, "token/gpt-6.1-sol can't") {
 		t.Fatalf("the refusal: %s", body)
 	}
 }

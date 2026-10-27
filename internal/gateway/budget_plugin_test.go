@@ -66,7 +66,7 @@ func TestKeyLimitsOnAndOff(t *testing.T) {
 	withoutLimits(t)
 	setLimit(t, keys[0].ID, &access.Limit{Period: "day", Tokens: 100000})
 	w := call(secrets[0])
-	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "当前访问密钥暂不可用") || w.Header().Get("X-Should-Retry") != "false" {
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "Key limits plugin") || w.Header().Get("X-Should-Retry") != "false" {
 		t.Fatal("off: a limited key's request", w.Code, w.Body.String(), w.Header())
 	}
 	if calls.Load() != 2 {

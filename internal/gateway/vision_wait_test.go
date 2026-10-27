@@ -108,7 +108,7 @@ func TestVisionLimitEndsASlowDescriber(t *testing.T) {
 	visionLimits(t, 200*time.Millisecond, 10*time.Second)
 	s, _ := slowEyed(t, time.Second)
 	code, body := postAs(t, s, "", pastedImage)
-	if code != 502 || !strings.Contains(body, "图片描述服务也暂时不可用") {
+	if code != 502 || !strings.Contains(body, "no answer in 200ms") {
 		t.Fatalf("slow describer: %d %s", code, body)
 	}
 	var vision *usage.Record

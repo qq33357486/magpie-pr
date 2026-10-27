@@ -51,11 +51,11 @@ func TestGeminiUpstreamEndedShort(t *testing.T) {
 		t.Fatalf("vertexCut is not the reply cut: %s", vertexCut)
 	}
 	code, body := askCutGemini(t, vertexCut, "/v1/chat/completions", geminiChatStream)
-	if code != 200 || !strings.Contains(body, "回复提前结束，请重试") || chatFinish(body) == "stop" {
+	if code != 200 || !strings.Contains(body, "ended before it was complete") || chatFinish(body) == "stop" {
 		t.Errorf("Chat: a cut reply finished as whole (%d): %s", code, body)
 	}
 	code, body = askCutGemini(t, vertexCut, "/v1/messages", geminiMessages)
-	if code != 200 || !strings.Contains(body, "回复提前结束，请重试") || strings.Contains(body, "end_turn") {
+	if code != 200 || !strings.Contains(body, "ended before it was complete") || strings.Contains(body, "end_turn") {
 		t.Errorf("Anthropic: a cut reply finished as whole (%d): %s", code, body)
 	}
 

@@ -36,11 +36,8 @@ const codexDropBody = 1 << 20
 // codexResetSaid is in what a ChatGPT account's reply says once
 // codexDropped has read it as that 503 to a request this large: what the
 // accounts loop tells it by, through its own error shape, to ask again
-// without resting anybody. It says "the gateway", not the stack's own
-// name, for toldOutside masks that word out of what a client is told —
-// this marker is read back out of the recorded body, so it must survive
-// the masking word for word.
-const codexResetSaid = "This usually passes, so the gateway asked again without resting the account."
+// without resting anybody.
+const codexResetSaid = "This usually passes, so magpie asked again without resting the account."
 
 // codexDropped is the reply, still the 503 it is, that a ChatGPT Codex
 // backend gave a request of size bytes when it closed the connection

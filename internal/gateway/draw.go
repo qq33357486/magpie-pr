@@ -913,7 +913,7 @@ func (s *Server) drawOnAccounts(ctx context.Context, r *http.Request, p provider
 	}
 	if len(cs) == 0 && slices.ContainsFunc(barred, func(c candidate) bool { return c.capped != nil }) {
 		// every account is held at its usage cap
-		msg, back := cappedErrorTold(model, barredOf(barred, q, false, provider.Chat, nil), time.Now())
+		msg, back := cappedError(model, barredOf(barred, q, false, provider.Chat, nil), time.Now())
 		return p, drawn{}, http.StatusTooManyRequests, back, errors.New(msg)
 	}
 	if len(cs) == 0 && len(barred) > 0 {
@@ -935,7 +935,7 @@ func (s *Server) drawOnAccounts(ctx context.Context, r *http.Request, p provider
 	// turns, ahead of any whose lane is cooling — and none to ask when
 	// every lane is, the earliest back in the Retry-After
 	if ready, cooling, back := drawLaneOrder(cs); len(ready) == 0 && len(cooling) > 0 {
-		return p, drawn{}, http.StatusTooManyRequests, back, fmt.Errorf("生图额度暂时用尽，预计%s后恢复，请稍后重试", untilInWords(time.Until(back)))
+		return p, drawn{}, http.StatusTooManyRequests, back, fmt.Errorf("image generation is cooling down on every account; retry in about %s", time.Until(back).Round(time.Minute))
 	} else if len(ready) > 0 {
 		cs = append(ready, cooling...)
 	}

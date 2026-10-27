@@ -251,10 +251,9 @@ func readSized(r io.Reader, declared int64) ([]byte, error) {
 // overLimit says a body is over magpie's own limit, and that it is
 // magpie's, not the provider's: an agent shows the message as it comes,
 // and a bare "Payload Too Large" read as the model's or the vendor's
-// (#1422). writeError adds what to do about it. It says "the gateway",
-// which toldOutside leaves as it is, rather than the stack's own name.
+// (#1422). writeError adds what to do about it.
 func overLimit(limit int64) error {
-	return fmt.Errorf("request body is over the gateway limit of %s (decoded); the provider was not asked", sizeWord(limit))
+	return fmt.Errorf("request body is over magpie's gateway limit of %s (decoded); the provider was not asked", sizeWord(limit))
 }
 
 // sizeWord is a byte count in MB, or in KB or bytes when it is smaller,

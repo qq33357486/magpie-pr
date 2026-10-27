@@ -254,10 +254,9 @@ func namesInCatalog() map[string]bool {
 }
 
 // switchedOff says a request for model went nowhere because p, which
-// serves it, is switched off (provider.Provider.Off). The customer is
-// told the service is out, not the operator's way back in.
+// serves it, is switched off in magpie (provider.Provider.Off).
 func switchedOff(p provider.Provider, model string) string {
-	return fmt.Sprintf("模型 %s 所在的服务通道已停用，暂时无法服务，请稍后重试", model)
+	return fmt.Sprintf("%s is switched off in Magpie, so %q is not served; switch it on again in Magpie's Providers to use it", p.Name, model)
 }
 
 // Version is set by main.
@@ -1444,7 +1443,7 @@ func (s *Server) countOn(w http.ResponseWriter, r *http.Request, p provider.Prov
 					continue
 				}
 			}
-			writeCut(w, provider.Anthropic, c.p.Name, err)
+			writeError(w, provider.Anthropic, 502, c.p.Name+": "+err.Error())
 			return
 		}
 		if res.StatusCode >= 400 {
@@ -1459,8 +1458,8 @@ func (s *Server) countOn(w http.ResponseWriter, r *http.Request, p provider.Prov
 					continue
 				}
 			}
-			keepRetry(w.Header(), res.Header, b)
-			writeError(w, provider.Anthropic, res.StatusCode, c.p.Explain(provider.APIError(b, res.Status), res.StatusCode, b))
+			keepRetryOut(w.Header(), res.Header, b)
+			writeError(w, provider.Anthropic, res.StatusCode, c.p.Explain(c.p.Name+": "+provider.APIError(b, res.Status), res.StatusCode, b))
 			return
 		}
 		defer res.Body.Close()
@@ -1875,9 +1874,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			return
 		}
 		msg := unknownModel(call.Model, "")
-		if _, ok := provider.DisabledGroup(asked); ok {
+		if g, ok := provider.DisabledGroup(asked); ok {
 			call.Error = "group switched off"
-			msg = fmt.Sprintf("模型 %s 所属的服务分组已停用，暂时无法服务，请稍后重试", call.Model)
+			msg = fmt.Sprintf("the routing group %s is switched off in Magpie, so %q is not served; switch it on again on Magpie's Routing page to use it", g.Name, call.Model)
 		} else if g, _, ok := provider.FindGroup(asked); ok && g.Decides() {
 			// a group of decision models answers System One, not this
 			call.Status, call.Error = 400, "a decision group"
@@ -1999,7 +1998,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			if sealedLead != "" && !canSeal(sealedLead) {
 				earlier, sealedLead = sealedLead, ""
 			}
-			writeError(w, from, 400, sealedTaskTold(call.Model, sealedLead, earlier))
+			writeError(w, from, 400, sealedTaskError(call.Model, sealedLead, earlier))
 			turnedAway()
 			return
 		}
@@ -2066,8 +2065,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			seen, err := s.seenBody(withDescribeFor(r.Context(), call.Agent, call.Model, sessionOf(r.Header), unknownSight), from, body, see)
 			if err != nil {
 				call.Status, call.Error = 502, "image not described"
-				log.Printf("vision: %s couldn't describe an image for %s: %v%s%s", see, call.Model, err, missingSeerNote(), autoSeerNote(see))
-				writeError(w, from, 502, fmt.Sprintf("模型 %s 暂不支持图片输入，图片描述服务也暂时不可用，请稍后重试", call.Model))
+				writeError(w, from, 502, fmt.Sprintf("model %q can't see images, and %s couldn't describe the image for it: %v%s%s", call.Model, see, err, missingSeerNote(), autoSeerNote(see)))
 				turnedAway()
 				return
 			}
@@ -2089,10 +2087,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			if isGroup {
 				group = g.Name
 			}
-			if note := textOnlyNote(p, model, group) + noSeerNote(); note != "" {
-				log.Printf("vision: %s:%s", call.Model, note)
-			}
-			writeError(w, from, 400, fmt.Sprintf("模型 %s 不支持图片输入，请移除图片或更换支持图片的模型", call.Model))
+			writeError(w, from, 400, fmt.Sprintf("model %q does not support image input%s%s", call.Model, textOnlyNote(p, model, group), noSeerNote()))
 			turnedAway()
 			return
 		}
@@ -2213,12 +2208,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			// only the account that sealed the conversation's native
 			// compaction was a candidate, and it is held: the others
 			// weren't tried for that, not for being held too (#2517)
-			msg, back = checkpointCappedErrorTold(call.Model, *checkpoint, sealer, time.Now())
+			msg, back = checkpointCappedError(call.Model, *checkpoint, sealer, time.Now())
 			record = checkpointCappedRecord(sealer)
 		} else {
-			msg, back = cappedErrorTold(call.Model, held, time.Now())
+			msg, back = cappedError(call.Model, held, time.Now())
 			if strictHeld != nil {
-				msg += "；该会话已绑定固定通道，未自动切换，请稍后重试"
+				msg += ". The conversation stays strictly on that account (Stays: Strict), so magpie doesn't move it to another"
 			}
 			record = cappedRecord(held)
 		}
@@ -2345,10 +2340,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			}
 			if len(cands) == 0 {
 				call.Status, call.Error = 400, "model does not support image input"
-				if note := textOnlyNote(p, model, g.Name) + noSeerNote(); note != "" {
-					log.Printf("vision: %s:%s", call.Model, note)
-				}
-				writeError(w, from, 400, fmt.Sprintf("模型 %s 不支持图片输入，请移除图片或更换支持图片的模型", call.Model))
+				writeError(w, from, 400, fmt.Sprintf("model %q does not support image input%s%s", call.Model, textOnlyNote(p, model, g.Name), noSeerNote()))
 				turnedAway()
 				return
 			}
@@ -2610,8 +2602,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 					}
 					see, _ := seeing()
 					call.Status = 502
-					log.Printf("vision: %s couldn't describe an image for %s: %v%s%s", see, c.p.ID+"/"+c.model, err, missingSeerNote(), autoSeerNote(see))
-					failTo(w, kept, from, 502, fmt.Sprintf("模型 %s 暂不支持图片输入，图片描述服务也暂时不可用，请稍后重试", c.p.ID+"/"+c.model))
+					failTo(w, kept, from, 502, fmt.Sprintf("model %q can't see images, and %s couldn't describe the image for it: %v%s%s", c.p.ID+"/"+c.model, see, err, missingSeerNote(), autoSeerNote(see)))
 					break
 				}
 				attemptBody = b
@@ -4652,7 +4643,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 	}
 	res, err := s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header)
 	if err != nil {
-		return writeCut(w, proto, p.Name, err), err.Error(), true
+		return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 	}
 	// structured output turned away (Xiaomi MiMo's Token Plan takes no
 	// json_schema, only text and json_object, #2126): a schema is asked
@@ -4738,7 +4729,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 				refused = append(refused, prefillRefused(model))
 				body = nb
 				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
-					return writeCut(w, proto, p.Name, err), err.Error(), true
+					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 				}
 				continue
 			}
@@ -4750,7 +4741,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 				refused = append(refused, rootUnionRefused(model))
 				body = nb
 				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
-					return writeCut(w, proto, p.Name, err), err.Error(), true
+					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 				}
 				continue
 			}
@@ -4762,7 +4753,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 				refused = append(refused, toolStrictRefused)
 				body = nb
 				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
-					return writeCut(w, proto, p.Name, err), err.Error(), true
+					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 				}
 				continue
 			}
@@ -4776,7 +4767,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 				refused = append(refused, reasoningTextRefused(model))
 				body = nb
 				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
-					return writeCut(w, proto, p.Name, err), err.Error(), true
+					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 				}
 				continue
 			}
@@ -4794,7 +4785,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 				refused = append(refused, bareReasoningRefused(model))
 				body = nb
 				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
-					return writeCut(w, proto, p.Name, err), err.Error(), true
+					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 				}
 				continue
 			}
@@ -4808,7 +4799,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 				refused = append(refused, itemIDsRefused(model))
 				body = nb
 				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
-					return writeCut(w, proto, p.Name, err), err.Error(), true
+					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 				}
 				continue
 			}
@@ -4827,7 +4818,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			refused = append(refused, imageToolRefused)
 			body = nb
 			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
-				return writeCut(w, proto, p.Name, err), err.Error(), true
+				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 			}
 			continue
 		}
@@ -4838,7 +4829,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		}
 		body = withoutMessageReasoning(body, ms)
 		if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(body), r.Header); err != nil {
-			return writeCut(w, proto, p.Name, err), err.Error(), true
+			return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 		}
 	}
 	if res.StatusCode < 400 {
@@ -4865,13 +4856,13 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 			s.markUnfit(p.ID, refused, proto)
 			offRetried = true
 			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(withBodyEffort(proto, body, onEffort(p, model))), r.Header); err != nil {
-				return writeCut(w, proto, p.Name, err), err.Error(), true
+				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 			}
 		} else if proto == provider.Chat && mandatoryReasoning.Match(b) {
 			if nb, ok := withoutReasoningOff(body); ok {
 				offRetried = true
 				if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(nb), r.Header); err != nil {
-					return writeCut(w, proto, p.Name, err), err.Error(), true
+					return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 				}
 			}
 		}
@@ -4903,7 +4894,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		if toolsWithoutEffort.Match(b) && !s.servesElsewhere(p, model, proto) && !s.turnedAway(p, model, "none", proto) {
 			off, err := s.forward(r.Context(), p, proto, path, p.Prepare(withBodyEffort(proto, body, "none")), r.Header)
 			if err != nil {
-				return writeCut(w, proto, p.Name, err), err.Error(), true
+				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 			}
 			ob, _ := io.ReadAll(io.LimitReader(off.Body, 1<<20))
 			off.Body.Close()
@@ -4930,18 +4921,18 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		// between_tools in place of disabled (#1454)
 		if nb, ok := withBetweenTools(body); ok && asksBetweenTools.Match(b) {
 			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(nb), r.Header); err != nil {
-				return writeCut(w, proto, p.Name, err), err.Error(), true
+				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 			}
 		} else if nb, ok := withoutThinkingOff(body); ok && refusesThinkingOff(b) {
 			s.markUnfit(p.ID, offRefused(model), proto)
 			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(nb), r.Header); err != nil {
-				return writeCut(w, proto, p.Name, err), err.Error(), true
+				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 			}
 		} else if nb, ok := withoutSampling(body); ok && samplingDeprecated.Match(b) {
 			// a Claude by a name samplingAsTaken doesn't know refusing
 			// temperature, top_p or top_k (#1454)
 			if res, err = s.forward(r.Context(), p, proto, path, p.Prepare(nb), r.Header); err != nil {
-				return writeCut(w, proto, p.Name, err), err.Error(), true
+				return writeError(w, proto, 502, p.Name+": "+err.Error()), err.Error(), true
 			}
 		}
 	}
@@ -5197,20 +5188,18 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 		// stream may end without [DONE] and be whole, so only a read that
 		// failed counts there, Gemini's own aside; a Gemini one ends on a
 		// candidate's finishReason (#1644).
-		var failed, told string
+		var failed string
 		switch {
 		case rerr != nil && rerr != io.EOF:
 			failed = cutMidReply(p.Name, rerr)
-			told = cutToldMid
 		case proto == provider.Anthropic || proto == provider.Responses || proto == provider.Gemini || unfinished:
 			failed = p.Name + ": " + errEndedShort.Error()
-			told = cutToldShort
 		}
 		if failed != "" {
 			// what is appended begins after a blank line: the event still
 			// pending is left to stand, and the failure is read as an
 			// event of its own (TestPassthroughStreamEndsOnLineEnd)
-			w.Write(append(apart(), streamFailure(proto, told)...))
+			w.Write(append(apart(), streamFailure(proto, failed)...))
 			if f != nil {
 				f.Flush()
 			}
@@ -5457,6 +5446,22 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 			}
 			own = tier != "" && (to == provider.Chat || to == provider.Responses) && slices.Contains(provider.PluginTiers(p, model), tier)
 			if own && tier != req.Tier {
+				r := *req
+				r.Tier, req = tier, &r
+			}
+		}
+		if p.IsRemoteMagpie() && req.Tier == "" && req.Fast && (to == provider.Chat || to == provider.Responses) {
+			// fast mode in Claude's words (a fast pick from an agent on
+			// its API, littlekk88 on Discord) is the tier another magpie
+			// offers it at: priority, or ultrafast for a pick sent
+			// Ultrafast where it offers that. Its Chat or Responses reads
+			// service_tier alone
+			tiers := provider.RemoteTiers(p, model)
+			tier := "priority"
+			if (req.Ultrafast || isUltra(ctx)) && slices.Contains(tiers, "ultrafast") {
+				tier = "ultrafast"
+			}
+			if slices.Contains(tiers, tier) {
 				r := *req
 				r.Tier, req = tier, &r
 			}
@@ -6308,7 +6313,7 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		return writeError(w, from, 502, msg), msg
 	}
 	if (empty || repliesCounted(actual) && uncounted(col.res.Usage)) && !saidAnything(col.res.Parts) && answersNothing(col.res.Stop) {
-		msg := emptyReply
+		msg := p.Name + ": " + emptyReply
 		return writeError(w, from, 502, msg), msg
 	}
 	if zen != nil {
@@ -7342,7 +7347,7 @@ func failTo(w http.ResponseWriter, a *keptAlive, proto provider.Protocol, status
 func streamError(w http.ResponseWriter, proto provider.Protocol, model string, status int, msg string) {
 	sw := newSSEWriter(w)
 	sw.begun = true
-	text := saysPassing(status, toldOutside(msg))
+	text := saysPassing(status, msg)
 	ev := Event{Kind: KError, Text: text, Status: status}
 	overflow := tooLong(status, msg)
 	if overflow {
@@ -7405,10 +7410,8 @@ func writeVendorError(w http.ResponseWriter, proto provider.Protocol, status int
 }
 
 // writeErrorSaid is writeError with the code and param an OpenAI-shaped
-// answer names, nil for none. It is the one place every error answer
-// passes, so the fork's masking net (toldOutside) is cast here.
+// answer names, nil for none.
 func writeErrorSaid(w http.ResponseWriter, proto provider.Protocol, status int, msg string, code, param any) int {
-	msg = toldOutside(msg)
 	typ := "api_error"
 	switch {
 	case status == 400:

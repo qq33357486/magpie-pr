@@ -848,7 +848,7 @@ func TestCodexDrawHonorsAccountModelLists(t *testing.T) {
 	s := New()
 	for _, model := range []string{"codex/gpt-image-2", "codex/gpt-image-2.5"} {
 		code, _, raw := postImages(t, s, "/v1/images/generations", "application/json", `{"model":"`+model+`","prompt":"a magpie"}`)
-		if code != 403 || !strings.Contains(raw, "生图通道暂未开放") {
+		if code != 403 || !strings.Contains(raw, "image generation is not open") {
 			t.Fatalf("%s: %d %s", model, code, raw)
 		}
 	}

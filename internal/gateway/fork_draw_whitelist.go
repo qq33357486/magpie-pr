@@ -34,7 +34,7 @@ func forkDrawWhitelist(p provider.Provider, cs []candidate, asked, drawer string
 		return !p.AccountServes(c.p.Account.User, asked) && !p.AccountServes(c.p.Account.User, drawer)
 	})
 	if len(kept) == 0 {
-		return nil, errors.New("生图通道暂未开放该模型，请稍后重试")
+		return nil, errors.New("image generation is not open for this model yet; try again later")
 	}
 	return kept, nil
 }

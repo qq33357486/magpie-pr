@@ -47,7 +47,7 @@ func TestGroupAskedByItsName(t *testing.T) {
 	if err := provider.SaveGroup(provider.Group{ID: "other-pool", Name: "DS Flash", Members: []string{"a/ds-pro"}}); err != nil {
 		t.Fatal(err)
 	}
-	if code, body := ask("DS Flash"); code != 404 || !strings.Contains(body, "不支持的模型") {
+	if code, body := ask("DS Flash"); code != 404 || !strings.Contains(body, "knows no model") {
 		t.Fatalf("a name two groups share: %d %s", code, body)
 	}
 }

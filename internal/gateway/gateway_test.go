@@ -949,7 +949,7 @@ func TestErrorsAndUnknownModel(t *testing.T) {
 		t.Errorf("%d %s", code, body)
 	}
 	code, body = post(t, "/v1/chat/completions", `{"model":"nope","messages":[]}`)
-	if code != 404 || !strings.Contains(body, `"error":{`) || !strings.Contains(body, "不支持的模型") {
+	if code != 404 || !strings.Contains(body, `"error":{`) || !strings.Contains(body, "m1") {
 		t.Errorf("%d %s", code, body)
 	}
 }
