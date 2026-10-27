@@ -103,12 +103,16 @@ jobs:
       # first-use races, so it must include the race detector. The gateway's
       # tests can't call t.Parallel (t.Setenv), so its suite runs split over
       # one process per core (#923); each process isolates its own home.
+      # The fork skips TestChatAndMessagesFactsLeaveTheHistory here (10-27):
+      # upstream's new allocation-budget assertion (d0880303) holds in the
+      # plain run but the race detector's own allocations skew the ratio it
+      # reads; it still runs in the Test step above.
       - name: Race
         if: runner.os != 'Windows'
         shell: bash
         run: |
           go test -race -c -o "$RUNNER_TEMP/gateway.race" -tags "${{ steps.tags.outputs.tags }}" ./internal/gateway/
-          build/race-shards.sh internal/gateway "$RUNNER_TEMP/gateway.race" "$(getconf _NPROCESSORS_ONLN)" -test.timeout=20m
+          build/race-shards.sh internal/gateway "$RUNNER_TEMP/gateway.race" "$(getconf _NPROCESSORS_ONLN)" -test.timeout=20m -test.skip='^TestChatAndMessagesFactsLeaveTheHistory$'
           go test -race -tags "${{ steps.tags.outputs.tags }}" ./internal/redact/
 
       # Account usage mixes cached results with concurrent fetches.
