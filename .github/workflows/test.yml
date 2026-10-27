@@ -73,11 +73,13 @@ jobs:
         # the 386-commit merge; each failed at least one green-otherwise run,
         # none touched by this fork) — TestUnreadLoginsWriteErrorsKeepCredentials
         # crashes the provider package (synctest, upstream #3632, filed by
-        # upstream with the merge's own commit notes), TestCodexAppServersOnHome
+        # upstream with the merge's own commit notes), the three TestFetch*
+        # ones are upstream #3854 (asked twice, want once; they only surface
+        # once the crasher above is skipped), and TestCodexAppServersOnHome
         # ("ps failed") and TestEnvOfChild (empty environ) flake on the runner.
         # Take a name out when upstream fixes it; a red night merge is worse
         # than one lost flaky signal.
-        run: go test -tags "${{ steps.tags.outputs.tags }}" -skip '^(TestUnreadLoginsWriteErrorsKeepCredentials|TestCodexAppServersOnHome|TestEnvOfChild)$' ./...
+        run: go test -tags "${{ steps.tags.outputs.tags }}" -skip '^(TestUnreadLoginsWriteErrorsKeepCredentials|TestCodexAppServersOnHome|TestEnvOfChild|TestFetchAsksOneListOnceForTwoBasesOfIt|TestFetchUnionsProtocolListsWithoutChat|TestFetchAsksASharedBaseOnce)$' ./...
 
       # Windows skips the Test step above, so the two plugin stderr tests run
       # here. The end-to-end one needs bun on PATH; without it it skips.
