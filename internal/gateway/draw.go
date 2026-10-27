@@ -923,6 +923,13 @@ func (s *Server) drawOnAccounts(ctx context.Context, r *http.Request, p provider
 	if len(cs) == 0 {
 		cs = []candidate{{p: p, model: model, rest: p.ID}}
 	}
+	// fork(2026-10-27): 生图同源尊重账号白名单(实现在 fork_draw_whitelist.go);
+	// 放在兜底候选之后, 兜底复活的单账号也过同一道闸
+	if kept, err := forkDrawWhitelist(q, cs, d.Model, model); err != nil {
+		return p, drawn{}, http.StatusForbidden, time.Time{}, err
+	} else if kept != nil {
+		cs = kept
+	}
 	cs = probeOne(cs) // of those resting, only the one back soonest (#1799)
 	// the drawing lane's own order: the accounts whose images can draw, in
 	// turns, ahead of any whose lane is cooling — and none to ask when

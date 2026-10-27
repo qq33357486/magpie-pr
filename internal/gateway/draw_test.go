@@ -834,22 +834,12 @@ func TestDrawGoesWhereTheVendorPointsIt(t *testing.T) {
 // list kept for some chat models doesn't turn its drawing away as "set
 // not to be served by any account" (heyiwei5 on X). Each account draws
 // as it did with no list.
-func TestCodexDrawsPastAccountModelLists(t *testing.T) {
+// fork(2026-10-27): 行为反转——账号白名单(AccountModels)对生图同样生效。
+// 上游原测试(TestCodexDrawsPastAccountModelLists)断言 codex 生图绕过账号清单;
+// fork 后只文本白名单的号不再被拉去画图(403 中文文案), 无清单账号照常画
+// (由本文件其余 draw 测试覆盖)。上游注释(heyiwei5 案例)描述的旧行为作废。
+func TestCodexDrawHonorsAccountModelLists(t *testing.T) {
 	codexSignedIn(t, "plus@example.com")
-	var mu sync.Mutex
-	var tried []string
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.Copy(io.Discard, r.Body)
-		mu.Lock()
-		tried = append(tried, r.Header.Get("chatgpt-account-id"))
-		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"created":1,"data":[{"b64_json":"`+base64.StdEncoding.EncodeToString(pngBytes)+`"}]}`)
-	}))
-	defer up.Close()
-	was := provider.CodexBase
-	provider.CodexBase = up.URL + "/backend-api/codex"
-	defer func() { provider.CodexBase = was }()
 	for _, u := range []string{"me@example.com", "plus@example.com"} {
 		if err := provider.SetAccountModels("codex", u, []string{"gpt-5.5"}); err != nil {
 			t.Fatal(err)
@@ -857,14 +847,9 @@ func TestCodexDrawsPastAccountModelLists(t *testing.T) {
 	}
 	s := New()
 	for _, model := range []string{"codex/gpt-image-2", "codex/gpt-image-2.5"} {
-		code, a, raw := postImages(t, s, "/v1/images/generations", "application/json", `{"model":"`+model+`","prompt":"a magpie"}`)
-		if code != 200 || len(a.Data) != 1 {
+		code, _, raw := postImages(t, s, "/v1/images/generations", "application/json", `{"model":"`+model+`","prompt":"a magpie"}`)
+		if code != 403 || !strings.Contains(raw, "生图通道暂未开放") {
 			t.Fatalf("%s: %d %s", model, code, raw)
 		}
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(tried) != 2 {
-		t.Fatalf("asked %v", tried)
 	}
 }
