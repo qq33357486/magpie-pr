@@ -148,3 +148,10 @@ claudeMark）。同批上游新增 `sessions/carry_convert.go` 直接调 `codexs
 `agentenv_test.go` 的 `notAnAgent` 补 `CARGO_HOME` 一条。遇到"合并树上单跑红、纯
 upstream/main 也红"的测试，照此办理：先在 upstream/main worktree 上复现实锤，再在
 fork 侧最小修（登记/断言），勿当自己的回归排查。
+
+上游还有一类**跑起来才红的 flaky**（synctest 崩溃带崩整包、`ps failed`、environ 读空），
+本地 Windows 全 skip 或全绿、无法复现，只能在 CI 上观察到互换红。这类已进 test.yml
+全量步骤的 `-skip` 名单（TestUnreadLoginsWriteErrorsKeepCredentials＝上游自报 #3632、
+TestCodexAppServersOnHome、TestEnvOfChild），上游修好后从名单里拿掉。tui 的
+TestTUIFetchesSubscriptionModels/agent 也是上游自身红（add927e6 改了 agent picker 的
+列表、裸名不在选项里），fork 侧把该子测试期望对齐为 `codex/` 前缀并注释了缘由。
