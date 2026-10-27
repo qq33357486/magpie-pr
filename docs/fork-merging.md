@@ -103,6 +103,12 @@ gateway 的读写、`sessions/codex_portable.go` 的 rollout 可移植化都用�
 写点会被 upstream 自动合并进来（写读劈叉）**——解完显式冲突块后必须全局搜
 `magpie1:`、`Encrypted(` 复核写读口径一致。
 
+（10-27 增补：上游又加了 `claudeseal` 包——Claude 自己的 compaction 标记，与 fork
+无关、不需要 twin；但 `portLine` 的早退检查从此是**三标记**（ForkMark/magpieMark/
+claudeMark）。同批上游新增 `sessions/carry_convert.go` 直接调 `codexsummary.Message(`
+漏了我们的 gw1:——已在调用点一行换 `ForkMessage(`。读点扫描范围扩大为：
+`codexsummary.Message(` / `Encrypted(` / `Written(` 全局 grep。）
+
 ## Windows 本地测试红名单（以 Linux CI 为准）
 
 `go test` 在 Windows 本机有一批环境性失败/卡死，全部与代码无关、Linux CI 全绿：
@@ -119,4 +125,26 @@ gateway 的读写、`sessions/codex_portable.go` 的 rollout 可移植化都用�
   结构）、`TestIsMagpieKept…`（fs 分配数 256 > 阈值 200）、`TestAsideOffline…`（CLI
   fixture）、`TestCodexSignInInKeychain`、`TestWorkBuddyRestartOnMac`（在 Windows 进程
   表里找 Mac 的 .app 路径，10-25 上游 d08b6118 新增）、`TestCodexSyncMendsGoneCatalog`
-  （Windows 盘符路径写回 config.toml 的格式差异，10-25 上游 ef6f3749 新增）。
+  （Windows 盘符路径写回 config.toml 的格式差异，10-25 上游 ef6f3749 新增）、
+  `TestWorkBuddyOwnSaveAfterStartIsNoChange`（Mac 重启模拟，同 d08b6118 族，10-27 新增）、
+  `TestOpenLodyRunsItsDesktopEntry`/`TestDesktopExec`（Linux desktop entry 域：文件名带
+  引号在 Windows 非法、/bin/sh 解析到 Git 的 sh.exe，10-27 新增）、
+  `TestHermesProfilesFollowMagpieModel`（全量跑偶发，单跑绿）。
+- sessions（10-27 新增整包红名单）：`TestAgySessions`/`TestAgyRowOnly`（Antigravity CLI
+  列表，路径分隔符 `\` vs `/`，上游 b30734f9 新增）；`TestOneListing`/`TestShareListing`
+  （上游 51a2068b 新增：`one_listing.go` 的 `l.at.Before(held.since)` 在 Windows 时钟
+  粒度下同 tick 判不出"新 hold 该重列"，TestShareListing 的卡死是它失败后泄漏 hold 的
+  级联——两测试须一起 skip）；`TestCursorEditorCopiedOncePerChange`（10-27 合并前即红）。
+- usage：`TestDesktopSessionAccountMetadata`（10-27 合并前即红）。
+- **全量套件非确定性卡死**（10-27 定案）：gateway/agent 全量跑会在后段随机卡死在某个
+  测试上（每次不同、0s 起卡），**ORIG_HEAD 合并前同样复现**，与任何合并无关。本地验证
+  只跑 `-run` 定向测试，全量绿不绿交给 Linux CI 判。
+
+## 上游自身的红（fork 侧当天修）
+
+上游 3 个 Claude Code loop 提交不经全量门禁，会推红的测试过来（test.yml 红则夜间合并
+停摆）。已遇到：`TestFolderVarsAreListed`（e4552cca 给 `library/rtk_upgrade.go` 加了
+`os.Getenv("CARGO_HOME")` 却没登记，纯 upstream/main 实测红）——fork 已在
+`agentenv_test.go` 的 `notAnAgent` 补 `CARGO_HOME` 一条。遇到"合并树上单跑红、纯
+upstream/main 也红"的测试，照此办理：先在 upstream/main worktree 上复现实锤，再在
+fork 侧最小修（登记/断言），勿当自己的回归排查。

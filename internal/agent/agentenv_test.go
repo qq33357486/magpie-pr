@@ -39,6 +39,7 @@ var notAnAgent = map[string]string{
 	"GIT_SSH":         "the user's own SSH program for git, which a skill fetched with their git keeps",
 	"GIT_SSH_COMMAND": "the same, as a command",
 	"TZ":              "the machine's time zone, which a routing rule's hours fall back to (c888ef272), not a folder",
+	"CARGO_HOME":      "cargo's own bin folder, where an RTK upgrade looks for it; not an agent's folder",
 }
 
 // TestFolderVarsAreListed says every variable the packages that find an
