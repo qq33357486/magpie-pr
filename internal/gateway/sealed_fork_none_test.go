@@ -116,7 +116,7 @@ func TestSealedTaskNamesSubagentsOnAnyModel(t *testing.T) {
 	if msg := refusal(); !strings.Contains(msg, "已由上游加密绑定") || !strings.Contains(msg, "（ag/dfmodel）无法读取") {
 		t.Fatalf("the refusal doesn't say the task is sealed: %s", msg)
 	}
-	if msg := sealedTaskError("ag/dfmodel", "", ""); !strings.Contains(msg, `turn on "Codex subagents on any model" in magpie's Settings and start a new thread`) {
+	if msg := sealedTaskError("ag/dfmodel", "", ""); !strings.Contains(msg, `turn on "Codex subagents on any model" in Codex's settings on magpie's Agents page and start a new thread`) {
 		t.Fatalf("the logged detail doesn't name the setting: %s", msg)
 	}
 	st := settings.Load()
@@ -124,7 +124,7 @@ func TestSealedTaskNamesSubagentsOnAnyModel(t *testing.T) {
 	if err := settings.Save(st); err != nil {
 		t.Fatal(err)
 	}
-	if msg := sealedTaskError("ag/dfmodel", "", ""); !strings.Contains(msg, `"Codex subagents on any model" is on`) || !strings.Contains(msg, "features.multi_agent_v2") || strings.Contains(msg, "turn on") {
+	if msg := sealedTaskError("ag/dfmodel", "", ""); !strings.Contains(msg, `"Codex subagents on any model" is on in Codex's settings on magpie's Agents page`) || !strings.Contains(msg, "features.multi_agent_v2") || strings.Contains(msg, "turn on") {
 		t.Fatalf("with the setting on, the logged detail doesn't say why the thread is still sealed: %s", msg)
 	}
 }

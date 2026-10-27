@@ -48,6 +48,9 @@ var Vars = []string{
 	"STEP_CODING_AGENT_DIR", "STEPCODE_CONFIG_DIR",
 	// MothX's config folder ($MOTHX_DIR/settings.json)
 	"MOTHX_DIR",
+	// PenguinHarness's data root and the Project its CLI works in
+	// ($PENGUIN_HOME/$PENGUIN_PROJECT_ID/.project_config.toml)
+	"PENGUIN_HOME", "PENGUIN_PROJECT_ID",
 	// omp
 	"OMP_PROFILE",
 	// Qoder's two builds, the global site's and China's
@@ -62,6 +65,8 @@ var Vars = []string{
 	"QWEN_HOME",
 	// Ante
 	"ANTE_HOME",
+	// NewMax's data folder (its newmax.db), ~/.newmax without it
+	"NEWMAX_USER_DATA_DIR",
 	// AstrBot's root, the folder holding its data/ (else ~/.astrbot, the desktop app's)
 	"ASTRBOT_ROOT",
 	// jcode's folder, ~/.jcode without it
@@ -122,6 +127,7 @@ var NotPaths = map[string]bool{
 	"PI_CONFIG_DIR": true, "OPENCODE_DB": true,
 	"STEPCODE_CONFIG_DIR": true,
 	"MAGPIE_ZED_BIN":      true, "MAGPIE_ZED_PROCESS_NAMES": true,
+	"PENGUIN_PROJECT_ID": true,
 }
 
 // ClaudeProviders are Claude Code's switches that send its requests to a

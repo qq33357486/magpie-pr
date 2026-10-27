@@ -1,9 +1,11 @@
 package usage
 
 import (
+	"strings"
 	"time"
 
 	"github.com/yetone/magpie/internal/probelog"
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // SourceProbe is Record.Source for a request magpie sent a provider on its
@@ -54,7 +56,14 @@ func clipProbeError(s string) string {
 // probeChunk is the probes made since since as one chunk of the request
 // log's rows, each in the order its line has in the log as a gateway
 // row's is; nil for none.
-func probeChunk(probes []probeRow, since time.Time) *rowChunk {
+// A provider renamed since is listed by the id it has now (Renames): the
+// Requests page's provider list named a renamed one twice (cybercaius).
+// One asked while a provider was being added, under its host, is listed
+// by the id of the provider on that host (Renames.ProbeOf), and once no
+// provider is on it, a deleted one's, by the id the log's calls to that
+// host were made under (hosts, logSnapshot.hosts): cybercaius on Discord,
+// a deleted provider's tests were listed under its host beside its id.
+func probeChunk(probes []probeRow, since time.Time, renames provider.Renames, hosts map[string]string) *rowChunk {
 	var c *rowChunk
 	for _, p := range probes {
 		if !since.IsZero() && p.Time.Before(since) {
@@ -63,11 +72,29 @@ func probeChunk(probes []probeRow, since time.Time) *rowChunk {
 		if c == nil {
 			c = &rowChunk{}
 		}
-		c.add(Row{Record: p.Record, Source: SourceProbe}, "", p.off, false)
+		r := p.Record
+		r.Provider = probeProvider(r, renames, hosts)
+		c.add(Row{Record: r, Source: SourceProbe}, "", p.off, false)
 	}
 	if c == nil {
 		return nil
 	}
 	c.dict, c.shapeIDs = nil, nil
 	return c
+}
+
+// probeProvider is the provider a probe row is listed under: its id as it
+// is now, and for one recorded under its host before the provider had an
+// id, the provider saved on that host, or, with none on it now, the one
+// the log's calls to that host went to. A host two providers were on, or
+// none, stays the host.
+func probeProvider(r Record, renames provider.Renames, hosts map[string]string) string {
+	id := renames.ProbeOf(r.Provider, r.Time)
+	if id != r.Provider || !strings.EqualFold(r.Provider, r.Host) || renames.OnHost(r.Host) {
+		return id
+	}
+	if to := hosts[strings.ToLower(r.Host)]; to != "" {
+		return renames.Of(to, r.Time)
+	}
+	return strings.ToLower(id) // one host, however it was typed
 }

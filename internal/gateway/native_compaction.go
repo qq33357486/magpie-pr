@@ -280,22 +280,25 @@ func saveCheckpoints() {
 	}
 }
 
-// checkpointReaders keeps of cands those of the key or account who, pl's
+// checkpointReaders keeps of cands those of the key or account that
+// sealed cp (behind a remote magpie, of the provider there too), pl's
 // order with them; left says one is left, if only held or capped. One
 // whose own list lacks the model now (planned.unlisted) is kept too: it
 // is tried as the last resort an account whose list lacks the model is,
 // and none other can read what it sealed. Its row goes from left to the
 // order with it, so the Routing page doesn't tell it both tried and
 // unlisted, skipped.
-func checkpointReaders(cands []candidate, pl planned, who string) (_ []candidate, _ planned, left bool) {
-	kept, pl, ok := keepCandidates(cands, pl, func(c candidate) bool { return c.who() == who })
+func checkpointReaders(cands []candidate, pl planned, cp checkpointWriter) (_ []candidate, _ planned, left bool) {
+	// behind a remote magpie, the provider there that sealed it too
+	reads := func(c candidate) bool { return c.sameVendor(cp.Who, cp.Model) }
+	kept, pl, ok := keepCandidates(cands, pl, reads)
 	if ok {
 		return kept, pl, true
 	}
 	var found []candidate
 	var ws []Weighed
 	for i, c := range pl.unlisted {
-		if c.who() != who {
+		if !reads(c) {
 			continue
 		}
 		found = append(found, c)
