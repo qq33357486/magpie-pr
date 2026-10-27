@@ -154,7 +154,12 @@ func openModelPicker(t *testing.T, m model, view string) (model, string) {
 		m.agents = []*agent.Agent{a}
 		m.reload()
 		m.openFieldPicker()
-		return m, "gpt-6-luna" // Codex's own account: its models bare
+		// this fork: upstream add927e6 (10-27) merges magpie's models into
+		// the list the picker reads, and the agent picker offers the
+		// prefixed gateway model alone (its bare own model no longer in
+		// it); flip back to the bare slug when upstream restores the
+		// backend's own entries there
+		return m, "codex/gpt-6-luna"
 	default:
 		m.page = pageGroups
 		m.openMemberPicker(pickMsg{newGroup: "Test"})
