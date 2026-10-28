@@ -33,7 +33,21 @@ func TestCodexHiddenTickedModelOffered(t *testing.T) {
 	}
 	seen := map[string]int{}
 	var all []string
-	for _, o := range codex(home).Fields[0].Options(nil) {
+	opts := codex(home).Fields[0].Options(nil)
+	groups := map[string]string{}
+	for _, o := range opts {
+		m := o.Value
+		if own := codexOwnOf(o.Value); own != "" {
+			m = own
+		}
+		groups[m] = o.Group
+	}
+	// one section: the hidden one beside Codex's own, not under a heading
+	// of its own (ysm119: "为啥会出现2 个分组")
+	if groups["gpt-h"] != groups["gpt-a"] {
+		t.Errorf("gpt-h in %q, gpt-a in %q", groups["gpt-h"], groups["gpt-a"])
+	}
+	for _, o := range opts {
 		all = append(all, o.Group+":"+o.Value)
 		m := o.Value
 		if own := codexOwnOf(o.Value); own != "" {

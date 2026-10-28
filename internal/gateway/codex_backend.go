@@ -103,9 +103,19 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 			writeError(w, provider.Responses, 400, err.Error())
 			return
 		}
+		// the route that shows it while it is held before routing names
+		// it, as handle's and gemini's do (Jason on Discord: a held Codex
+		// turn showed as no model, "magpie · 0 on")
+		noteAsked(r.Context(), model)
 		// a turn of the conversation's own: the model its side calls may
 		// follow (codexFollowTo)
-		kind := requestCallKind(r.Header, requestSessionMetadata(r.Header, body))
+		meta := requestSessionMetadata(r.Header, body)
+		kind := requestCallKind(r.Header, meta)
+		// a subagent resume_agent brought back on its lead's model goes
+		// back on the one it was spawned with (codexResumeTo)
+		if to := s.codexResumeTo(r, agentOf(r), kind, model, meta); to != "" {
+			body, model = withModel(body, to), to
+		}
 		s.codexLeads.saw(r, kind, model)
 		// a thread's title, where Settings sends it (#705) — the request
 		// still on Codex's own model, through its sign-in, when it says
@@ -131,18 +141,15 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 			// a subagent on one of Codex's own models, put on the model
 			// set for Codex's subagents, a ChatGPT account's in magpie;
 			// the request on the model asked for when it can't be, the
-			// trace saying why (codexUpstreamOn, serve). One with nothing
-			// set for it, a subagent's or a memory call,
-			// on the model its conversation is on when that is one of
-			// magpie's, not on the ChatGPT sign-in (codexFollowTo)
+			// trace saying why (codexUpstreamOn, serve). With none set,
+			// it stays on the model it was named (codexFollowTo). A
+			// memory call with nothing set for it goes on the model its
+			// conversation is on when that is one of magpie's, not on
+			// the ChatGPT sign-in (codexFollowTo)
 			if !strings.Contains(model, "/") {
 				pick := codexSubagentPick(r, agentOf(r), kind, model, body)
-				if to := s.codexFollowTo(r, agentOf(r), kind, model, body); to != "" && pick == nil {
-					if usage.PurposeOf(kind) == "kind:collab_spawn" {
-						pick = &SubagentPick{Asked: model, To: to}
-					} else {
-						body, model = withModel(body, to), to
-					}
+				if to := s.codexFollowTo(r, agentOf(r), kind, model, body); to != "" {
+					body, model = withModel(body, to), to
 				}
 				r = withSubagentPick(r, pick)
 				if pick.Moved() {
@@ -443,7 +450,9 @@ func loggedAnswers(convs ...string) []loggedAnswer {
 	// from itself)
 	renamed := provider.UsageRenames()
 	usage.Visit(time.Now().Add(-sealerKeep), func(r usage.Record) {
-		r.Provider = renamed.Of(r.Provider, r.Time)
+		// the provider that answered, not one a deleted provider's
+		// calls were merged into on the Usage page (Renames.Own)
+		r.Provider = renamed.Own(r.Provider, r.Time)
 		if r.Provider == "" || r.Provider == "magpie" || r.IsRejected() || r.IsReported() || r.Status <= 0 || r.Status >= 400 || r.Computer != "" || isTitleKind(r.Kind) {
 			return
 		}
@@ -953,7 +962,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	var tools *toolScan // whether the reply calls a tool, for a turn's end
 	if rest != "/responses" {
 		// no route of its own (a compaction, a memory): recorded alone
-		noteMasked(r, "chat", maskedHits, string(body), 0, "openai", modelOf(body))
+		noteMasked(r, "chat", maskedHits, sentOf(maskedHits, body), 0, "openai", modelOf(body))
 	}
 	if rest == "/responses" {
 		imageProvider := ""
@@ -974,10 +983,10 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 		tools = scan
 		tr = s.trace.beginFor(r, Route{turn: turn, dirOf: dirOf(provider.Responses, body), tools: tools, imageTurn: drawingTurnID(metadata.Turn), imageCaller: codexTurnKey(r, callerOf(r).agent), imageProvider: imageProvider, TitleLink: link, Time: start, Agent: callerOf(r).agent, Session: sessionOf(r.Header), Conv: convOf(r.Header, body), ParentSession: titleParentSession(r.Header, metadata, kind), Kind: kind, Model: model, Effort: effort, Tier: bodyTier(provider.Responses, body), Provider: "openai", Subagent: subagentPickOf(r),
 			Order: []Weighed{seat}, Tries: []Try{{ID: seat.ID, Model: model, Effort: effort, Start: start}}})
-		if m := noteMasked(r, "chat", maskedHits, string(body), tr.ID, "openai", model); m != nil {
+		if m := noteMasked(r, "chat", maskedHits, sentOf(maskedHits, body), tr.ID, "openai", model); m != nil {
 			s.trace.update(tr, func(t *Route) { t.Masked = m })
 		}
-		promptRead := s.inspectPrompt(tr, provider.Responses, body, body)
+		promptRead := s.inspectPrompt(tr, provider.Responses, body, body, false)
 		end = func(status int, msg string, tokens, out int) {
 			ms := time.Since(start).Milliseconds()
 			ttft, text := first.ms()
@@ -1416,12 +1425,7 @@ func (s *Server) codexFallsBack(model string, body []byte) bool {
 	if !ok || p.Account == nil || p.Account.Agent != "codex" {
 		return false
 	}
-	for _, id := range p.Fallback {
-		if _, _, ok := provider.Resolve(id); ok {
-			return true
-		}
-	}
-	return false
+	return len(provider.FallbackModels(p)) > 0
 }
 
 // codexFallBack serves Codex's turn on its own sign-in, which the backend
@@ -1986,22 +1990,6 @@ func codexMerged(own []any, cached bool) []any {
 		}
 		own = kept
 	}
-	// and the ones kept for routing groups, every one when the codex
-	// provider serves only through them (#1602): a hidden one stays, as it
-	// does through the picks. A Codex here for account failover alone is
-	// handed no groups, so it keeps its own.
-	if all, off := provider.CodexNativeUnlisted(); (all || len(off) > 0) && !codexOwnOnly() {
-		kept := own[:0]
-		for _, m := range own {
-			o, _ := m.(map[string]any)
-			slug, _ := o["slug"].(string)
-			if v, _ := o["visibility"].(string); v != "hide" && (all || off[slug]) {
-				continue
-			}
-			kept = append(kept, m)
-		}
-		own = kept
-	}
 	// and the ones the user disabled (#1867), which are refused (codexNativeOff)
 	if len(provider.DisabledModels()) > 0 {
 		kept := own[:0]
@@ -2038,13 +2026,23 @@ func codexMerged(own []any, cached bool) []any {
 	if !codexOwnOnly() {
 		ms = provider.CodexListed()
 	}
+	// Codex's own, as the user left them in its list
+	mine := make(map[string]bool, len(own))
+	for _, m := range own {
+		if o, ok := m.(map[string]any); ok {
+			if slug, _ := o["slug"].(string); slug != "" {
+				mine[slug] = true
+			}
+		}
+	}
 	all := append(own, codexcat.Entries(ms, len(own)+100)...)
 	if at, ok := provider.CodexOrder(); ok {
 		codexcat.Order(all, at)
 	}
 	// the Codex app and its VS Code extension read the first 100 alone:
-	// hidden ones go last, and the ones the user uses are among the 100
-	codexcat.Fit(all, usage.CodexUsed())
+	// hidden ones go last, and Codex's own and the ones the user uses are
+	// among the 100, wherever the user's order put them (maiya on Discord)
+	codexcat.FitOwn(all, usage.CodexUsed(), func(slug string) bool { return mine[slug] })
 	return all
 }
 
@@ -2974,18 +2972,42 @@ func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byt
 		writeError(w, provider.Responses, 502, msg)
 		return
 	}
+	if local == "" && strings.TrimSpace(res.summary()) == "" && calledTool(res.Output) {
+		// a model deep in a conversation of tool calls goes on calling
+		// them, offered none or not: DeepSeek through a group answered the
+		// summary request with reasoning and an exec_command call, 3 times
+		// in a row (Lucy on Discord, auto-deepseek-v4-1-flash). Whatever
+		// let it — an upstream that reads calls out of its text with no
+		// tools offered, a history tool declared as a stub that it calls
+		// anyway — the history's calls are what it follows. Asked again
+		// with the conversation as text, there's no exchange of calls to
+		// go on with; when it still writes no summary, magpie compacts
+		// without a model, so Codex goes on rather than failing over and
+		// over
+		who, _ := compactFailure(body, rec)
+		called := answeredWith(res.Output)
+		log.Printf("codex compaction: %s wrote no summary%s; asking again with the conversation as text", who, called)
+		prec, pres, perr := ask(plainCompact(body))
+		switch {
+		case perr == nil && prec.status < 400 && pres.Status != "incomplete" && strings.TrimSpace(pres.summary()) != "":
+			rec, res = prec, pres
+		default:
+			again := "no summary" + answeredWith(pres.Output)
+			if perr != nil {
+				again = perr.Error()
+			} else if prec.status >= 400 {
+				_, msg := compactFailure(body, prec)
+				again = fmt.Sprintf("%d: %s", prec.status, msg)
+			}
+			log.Printf("codex compaction: %s asked again as text: %s; compacting locally", who, again)
+			local = localSummary(body, who+" wrote no summary"+called+", asked again as text: "+again)
+		}
+	}
 	var sum strings.Builder
 	if local != "" {
 		sum.WriteString(local)
 	} else {
-		for _, o := range res.Output {
-			if o.Type != "message" {
-				continue
-			}
-			for _, c := range o.Content {
-				sum.WriteString(c.Text)
-			}
-		}
+		sum.WriteString(res.summary())
 	}
 	if strings.TrimSpace(sum.String()) == "" {
 		why := "the model wrote no summary" + answeredWith(res.Output)
@@ -3220,6 +3242,26 @@ type compactResult struct {
 	Error             *struct {
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+// summary is the text of a summary reply's messages.
+func (res compactResult) summary() string {
+	var b strings.Builder
+	for _, o := range res.Output {
+		if o.Type != "message" {
+			continue
+		}
+		for _, c := range o.Content {
+			b.WriteString(c.Text)
+		}
+	}
+	return b.String()
+}
+
+// calledTool is whether a summary reply called a tool: a function_call,
+// custom_tool_call, tool_search_call, a hosted tool's call.
+func calledTool(out []compactOutput) bool {
+	return slices.ContainsFunc(out, func(o compactOutput) bool { return strings.HasSuffix(o.Type, "_call") })
 }
 
 // answeredWith says what a summary reply without a summary held instead

@@ -270,11 +270,14 @@ type rRequest struct {
 	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
 	ServiceTier       string          `json:"service_tier,omitempty"`
 	PromptCacheKey    string          `json:"prompt_cache_key,omitempty"`
-	Include           []string        `json:"include,omitempty"`
-	ClientMetadata    json.RawMessage `json:"client_metadata,omitempty"`
-	AccessPrograms    json.RawMessage `json:"access_programs,omitempty"`
-	Text              json.RawMessage `json:"text,omitempty"`
-	Reasoning         *struct {
+	// PromptCacheRetention is OpenAI's "in_memory" or "24h": the client's
+	// own say over how long its prompt stays cached (hourMarks)
+	PromptCacheRetention string          `json:"prompt_cache_retention,omitempty"`
+	Include              []string        `json:"include,omitempty"`
+	ClientMetadata       json.RawMessage `json:"client_metadata,omitempty"`
+	AccessPrograms       json.RawMessage `json:"access_programs,omitempty"`
+	Text                 json.RawMessage `json:"text,omitempty"`
+	Reasoning            *struct {
 		Effort  string `json:"effort,omitempty"`
 		Summary string `json:"summary,omitempty"`
 	} `json:"reasoning,omitempty"`
@@ -330,6 +333,9 @@ func readResponses(body []byte, facts bool) (*Request, error) {
 		TopP: q.TopP, Stream: q.Stream, Parallel: q.ParallelToolCalls, Fast: q.ServiceTier == "priority" || q.ServiceTier == "ultrafast", Ultrafast: q.ServiceTier == "ultrafast", Tier: q.ServiceTier, CacheKey: q.PromptCacheKey, Include: q.Include,
 		ClientMetadata: sentRaw(q.ClientMetadata), AccessPrograms: q.AccessPrograms}
 	r.Text, r.Format = textFormat(sentRaw(q.Text))
+	// a Responses client's turns go to Claude with hour-long cache marks,
+	// unless it asked for its prompt to be kept in memory only
+	r.hourMarks = q.PromptCacheRetention != "in_memory"
 	if q.Reasoning != nil {
 		r.Effort = effortOf(q.Reasoning.Effort)
 		r.Thinking = true
@@ -1301,9 +1307,12 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 	// input's goes back to a Responses upstream, as it would without magpie
 	// (#1445); an account or vendor that can't read another's turns it away,
 	// and is asked again without it (foreignReasoning, withoutRefused).
+	// Output token replay's include is OpenAI's alone, as Codex sends it
+	// (forVendor): Copilot refuses it (echo_ts).
 	var include []string
 	for _, v := range r.Include {
-		if v == "" || slices.Contains(include, v) || (v == "reasoning.encrypted_content" && out["reasoning"] == nil) {
+		if v == "" || slices.Contains(include, v) || (v == "reasoning.encrypted_content" && out["reasoning"] == nil) ||
+			v == outputReplay && host != "chatgpt.com" && host != "api.openai.com" {
 			continue
 		}
 		include = append(include, v)
@@ -1348,7 +1357,7 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 	if len(include) > 0 {
 		out["include"] = include
 	}
-	b, _ := json.Marshal(out)
+	b, _ := marshalBody(out, "input")
 	// a call the client left unanswered (a turn it interrupted) gets its
 	// synthetic result, as buildChat's pairToolMessages and
 	// buildAnthropic's pairToolBlocks give one: the Responses API refuses

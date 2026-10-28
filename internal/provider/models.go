@@ -441,6 +441,20 @@ func (p Provider) List(ctx context.Context) ([]catalog.Model, error) {
 	return catalog.Chat(l.models), nil
 }
 
+// ListAsks says List asks a vendor over the network, with p's own key,
+// what p serves: a key's provider, not a subscription's account, a
+// plugin's or a decision API, nor a preset with no list to ask, whose List
+// answers the preset's models without asking anyone. The gateway asks it
+// of a key resting after an outage, to tell whether it is back
+// (gateway/rest_probe.go).
+func (p Provider) ListAsks() bool {
+	if p.Account != nil || p.DecideOnly() {
+		return false
+	}
+	pr := Preset(p.Preset)
+	return pr == nil || !pr.NoList || strings.TrimSpace(p.ModelsURL) != "" || p.listRegion(pr)
+}
+
 // newFetches is when each account with no list from its vendor yet was
 // last asked for one by FetchNew.
 var newFetches = struct {
@@ -2447,12 +2461,32 @@ type Entry struct {
 
 // Catalog lists the routing groups, then every exposed model of every ready
 // provider not kept unlisted. A provider switched off has none in it.
-func Catalog() []Entry {
+func Catalog() []Entry { return catalogKeeping(nil) }
+
+// catalogOf is the catalog agent's lists start from: Catalog, and for
+// Codex the ChatGPT accounts' own models as well when they are kept out
+// of the lists, the codex provider used only through routing groups
+// (Provider.Unlisted) or a group listing alone (Group.Unlists). Codex
+// reaches those on its own sign-in, its app lists them from the ChatGPT
+// backend, and keeping them for routing groups is about magpie's offer to
+// the other agents and /v1/models: Codex's list kept no Codex section, so
+// the app lost GPT while Codex's picker still offered it (士奇 on
+// Discord). The user takes them out of Codex's list there (HiddenModels,
+// PickedModels), which the gateway follows (CodexNativeHidden).
+func catalogOf(agent string) []Entry {
+	if !strings.EqualFold(agent, "codex") {
+		return Catalog()
+	}
+	return catalogKeeping(CodexOwn)
+}
+
+// catalogKeeping is Catalog with the unlisted models keep says, too.
+func catalogKeeping(keep func(Entry) bool) []Entry {
 	entries := providerEntries()
 	out := slices.Clone(groupEntries(entries)) // held: the caller's to change
 	kept := unlistedByGroups(entries)
 	for _, e := range entries {
-		if !e.Provider.Unlisted && !kept[e.ID] {
+		if !e.Provider.Unlisted && !kept[e.ID] || keep != nil && keep(e) {
 			out = append(out, e)
 		}
 	}
@@ -2528,7 +2562,7 @@ func entriesOff(off func(pid, model string) bool) []Entry {
 func heldOffEntries() []Entry {
 	return heldOf("off entries", func() []Entry {
 		return keptOf("off entries", func() []Entry {
-			return slices.Clip(entriesOf(func(p Provider) bool { return p.Ready() && p.Off }, disabledNow()))
+			return slices.Clip(entriesOf(func(p Provider) bool { return p.Ready() && (p.Off || p.KeptToAgent()) }, disabledNow()))
 		})
 	})
 }

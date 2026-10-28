@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -149,8 +150,24 @@ func StatsAt(days int, now time.Time) Stats { return statsAt(days, now) }
 // from one only magpie saw. Both come of one pass over the files, as the
 // overview asks for both on every poll (#2776).
 func StatsAndNative(days int) (Stats, map[string]bool) {
+	st, native := StatsAndNativeAll([]int{days})
+	return st[0], native
+}
+
+// StatsAndNativeAll is StatsAndNative for each of days, from one pass:
+// the listing, the reads of changed files and every session's own sums
+// are the same whatever the range, and the page keeps 7, 30 and every
+// day, each read again behind it (statsFor in internal/gui, #2278).
+func StatsAndNativeAll(days []int) ([]Stats, map[string]bool) {
 	native := map[string]bool{}
-	return statsIn(days, time.Now(), native), native
+	alias := provider.UsageAlias()
+	out := statsReadAll(days, time.Now(), native)
+	if alias != nil {
+		for i := range out {
+			out[i] = aliasStats(out[i], alias)
+		}
+	}
+	return out, native
 }
 
 func statsAt(days int, now time.Time) Stats { return statsIn(days, now, nil) }
@@ -167,15 +184,14 @@ func statsIn(days int, now time.Time, native map[string]bool) Stats {
 }
 
 func statsRead(days int, now time.Time, native map[string]bool) Stats {
+	return statsReadAll([]int{days}, now, native)[0]
+}
+
+// statsReadAll is statsRead for each of days, sharing what doesn't
+// depend on the range.
+func statsReadAll(ranges []int, now time.Time, native map[string]bool) []Stats {
 	now = now.In(time.Local)
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-	var since time.Time
-	from := ""
-	if days > 0 {
-		since = today.AddDate(0, 0, 1-days)
-		from = since.Format(time.DateOnly)
-	}
-	out := Stats{From: from, To: today.Format(time.DateOnly), Days: []Day{}, Sessions: []Summary{}, Keys: []string{}}
 
 	storeMu.RLock()
 	defer storeMu.RUnlock()
@@ -189,23 +205,26 @@ func statsRead(days int, now time.Time, native map[string]bool) Stats {
 	refresh(files, files)
 	identities := codexIdentitySnapshot(files)
 	taskTitles := codexSubagentTaskTitles(files)
+	price, titles := pricer(), codexTitleOf()
+	// each session as listed, by key: what native is made of, and what a
+	// range's sessions are summed up from
+	var listed map[string]Session
 	if native != nil {
 		groups := byKey(files, nil)
-		price, titles := pricer(), codexTitleOf()
-		for _, fs := range groups {
+		listed = make(map[string]Session, len(groups))
+		for key, fs := range groups {
 			// as List: a session nothing was said in is not listed
 			if s, ok := assembleListed(fs, price, titles); ok {
 				native[s.Agent+"|"+s.ID] = true
+				listed[key] = s
 			}
 		}
 	}
-	var want []file
-	for _, f := range files {
-		if !f.mod.Before(since) {
-			want = append(want, f)
-		}
-	}
-
+	// a copy of a conversation is counted in the session it is kept in
+	// (ccCopies): its subagents' files, and what its own file holds that
+	// the keeper's doesn't (ccCopyStates), not the messages both hold
+	copies := ccCopies(files)
+	copied := ccCopyStates(files, copies)
 	// a subagent's file counts in the folder of its session's own file
 	folder := map[string]string{}
 	for _, f := range files {
@@ -213,6 +232,33 @@ func statsRead(days int, now time.Time, native map[string]bool) Stats {
 			folder[f.key] = st.Cwd
 		}
 	}
+	out := make([]Stats, len(ranges))
+	for i, days := range ranges {
+		out[i] = statsOfRange(days, today, files, copies, copied, folder, listed, identities, taskTitles, price, titles)
+	}
+	return out
+}
+
+// statsOfRange is one range's Stats from what statsReadAll read, with the
+// locks it holds. listed is every session as listed, by key, or nil to
+// assemble the range's own.
+func statsOfRange(days int, today time.Time, files []file, copies map[string]string, copied map[string]*state,
+	folder map[string]string, listed map[string]Session, identities map[string]CodexIdentity, taskTitles map[codexTaskTitle]string,
+	price func(string) *catalog.Price, titles func(string) string) Stats {
+	var since time.Time
+	from := ""
+	if days > 0 {
+		since = today.AddDate(0, 0, 1-days)
+		from = since.Format(time.DateOnly)
+	}
+	out := Stats{From: from, To: today.Format(time.DateOnly), Days: []Day{}, Sessions: []Summary{}, Keys: []string{}}
+	var want []file
+	for _, f := range files {
+		if !f.mod.Before(since) && (copies[f.key] == "" || copied[f.path] != nil) {
+			want = append(want, f)
+		}
+	}
+
 	type uk struct{ date, agent, cwd, model string }
 	type ak struct{ date, agent, cwd string }
 	type act0 struct {
@@ -239,6 +285,9 @@ func statsRead(days int, now time.Time, native map[string]bool) Stats {
 	shares := map[string]*share{}
 	for _, f := range want {
 		st := cache[f.path]
+		if keeper := copies[f.key]; keeper != "" {
+			st, f.key = copied[f.path], keeper
+		}
 		if st == nil {
 			continue
 		}
@@ -326,7 +375,6 @@ func statsRead(days int, now time.Time, native map[string]bool) Stats {
 	for date := range dates {
 		byDate[date] = &Day{Date: date, Usage: []Usage{}, Active: []Active{}}
 	}
-	price, titles := pricer(), codexTitleOf()
 	for k, t := range use {
 		u := Usage{Agent: k.agent, Cwd: k.cwd, Model: k.model, Tokens: t}
 		if p := price(k.model); p != nil {
@@ -372,13 +420,25 @@ func statsRead(days int, now time.Time, native map[string]bool) Stats {
 		}
 	}
 
-	groups := byKey(files, func(f *file) bool { return shares[f.key] != nil })
+	var groups map[string][]file
+	if listed == nil {
+		groups = byKey(files, func(f *file) bool { return shares[f.key] != nil })
+	}
 	first, _ := time.ParseInLocation(time.DateOnly, out.From, time.Local)
+	// made to size: grown by append, 34k sessions' list held a quarter
+	// more than its rows, and every copy it was grown through (#2278)
+	out.Sessions = make([]Summary, 0, len(shares))
 	for key, sh := range shares {
 		if len(sh.dates) == 0 {
 			continue
 		}
-		s, ok := assembleListed(groups[key], price, titles)
+		var s Session
+		var ok bool
+		if listed != nil {
+			s, ok = listed[key]
+		} else {
+			s, ok = assembleListed(groups[key], price, titles)
+		}
 		if !ok {
 			continue
 		}
@@ -433,6 +493,7 @@ func statsRead(days int, now time.Time, native map[string]bool) Stats {
 		return a.Key < b.Key
 	})
 	// keys after the sort, so they name the sessions in the order they are in
+	out.Keys = make([]string, 0, len(out.Sessions))
 	for _, s := range out.Sessions {
 		out.Keys = append(out.Keys, s.Key)
 	}
@@ -541,9 +602,13 @@ func (st Stats) Overview(agent, model, cwd string, n int) Overview {
 		out.Days = make([]int, int(math.Round(last.Sub(first).Hours()/24))+1)
 	}
 	out.Messages, out.Output = make([]int, len(out.Days)), make([]int, len(out.Days))
-	var in []Summary
-	var spent []int
-	for _, s := range st.Sessions {
+	// the sessions are pointed to, not copied: a Summary is ~400 bytes, and
+	// the Sessions page's poll copied all of them four times, ~1.5 GB in
+	// two minutes over 34k sessions while an agent worked (#2278)
+	in := make([]*Summary, 0, len(st.Sessions))
+	spent := make([]int, 0, len(st.Sessions))
+	for i := range st.Sessions {
+		s := &st.Sessions[i]
 		if agent != "" && s.Agent != agent || cwd != "" && s.Cwd != cwd || model != "" && !slices.Contains(s.Models, model) {
 			continue
 		}
@@ -571,25 +636,29 @@ func (st Stats) Overview(agent, model, cwd string, n int) Overview {
 		rank := func(p float64) int { return spent[max(0, int(math.Ceil(p*float64(len(spent))))-1)] }
 		out.Median, out.P90 = rank(0.5), rank(0.9)
 	}
-	for by, v := range map[string]func(Summary) float64{
-		"tokens": func(s Summary) float64 { return float64(s.Input + s.Output) },
-		"cost":   func(s Summary) float64 { return s.Cost },
-		"active": func(s Summary) float64 { return float64(s.Active) },
+	top := make([]*Summary, len(in))
+	for by, v := range map[string]func(*Summary) float64{
+		"tokens": func(s *Summary) float64 { return float64(s.Input + s.Output) },
+		"cost":   func(s *Summary) float64 { return s.Cost },
+		"active": func(s *Summary) float64 { return float64(s.Active) },
 	} {
-		top := slices.Clone(in)
+		copy(top, in)
 		sort.SliceStable(top, func(i, j int) bool { return v(top[i]) > v(top[j]) })
 		k := 0
 		for k < len(top) && k < n && v(top[k]) > 0 {
 			k++
 		}
-		out.Top[by] = top[:k]
+		out.Top[by] = make([]Summary, k)
+		for i, s := range top[:k] {
+			out.Top[by][i] = *s
+		}
 	}
 	return out
 }
 
 // shapes buckets the sessions that told their messages, or for minutes
 // those that were at work.
-func shapes(in []Summary) map[string]Shape {
+func shapes(in []*Summary) map[string]Shape {
 	out := map[string]Shape{}
 	for by, edges := range shapeEdges {
 		sh := Shape{Edges: edges, Counts: make([]int, len(edges))}
@@ -624,7 +693,7 @@ func shapes(in []Summary) map[string]Shape {
 }
 
 // toolUse sums up the sessions' tool calls, the n most called.
-func toolUse(in []Summary, first time.Time, n int) ToolUse {
+func toolUse(in []*Summary, first time.Time, n int) ToolUse {
 	out := ToolUse{Top: []ToolStat{}, Categories: []ToolStat{}, Weeks: []ToolWeek{}}
 	tools, cats := map[string]*ToolStat{}, map[string]*ToolStat{}
 	weeks := map[string]map[string]int{}
@@ -689,7 +758,7 @@ func toolUse(in []Summary, first time.Time, n int) ToolUse {
 }
 
 // skillUse sums up the skills the sessions called up, the n most called.
-func skillUse(in []Summary, n int) SkillUse {
+func skillUse(in []*Summary, n int) SkillUse {
 	out := SkillUse{Top: []Skill{}}
 	skills := map[string]*Skill{}
 	projects := map[string]map[string]int{}

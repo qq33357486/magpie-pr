@@ -9,6 +9,9 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"runtime"
+	"sync"
+	"sync/atomic"
 
 	"github.com/yetone/magpie/internal/pii/guard/coreml"
 )
@@ -78,30 +81,44 @@ func Load(dir string) (*Model, error) {
 }
 
 // logits are the network's scores for ids, from CoreML when it is there
-// and the window is long enough to gain by it.
-func (m *Model) logits(ids []int) []float32 {
+// and the window is long enough to gain by it, else over procs goroutines.
+func (m *Model) logits(ids []int, procs int) []float32 {
 	if m.ml != nil && len(ids) >= coremlMin {
 		if lg, err := coremlLogits(m.ml, m.net, ids); err == nil {
 			return lg
 		}
 	}
-	return m.net.logits(ids)
+	return m.net.logits(ids, procs)
 }
 
+// Cores is how many cores the model reads on at most: half of them, and
+// never more than 4. It reads beside the agents and everything else on
+// the computer, and on all of them a long history unread kept every core
+// busy for as long as requests came (xinvxueyuan and shensmart on Discord,
+// 10-28: a 32-core Linux box spent 45 CPU seconds on each request).
+func Cores() int { return max(1, min(4, runtime.GOMAXPROCS(0)/2)) }
+
 // Find is what the model finds in text, at Floor, each span with its score.
+// A text longer than a window is read a window at a time, overlapping,
+// and on the CPU those windows are read at once, one a core (of Cores): a
+// window's own matmuls split over the cores leave most of each idle in
+// the steps between them (a 4-core server read a long prompt for minutes).
 func (m *Model) Find(text string) []Span {
 	toks := m.tok.encode(text)
 	n := len(toks)
 	if n == 0 {
 		return nil
 	}
-	lab := make([]int, n)
-	prob := make([]float64, n)
-	margin := make([]int, n)
-	for i := range margin {
-		margin[i] = -1
-	}
+	var starts []int
 	for start := 0; ; start = start + window - overlap {
+		starts = append(starts, start)
+		if start+window >= n {
+			break
+		}
+	}
+	lgs := make([][]float32, len(starts))
+	read := func(w, procs int) {
+		start := starts[w]
 		end := min(start+window, n)
 		ids := make([]int, 0, end-start+2)
 		ids = append(ids, 0)
@@ -109,8 +126,36 @@ func (m *Model) Find(text string) []Span {
 			ids = append(ids, t.id)
 		}
 		ids = append(ids, 2)
-		lg := m.logits(ids)
-		k := len(labels)
+		lgs[w] = m.logits(ids, procs)
+	}
+	procs := Cores()
+	at := min(procs, len(starts))
+	if m.ml != nil || at == 1 {
+		for w := range starts {
+			read(w, procs)
+		}
+	} else {
+		var next atomic.Int32
+		var wg sync.WaitGroup
+		for range at {
+			wg.Go(func() {
+				for w := int(next.Add(1)) - 1; w < len(starts); w = int(next.Add(1)) - 1 {
+					read(w, max(1, procs/at))
+				}
+			})
+		}
+		wg.Wait()
+	}
+	lab := make([]int, n)
+	prob := make([]float64, n)
+	margin := make([]int, n)
+	for i := range margin {
+		margin[i] = -1
+	}
+	k := len(labels)
+	for w, start := range starts {
+		end := min(start+window, n)
+		lg := lgs[w]
 		for i := 0; i < end-start; i++ {
 			j := start + i
 			mg := min(i, end-start-1-i)
@@ -129,9 +174,6 @@ func (m *Model) Find(text string) []Span {
 				sum += math.Exp(float64(v - mx))
 			}
 			margin[j], lab[j], prob[j] = mg, best, 1/sum
-		}
-		if end == n {
-			break
 		}
 	}
 	return decode(toks, lab, prob)

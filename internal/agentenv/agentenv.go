@@ -71,6 +71,9 @@ var Vars = []string{
 	"ASTRBOT_ROOT",
 	// jcode's folder, ~/.jcode without it
 	"JCODE_HOME",
+	// OpenClaw: its config file, its state folder (openclaw.json in it), a
+	// named profile's folder (~/.openclaw-<profile>) and its own ~
+	"OPENCLAW_CONFIG_PATH", "OPENCLAW_STATE_DIR", "OPENCLAW_PROFILE", "OPENCLAW_HOME",
 	// MiMo Code, MiniMax Code, OpenHanako, Hermes, dsh, WorkBuddy, CodeBuddy Code
 	"MIMOCODE_HOME", "MINIMAX_DATA_DIR", "HANA_HOME", "HERMES_HOME", "DSH_HOME",
 	"WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR",
@@ -111,6 +114,9 @@ var Vars = []string{
 	// mise's and asdf's folders, whose shims stand for an agent's CLI and
 	// whose installs hold the Node versions it is under
 	"MISE_DATA_DIR", "ASDF_DIR",
+	// cargo's folder, whose bin holds an rtk cargo installed: the Library
+	// finds rtk there and upgrades it with cargo (cargoBins)
+	"CARGO_HOME",
 	// Google Cloud's credentials file and gcloud's folder, which Vertex AI's
 	// tokens are minted from (and Gemini CLI's own, on Vertex AI)
 	"GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CONFIG",
@@ -128,6 +134,7 @@ var NotPaths = map[string]bool{
 	"STEPCODE_CONFIG_DIR": true,
 	"MAGPIE_ZED_BIN":      true, "MAGPIE_ZED_PROCESS_NAMES": true,
 	"PENGUIN_PROJECT_ID": true,
+	"OPENCLAW_PROFILE":   true,
 }
 
 // ClaudeProviders are Claude Code's switches that send its requests to a

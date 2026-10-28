@@ -50,7 +50,8 @@ func modelCat(kind string) string {
 // modelSpans are o.found's spans for s that o covers, trimmed of the
 // spaces the model takes in with a word (and a Chinese name of what it
 // ran on into, zhTrim), and with what it gets wrong often left out
-// (modelTakes); and the Chinese names it missed (zhNameSpans).
+// (modelTakes); and the Chinese names it missed (zhNameSpans: only
+// nicknames where the model finds names itself, o.NamesByModel).
 func modelSpans(s string, o Options) []span {
 	if o.Model == nil || !o.covers(catPersonal) && len(o.found[s]) == 0 {
 		return nil
@@ -82,8 +83,8 @@ func modelSpans(s string, o Options) []span {
 		if kind == "PERSON" {
 			a, b = zhTrim(s, a, b)
 		}
-		if a < b && utf8.ValidString(s[a:b]) && modelTakes(kind, s[a:b]) && modelFits(s, a, b, kind) {
-			out = append(out, span{a, b, kind, ByModel})
+		if a < b && utf8.ValidString(s[a:b]) && modelTakes(kind, s[a:b]) && modelFits(s, a, b, kind) && !(kind == "PERSON" && zhWordNotName(s, a, b)) {
+			out = append(out, span{a, b, kind, ByModel, f.Score, false})
 		}
 	}
 	if o.covers(catPersonal) {
@@ -93,7 +94,7 @@ func modelSpans(s string, o Options) []span {
 				person = append(person, f)
 			}
 		}
-		out = append(out, zhNameSpans(s, person)...)
+		out = append(out, zhNameSpans(s, person, o.NamesByModel)...)
 	}
 	return out
 }
@@ -120,14 +121,17 @@ func delimiter(c byte) bool { return isSpace(c) || strings.IndexByte(`"',;:`, c)
 func modelTakes(kind, v string) bool {
 	switch kind {
 	case "SECRET":
-		return len(v) >= 8 && !madeID(v) && !namesThing(v)
+		return len(v) >= 8 && !madeID(v) && !namesThing(v) && !versionValue(v)
 	case "PERSON":
+		// (an ordinary Chinese word, 文案 or 关键词, is left where it is
+		// read: zhWordNotName)
 		return utf8.RuneCountInString(v) >= 2 && strings.IndexFunc(v, unicode.IsLetter) >= 0 && !snakeWord(v)
 	case "ACCOUNT":
 		return !madeID(v)
 	case "EMAIL":
 		// as the rule's: a file's name (icon@2x.png) or an example's is no
-		// address, nor a host's name with no @ (eu.stg.acme.io)
+		// address, nor a host's name with no @ (eu.stg.acme.io), nor a
+		// symbol (system@got, foo@@GLIBC_2.2.5): realEmail's mailHost
 		return strings.Contains(v, "@") && realEmail(v)
 	}
 	return true
@@ -157,7 +161,7 @@ func namesThing(v string) bool {
 	if u, n, ok := strings.Cut(v, ":"); ok && n != "" && strings.Trim(n, digits) == "" {
 		v = u
 	}
-	if uuidRe.MatchString(v) || digestRe.MatchString(v) || slugRe.MatchString(v) || fileNameRe.MatchString(v) || modelName(v) {
+	if uuidRe.MatchString(v) || digestRe.MatchString(v) || sriRe.MatchString(v) || slugRe.MatchString(v) || fileNameRe.MatchString(v) || modelName(v) {
 		return true
 	}
 	return !strings.ContainsAny(v, " \t\n") && (strings.HasPrefix(v, "/") || strings.HasPrefix(v, "~/") ||
@@ -197,6 +201,11 @@ var (
 	// a file's name in lower case (make-icons.sh, run_all.py)
 	fileNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9_-]+)*\.[a-z][a-z0-9]{0,4}$`)
 	digestRe   = regexp.MustCompile(`^(?i)(?:md5|sha-?(?:1|224|256|384|512)|blake2b?|blake3)[ :=-]+[0-9a-f]{32,128}$`)
+	// a package's digest as a lock file pins it (Subresource Integrity:
+	// package-lock.json's and pnpm-lock.yaml's "integrity"), sha512- and
+	// the hash in base64, with the } or quote the model took in after it.
+	// Privacy Filter took each one for a secret.
+	sriRe = regexp.MustCompile(`^sha(?:256|384|512)-[A-Za-z0-9+/]{43,86}={0,2}[}"',;)\]]*$`)
 )
 
 // madeID says v is an id of the shape vendors and tools give theirs: a
@@ -302,6 +311,17 @@ func modelFits(s string, a, b int, kind string) bool {
 		return false
 	}
 	v := s[a:b]
+	if evmRe.MatchString(v) {
+		// a wallet's or a contract's address (0x and 40 hex digits) is
+		// public, on its chain for anyone to read, and the vendor's model
+		// needs it as written: masked, it took the placeholder for a
+		// private key and told the user to rotate it (0x0_air on X,
+		// 10-28). A key is 64 hex digits; one called a key is masked still.
+		return kind == "SECRET" && secretCued(s, a)
+	}
+	if moduleAt(s, a, b) {
+		return false
+	}
 	switch kind {
 	case "PERSON":
 		return personFits(s, a, b, v)
@@ -336,12 +356,92 @@ func modelFits(s string, a, b int, kind string) bool {
 		if f := strings.Fields(v); len(f) > 1 && hexRe.MatchString(f[0]) || modCacheRe.MatchString(v) {
 			return false
 		}
+		if pinnedAfter(s, b) {
+			return false
+		}
 		return !hexRe.MatchString(v) || secretCued(s, a)
 	case "EMAIL":
 		// a URL's user:password@host is no address, as for the rule's (#3538)
 		return wordByte(v[0]) && !modCacheRe.MatchString(v) && !inUserinfo(s, a)
 	}
 	return true
+}
+
+// pinnedAfter says the value that ends at s[b] is a package's name, as
+// a requirement pins its version after it: django-rest-passwordreset==1.4.0,
+// tokenizers>=0.15, a-lib~=2.1 (pip's comparisons). AstrLink Guard took a
+// package with password in its name for a secret, and the agent read
+// {{SECRET_…}}==1.4.0 in requirements.txt (dniray on Discord, v0.1.1917).
+// No secret has a version pinned after it; a password before @ and an
+// address (s3cret@10.0.0.5) is no pin.
+func pinnedAfter(s string, b int) bool {
+	rest := s[b:]
+	for _, op := range []string{"===", "==", ">=", "<=", "~=", "!="} {
+		if strings.HasPrefix(rest, op) {
+			rest = strings.TrimLeft(rest[len(op):], " ")
+			return rest != "" && rest[0] >= '0' && rest[0] <= '9'
+		}
+	}
+	return false
+}
+
+// moduleRe is what code names a module by: drizzle-orm, @scope/name/sub,
+// node:fs, ./db/schema, golang.org/x/net, serde_json::Value.
+var moduleRe = regexp.MustCompile(`^(?:[a-z]+:)?@?[A-Za-z0-9_.~-]+(?:(?:/|::)[A-Za-z0-9_.~@-]+)*$`)
+
+// moduleAt says s[a:b] is the module a line of code loads: import { eq }
+// from 'drizzle-orm', require(' jsonwebtoken '), import('x'), from
+// django.contrib import auth, import torch, use jsonwebtoken::encode.
+// AstrLink Guard took a package with a word like token in its name, or
+// one alone in its quotes, for a secret (dniray on Discord, v0.1.1917:
+// from ' {{SECRET_…}} '), and the agent read an import it could not
+// resolve. A secret is never the module code loads. Prose is not code:
+// "the token from 'a1b2…'" and "copy it from a1b2…" are judged as before,
+// as a from counts only on an import or export line or after } or *.
+func moduleAt(s string, a, b int) bool {
+	if !moduleRe.MatchString(s[a:b]) {
+		return false
+	}
+	line := strings.LastIndexByte(s[:a], '\n') + 1
+	head := strings.TrimLeft(s[line:a], " \t")
+	end := strings.IndexByte(s[b:], '\n')
+	if end < 0 {
+		end = len(s) - b
+	}
+	tail := strings.TrimLeft(s[b:b+end], " \t")
+	if q := strings.TrimRight(head, " \t"); q != "" && strings.ContainsRune("'\"`", rune(q[len(q)-1])) {
+		// quoted, and ended in the same quote: from ' drizzle-orm '
+		if tail == "" || tail[0] != q[len(q)-1] {
+			return false
+		}
+		q = strings.TrimRight(q[:len(q)-1], " \t")
+		if c := strings.TrimSuffix(q, "("); c != q {
+			q = strings.TrimRight(c, " \t")
+			return wordEnd(q, "require") || wordEnd(q, "import")
+		}
+		if !wordEnd(q, "from") {
+			// import 'reflect-metadata'
+			return q == "import"
+		}
+		q = strings.TrimRight(strings.TrimSuffix(q, "from"), " \t")
+		return strings.HasPrefix(q, "import") || strings.HasPrefix(q, "export") ||
+			strings.HasSuffix(q, "}") || strings.HasSuffix(q, "*") || q == ""
+	}
+	// unquoted, the word starts the line: Python's and Rust's
+	switch strings.TrimRight(head, " \t") {
+	case "from":
+		return strings.HasPrefix(tail, "import ")
+	case "import":
+		return tail == "" || tail[0] == ',' || tail[0] == ';' || strings.HasPrefix(tail, "as ")
+	case "use", "extern crate":
+		return strings.HasPrefix(tail, "::") || tail == "" || tail[0] == ';' || tail[0] == '{'
+	}
+	return false
+}
+
+// wordEnd says s ends in the word w.
+func wordEnd(s, w string) bool {
+	return strings.HasSuffix(s, w) && (len(s) == len(w) || !wordByte(s[len(s)-len(w)-1]))
 }
 
 func wordByte(c byte) bool {
@@ -497,7 +597,10 @@ var assistantNames = map[string]bool{
 }
 
 var (
-	hexRe     = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+	hexRe = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+	// an EVM chain's address: 0x and 40 hex digits, in either case or
+	// mixed (EIP-55's checksum)
+	evmRe     = regexp.MustCompile(`^0[xX][0-9a-fA-F]{40}$`)
 	decimalRe = regexp.MustCompile(`^\d+\.\d+$`)
 	// a time of day in words the model took for a passphrase (release
 	// about 17:05Z)

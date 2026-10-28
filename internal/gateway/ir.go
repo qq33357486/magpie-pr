@@ -175,6 +175,13 @@ type Request struct {
 	// Windows with Claude Code in WSL), so the run's own prompt describes
 	// another machine than the one the tools run on (envElsewhereNote).
 	envElsewhere bool
+	// hourMarks has the cache marks magpie adds on Anthropic's Messages
+	// (anthropicBody) last an hour: a Responses client's (Codex's), whose
+	// turns are often more than five minutes apart and whose own vendor
+	// keeps a thread's prompt cached an hour (chatGPTCold). Off when the
+	// client asked prompt_cache_retention "in_memory", or the upstream
+	// turned the ttl away (hourMarksRefused).
+	hourMarks bool
 
 	Model      string
 	System     string
@@ -817,6 +824,12 @@ func effortOf(s string) string {
 		return strings.ToLower(s)
 	case "ultra": // Codex's max, with its own agents to hand work to
 		return "max"
+	}
+	// a vendor's own word for a level (Trae's light, extra_high), which
+	// an agent sends for a model listing it; fitted back to the model's
+	// own word on the way out (fitEffort)
+	if l, ok := catalog.EffortAliases[strings.ToLower(strings.TrimSpace(s))]; ok {
+		return l
 	}
 	return ""
 }

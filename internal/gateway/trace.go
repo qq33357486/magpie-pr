@@ -216,7 +216,7 @@ func groupRef(g provider.Group, ms []provider.Member) *GroupRef {
 	ref := &GroupRef{ID: g.ID, Ref: g.Ref(), Name: g.Name, Routing: g.Routing, Affinity: g.Affinity, Auto: g.Auto, Sink: sinks(g.Sink, g.Routing)}
 	seen := map[string]bool{}
 	for _, m := range ms {
-		ref.Members = append(ref.Members, provider.WithMemberEffort(m.Provider.ID+"/"+m.Model, m.Effort))
+		ref.Members = append(ref.Members, m.Spelled())
 		if m.Fast {
 			ref.Fast = append(ref.Fast, ref.Members[len(ref.Members)-1])
 		}
@@ -258,9 +258,12 @@ type Weighed struct {
 	Used     float64 `json:"used"`             // share of the allowance counting the model, used
 	// Amount of Limit in Unit: the count that share is of, when the
 	// vendor counts it so (WorkBuddy's credits, #659)
-	Amount   float64           `json:"amount,omitempty"`
-	Limit    float64           `json:"limit,omitempty"`
-	Unit     string            `json:"unit,omitempty"`
+	Amount float64 `json:"amount,omitempty"`
+	Limit  float64 `json:"limit,omitempty"`
+	Unit   string  `json:"unit,omitempty"`
+	// Balance is a prepaid wallet's left in Unit (left.bal, #3950): the
+	// Routing page tells the figure, not a share
+	Balance  *float64          `json:"balance,omitempty"`
 	Renews   []time.Time       `json:"renews,omitempty"`   // when those windows renew, the biggest first
 	Pace     float64           `json:"pace,omitempty"`     // remaining allowance per hour until its window resets
 	Due      *time.Time        `json:"due,omitempty"`      // when the allowance window used for pace resets
@@ -297,6 +300,10 @@ type Weighed struct {
 	// NoCredits: held at 100% (Capped), a Codex account the user set not
 	// to spend its credits once its allowance is used up
 	NoCredits bool `json:"noCredits,omitempty"`
+	// Unread: held (Capped) by a careful provider as its usage can't be
+	// told, why: not read yet, the read failed, or too old near its cap
+	// (provider.Provider.CapCareful)
+	Unread string `json:"unread,omitempty"`
 	// Credits: a Codex account that goes on past its allowance on its
 	// credits, and is let spend them: all but used up, it still answers,
 	// and goes before those used up with nothing to go on with
@@ -461,6 +468,10 @@ func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from 
 		}
 		if l.of > 0 {
 			w.Amount, w.Limit, w.Unit = l.amount, l.of, l.unit
+		}
+		if l.balIn != "" {
+			b := l.bal
+			w.Balance, w.Unit = &b, l.balUnit
 		}
 		if !l.due.IsZero() {
 			due := l.due

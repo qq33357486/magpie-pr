@@ -474,34 +474,12 @@ func CodexNativeHidden() map[string]bool {
 	}
 	off := ModelOff("codex")
 	out := map[string]bool{}
-	for _, e := range Catalog() {
+	for _, e := range catalogOf("codex") {
 		if CodexOwn(e) && off(e.ID) {
 			out[e.Model] = true
 		}
 	}
 	return out
-}
-
-// CodexNativeUnlisted is the ChatGPT account's own models kept out of the
-// lists agents see, which the backend lists to Codex all the same: every
-// one (all) when the codex provider serves only through routing groups
-// (Provider.Unlisted), and by slug those a routing group keeps out of the
-// lists (Group.Unlists). The gateway drops them from its /models answer as
-// it does the ones hidden; Codex then reaches them only through its groups
-// (#1602). A provider switched off keeps none out: it serves nothing, and
-// its setting is kept for when it is switched on again.
-func CodexNativeUnlisted() (all bool, slugs map[string]bool) {
-	p, ok := find(All(), "codex")
-	all = ok && !p.Off && p.Unlisted
-	for _, e := range Unlisted() {
-		if CodexOwn(e) {
-			if slugs == nil {
-				slugs = map[string]bool{}
-			}
-			slugs[e.Model] = true
-		}
-	}
-	return all, slugs
 }
 
 // CodexOrder is where each model of Codex's list goes when the user put
@@ -519,7 +497,7 @@ func CodexOrder() (map[string]int, bool) {
 		at[id] = i
 	}
 	out := map[string]int{}
-	for _, e := range Catalog() {
+	for _, e := range catalogOf("codex") {
 		i, ok := at[e.ID]
 		if !ok {
 			continue
@@ -562,14 +540,6 @@ func buildCodexListTag(kind string) string {
 		for _, slug := range slices.Sorted(maps.Keys(keep)) {
 			ms = append(ms, catalog.Model{ID: "~picked:" + slug})
 		}
-	}
-	// and those kept out of the lists for routing groups (#1602)
-	all, unlisted := CodexNativeUnlisted()
-	if all {
-		ms = append(ms, catalog.Model{ID: "~unlisted"})
-	}
-	for _, slug := range slices.Sorted(maps.Keys(unlisted)) {
-		ms = append(ms, catalog.Model{ID: "~unlisted:" + slug})
 	}
 	// and the models the user disabled (#1867)
 	for _, pat := range DisabledModels() {
@@ -714,16 +684,52 @@ func codexListed(shown []Entry, members func(id string) []Member, own bool) []ca
 	seen := described()
 	s := settings.Load()
 	find := func(id string) (Group, []Member, bool) { return Group{}, members(id), true }
+	listed := func(e Entry) bool { return own || !CodexOwn(e) }
+	apart := codexApart(shown, labels, listed)
 	for i, e := range shown {
-		if CodexOwn(e) && !own {
+		if !listed(e) {
 			continue
 		}
-		m := catalog.Model{ID: e.ID, Name: labels[i], Efforts: e.Efforts, Images: e.Images || seen, Context: e.Context, AgentsV2: e.AgentsV2, Codex: e.Codex}
+		m := catalog.Model{ID: e.ID, Name: labels[i], Efforts: e.Efforts, Images: e.Images || seen, Context: e.Context, AgentsV2: e.AgentsV2, Codex: e.Codex, Apart: apart[i]}
 		m.Compact = CompactFor(s, e, find)
 		CodexTiers(&m, e, members)
 		ms = append(ms, m)
 	}
 	return ms
+}
+
+// codexApart is, for each of shown that is listed, what tells it from
+// another listed entry its label (labels) would call the same in Codex's
+// picker (catalog.Model.Apart): its provider's id, or its own id where
+// that doesn't tell them apart (a routing group, or two of one provider).
+// "" for every other entry, whose picker name stays as it was.
+func codexApart(shown []Entry, labels []string, listed func(Entry) bool) []string {
+	out := make([]string, len(shown))
+	same := map[string][]int{}
+	for i, e := range shown {
+		if listed(e) {
+			k := strings.ToLower(labels[i])
+			same[k] = append(same[k], i)
+		}
+	}
+	for _, is := range same {
+		if len(is) < 2 {
+			continue
+		}
+		ids := map[string]int{}
+		for _, i := range is {
+			ids[strings.ToLower(shown[i].Provider.ID)]++
+		}
+		for _, i := range is {
+			e := shown[i]
+			if e.Group == "" && e.Provider.ID != "" && ids[strings.ToLower(e.Provider.ID)] == 1 {
+				out[i] = e.Provider.ID
+			} else {
+				out[i] = e.ID
+			}
+		}
+	}
+	return out
 }
 
 // CodexTiers sets on m what Codex is offered on e's service tiers

@@ -332,9 +332,8 @@ func claudeReviewed(catalogs []string, models ...string) bool {
 		if gateway.AutoModeReviewable(p, model) {
 			return true
 		}
-		return slices.ContainsFunc(p.Fallback, func(id string) bool {
-			fp, fm, ok := provider.Resolve(id)
-			return ok && gateway.AutoModeReviewable(fp, fm)
+		return slices.ContainsFunc(provider.FallbackModels(p), func(m provider.Member) bool {
+			return gateway.AutoModeReviewable(m.Provider, m.Model)
 		})
 	}
 	find := provider.GroupFinder()
@@ -879,8 +878,11 @@ func claudeIn(at place) *Agent {
 		cur := env(claudeCompactEnv)
 		return cur != "" && cur == stashLoad()[compactKey]
 	}
+	// set while the window magpie wrote is Long conversations' (not a
+	// provider's Compact at): tune's card reads it as that one value
+	compactLongKey := at.key("claude.compact_long")
 	dropCompact := func() error {
-		defer forget(compactKey)
+		defer forget(compactKey, compactLongKey)
 		if compactOurs() {
 			return edit.DelJSON(path, "env."+claudeCompactEnv)
 		}
@@ -909,8 +911,9 @@ func claudeIn(at place) *Agent {
 		// model (settings.Compact), none under Full window
 		main := mainModel()
 		n := provider.CompactSet(main)
+		long := false
 		if s := settings.Load(); n == 0 && !claudeModel(main) && !provider.ClaudeGroup(main) {
-			n = s.Compact()
+			n, long = s.Compact(), true
 			// magpie's default gives way to an autoCompactWindow the user
 			// set in Claude Code (/autocompact, its settings), which the env
 			// would take precedence over; one typed in magpie doesn't (#876).
@@ -927,6 +930,11 @@ func claudeIn(at place) *Agent {
 		}
 		w := strconv.Itoa(n)
 		stash(map[string]string{compactKey: w})
+		if long {
+			stash(map[string]string{compactLongKey: "1"})
+		} else {
+			forget(compactLongKey)
+		}
 		if env(claudeCompactEnv) == w {
 			return nil
 		}
@@ -2570,7 +2578,8 @@ var claudeManaged = func() string {
 // StandIn is the model Claude Code is set to use in place of one it named
 // that magpie doesn't serve: claude-haiku-4-5-… for a title or a small
 // task goes to its haiku tier's model, and a name of no tier to its main
-// model. For Codex, the model it is set to (codexStandIn). "" when the
+// model. For Codex, the model it is set to (codexStandIn), in a WSL
+// distro the distro's config names (wslCodexStandIn). "" when the
 // agent isn't routed through magpie or is neither. For gateway.StandIn.
 func StandIn(agent, model string) string {
 	if agent != "claude" && agent != "codex" {
@@ -2581,7 +2590,11 @@ func StandIn(agent, model string) string {
 		return ""
 	}
 	if agent == "codex" {
-		return codexStandIn(filepath.Join(here(home).codexHome(), "config.toml"))
+		if m := codexStandIn(filepath.Join(here(home).codexHome(), "config.toml")); m != "" || runtime.GOOS != "windows" {
+			return m
+		}
+		// a Codex in a WSL distro is known by the same client
+		return wslCodexStandIn()
 	}
 	if m := claudeStandIn(filepath.Join(here(home).claudeDir(), "settings.json"), model); m != "" || runtime.GOOS != "windows" {
 		return m
