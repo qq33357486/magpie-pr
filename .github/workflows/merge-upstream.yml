@@ -1,8 +1,12 @@
 name: Merge upstream
 
-# Every night, upstream's main is merged into codex-images: a clean merge
-# that builds and tests green is pushed (Docker then builds the image);
-# anything else fails the run red for a hand to sort it out.
+# Every night, upstream's main is merged into codex-images and pushed; Docker
+# builds the image (with its own container smoke test) on the push. Since the
+# fork gave its copy layer up (2026-10-28) it holds only a handful of single-
+# line hooks, so upstream's own suite is not run here as a gate any more:
+# a conflict fails the run red for a hand to sort it out, a merge that
+# doesn't build shows up in Docker's build, and upstream's behaviour-level
+# breakage is upstream's to carry.
 
 on:
   schedule:
@@ -56,23 +60,16 @@ jobs:
             exit 1
           fi
 
-      - name: Install GTK and WebKitGTK
-        if: steps.merge.outputs.changed == 'true'
-        timeout-minutes: 15
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
-
+      # A merge that doesn't compile must not be pushed: one cheap build,
+      # no tests (upstream's suite is not our gate; see the header).
       - uses: actions/setup-go@v6
         if: steps.merge.outputs.changed == 'true'
         with:
           go-version-file: go.mod
 
-      # the packages the fork touches and the ones that read its catalogs;
-      # the pushed merge then runs the full suite (test.yml) on its own
-      - name: Test
+      - name: Build
         if: steps.merge.outputs.changed == 'true'
-        run: go test -tags gtk3 ./internal/gateway/ ./internal/agent/ ./internal/gui/ -count=1
+        run: go build -tags nogui ./...
 
       - name: Push
         if: steps.merge.outputs.changed == 'true'

@@ -2,7 +2,7 @@ name: Docker
 
 on:
   push:
-    branches: [main]
+    branches: [main, codex-images]
     tags: ['v*']
   pull_request:
     paths: [Dockerfile, .dockerignore, .github/workflows/docker.yml]
@@ -135,6 +135,9 @@ jobs:
             if [[ "$V" != *-* ]]; then
               TAGS+=(-t "$IMAGE:${V%.*}" -t "$IMAGE:${V%%.*}" -t "$IMAGE:latest")
             fi
+          elif [[ "$GITHUB_REF" == refs/heads/codex-images ]]; then
+            TAGS=(-t "$IMAGE:codex-images" -t "$IMAGE:sha-${GITHUB_SHA::7}")
+            REF_TAG=codex-images
           else
             TAGS=(-t "$IMAGE:edge")
             REF_TAG=edge
