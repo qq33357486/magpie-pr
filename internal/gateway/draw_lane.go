@@ -87,6 +87,7 @@ func drawLaneOrder(cs []candidate) (ready, cooling []candidate, soonest time.Tim
 		}
 		ready = append(ready, c)
 	}
+	ready = forkDrawTurnOrder(ready) // fork(2026-10-28): 真轮转,见 fork_draw_turn.go
 	return ready, cooling, soonest
 }
 
