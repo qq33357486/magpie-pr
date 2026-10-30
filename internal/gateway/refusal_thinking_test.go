@@ -134,3 +134,59 @@ func TestThinkingHeldLonger(t *testing.T) {
 		t.Fatal("reasoning held past holdThinking")
 	}
 }
+
+// DeepSeek's filter refusing after it has reasoned, on WorkBuddy through
+// a group (itspig, plugins #540): deepseek-v4.1-flash reasoned for ~5s,
+// then ended finish_reason content_filter with 0 tokens counted, all under
+// a 200. The plugin takes the filter's "Sorry, I can't respond to this
+// question." out, so this is what reaches magpie: reasoning, then
+// content_filter with nothing said. Its reasoning went through as it came,
+// so the next member was never asked and DeepSeek Harness failed "The
+// model refused to complete the request"; held, the next member answers.
+// A DeepSeek reply that goes on to answer comes through whole.
+func TestDeepSeekRefusalAfterThinkingFailsOver(t *testing.T) {
+	refused := sse(`data: {"id":"c1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":""},"finish_reason":null}]}`,
+		`data: {"id":"c1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"reasoning_content":"The user is asking"},"finish_reason":null}]}`,
+		`data: {"id":"c1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"reasoning_content":" about it."},"finish_reason":null}]}`,
+		`data: {"id":"c1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`,
+		`data: [DONE]`)
+	answered := sse(`data: {"id":"c1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"The user is asking"},"finish_reason":null}]}`,
+		`data: {"id":"c1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"content":"from a"},"finish_reason":null}]}`,
+		`data: {"id":"c1","object":"chat.completion.chunk","model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`,
+		`data: [DONE]`)
+	run := func(t *testing.T, up string) (*scripted, *scripted, *Server, int, string) {
+		fresh(t)
+		a := &scripted{replies: []reply{{200, "text/event-stream", up}}}
+		b := &scripted{replies: []reply{{200, "text/event-stream", anthropicAnswer}}}
+		scriptedOn(t, "a", provider.Chat, a)
+		pa, err := provider.Find("a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		pa.Models = []string{"deepseek-v4.1-flash"}
+		if err := provider.Save(*pa); err != nil {
+			t.Fatal(err)
+		}
+		scriptedOn(t, "b", provider.Anthropic, b)
+		refusalGroup(t, "a/deepseek-v4.1-flash", "b/m")
+		s := New()
+		code, body := sendTo(s, "/v1/messages", claudeCodeAsk)
+		return a, b, s, code, body
+	}
+	t.Run("refused", func(t *testing.T) {
+		a, b, s, code, body := run(t, refused)
+		if code != 200 || !strings.Contains(body, "from b") || strings.Contains(body, `"refusal"`) || strings.Contains(body, "The user is asking") || a.n != 1 || b.n != 1 {
+			t.Fatalf("%d %s (a %d, b %d)", code, body, a.n, b.n)
+		}
+		r := lastRoute(s)
+		if len(r.Tries) != 2 || r.Tries[0].Fail != failRefused || r.Tries[0].Rest != nil || r.Status != 200 {
+			t.Fatalf("tries: %+v", r.Tries)
+		}
+	})
+	t.Run("answered", func(t *testing.T) {
+		a, b, _, code, body := run(t, answered)
+		if code != 200 || !strings.Contains(body, "The user is asking") || !strings.Contains(body, "from a") || strings.Contains(body, "from b") || a.n != 1 || b.n != 0 {
+			t.Fatalf("%d %s (a %d, b %d)", code, body, a.n, b.n)
+		}
+	})
+}
