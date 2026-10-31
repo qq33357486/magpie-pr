@@ -29,6 +29,7 @@ fork 把"客户文案中文化 + 脱敏 + 断流 504"整层**退役归还上游*
 | gw1: 压缩标记（防 magpie1: 落进客户 rollout） | codexsummary/fork_marks.go（专属）+ codex_backend.go 四个点（ForkMessage 读/ForkMark 双查/ForkEncrypted 写）+ native_compaction.go（ForkWritten×2）+ sessions/codex_portable.go（portLine 三标记）+ sessions/carry_convert.go（ForkMessage） | 功能 |
 | 订阅桥 | claude_subscription.go（rewriteImageNotes + textCallSee 接线）+ claude_image_notes.go（专属） | 功能 |
 | textcalls（模型把工具调用打成文本） | textcalls.go（"[tool call " 标记）+ textcalls_magpie.go（专属） | 功能，上游 issue #2485/2486 未修 |
+| 响应 model 归一（Anthropic 出口回写为客户请求名，vendor 马甲不露真身；透传路径不经过此处——别名 vendor 须走翻译路径，即 BaseAPI≠客户端协议） | anthropic.go 两处：anthropicEncoder.start（model 优先 e.model，2026-10-31）+ renderAnthropic（删 res.Model 覆盖） | 功能 |
 | 少量修上游红 | agentenv_test.go（CARGO_HOME）、tui/models_test.go（add927e6 picker） | 测试 |
 
 共享文件里的钩子合计约 10 处、多为单行——这就是合并冲突的全部期望来源。
