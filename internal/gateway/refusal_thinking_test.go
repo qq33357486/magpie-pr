@@ -183,6 +183,38 @@ func TestDeepSeekRefusalAfterThinkingFailsOver(t *testing.T) {
 			t.Fatalf("tries: %+v", r.Tries)
 		}
 	})
+	// What workbuddy 0.2.5 hands on from itspig's literal WorkBuddy chunks
+	// (plugins #540): the reasoning chunk with an empty content and refusal,
+	// and the content_filter chunk with "\nSorry, I can't respond to this
+	// question.\n" taken out, its null and empty fields kept.
+	workbuddy := sse(`data: {"choices":[{"delta":{"content":"","extra_fields":null,"function_call":null,"reasoning_content":" node","refusal":""},"finish_reason":null,"index":0,"logprobs":null}],"created":1793401068,"id":"c56c77084382622efa17c799396db5cf","model":"deepseek-v4.1-flash","object":"chat.completion.chunk","usage":null}`,
+		`data: {"choices":[{"delta":{"extra_fields":null,"function_call":null,"refusal":"","role":"assistant"},"finish_reason":"content_filter","index":0,"logprobs":null}],"created":0,"id":"c56c77084382622efa17c799396db5cf","model":"deepseek-v4.1-flash","object":"chat.completion.chunk","usage":null}`,
+		`data: [DONE]`)
+	t.Run("workbuddy's own chunks", func(t *testing.T) {
+		a, b, s, code, body := run(t, workbuddy)
+		if code != 200 || !strings.Contains(body, "from b") || strings.Contains(body, `"refusal"`) || strings.Contains(body, " node") || a.n != 1 || b.n != 1 {
+			t.Fatalf("%d %s (a %d, b %d)", code, body, a.n, b.n)
+		}
+		r := lastRoute(s)
+		if len(r.Tries) != 2 || r.Tries[0].Fail != failRefused || r.Tries[0].Rest != nil || r.Status != 200 {
+			t.Fatalf("tries: %+v", r.Tries)
+		}
+	})
+	// The same from WorkBuddy's own framing, as workbuddy 0.2.6 hands it
+	// on: "tool_calls": [] and "finish_reason": "" on every delta, an empty
+	// reasoning_content beside the line it took out (plugins #540).
+	wire := sse(`data: {"choices":[{"delta":{"content":"","extra_fields":null,"function_call":null,"reasoning_content":" node","refusal":"","tool_calls":[]},"finish_reason":"","index":0,"logprobs":null}],"created":1793401068,"id":"c56c77084382622efa17c799396db5cf","model":"deepseek-v4.1-flash","object":"chat.completion.chunk","usage":null}`,
+		`data: {"choices":[{"delta":{"extra_fields":null,"function_call":null,"reasoning_content":"","refusal":"","role":"assistant","tool_calls":[]},"finish_reason":"content_filter","index":0,"logprobs":null}],"created":0,"id":"c56c77084382622efa17c799396db5cf","model":"deepseek-v4.1-flash","object":"chat.completion.chunk","usage":null}`,
+		`data: [DONE]`)
+	t.Run("workbuddy's wire", func(t *testing.T) {
+		a, b, s, code, body := run(t, wire)
+		if code != 200 || !strings.Contains(body, "from b") || strings.Contains(body, " node") || a.n != 1 || b.n != 1 {
+			t.Fatalf("%d %s (a %d, b %d)", code, body, a.n, b.n)
+		}
+		if r := lastRoute(s); len(r.Tries) != 2 || r.Tries[0].Fail != failRefused {
+			t.Fatalf("tries: %+v", r.Tries)
+		}
+	})
 	t.Run("answered", func(t *testing.T) {
 		a, b, _, code, body := run(t, answered)
 		if code != 200 || !strings.Contains(body, "The user is asking") || !strings.Contains(body, "from a") || strings.Contains(body, "from b") || a.n != 1 || b.n != 0 {

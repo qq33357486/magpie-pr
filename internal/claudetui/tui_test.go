@@ -92,6 +92,12 @@ func fakeClaude(args []string) {
 		fmt.Print("something went wrong\n")
 		os.Exit(3)
 	}
+	if os.Getenv("FAKE_LOGIN") == "1" {
+		// signed in for -p alone: the interactive mode asks how to sign in
+		fmt.Print("\r\nSelect login method:\r\n\r\n ❯ 1. Claude account with subscription\r\n   2. Anthropic Console account\r\n")
+		time.Sleep(time.Minute)
+		os.Exit(0)
+	}
 	sid := ""
 	if i := slices.Index(args, "--session-id"); i >= 0 {
 		sid = args[i+1]
@@ -359,6 +365,8 @@ func TestShimFallsBackToPrint(t *testing.T) {
 	}{
 		{"failed start", []string{"FAKE_FAIL=1"}, true},
 		{"untrusted folder", []string{"FAKE_TRUST=1"}, false},
+		// at once, not after readyWait: runShim waits 30s (#4504)
+		{"asks to sign in", []string{"FAKE_LOGIN=1"}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			out := runShim(t, c.env, append([]string{fakePath(t)}, pArgs...), []string{"hello"}, 1)
@@ -372,6 +380,67 @@ func TestShimFallsBackToPrint(t *testing.T) {
 				t.Fatalf("marked broken: %v, want %v", got, c.broken)
 			}
 		})
+	}
+}
+
+// Each failed start in a row keeps runs on -p longer, to a day; one that
+// shows its prompt forgets them.
+func TestBrokenGrows(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "cache"))
+	for n, want := range map[int]time.Duration{1: 30 * time.Minute, 2: time.Hour, 3: 2 * time.Hour, 6: 16 * time.Hour, 7: 24 * time.Hour, 40: 24 * time.Hour} {
+		if got := brokenFor(n); got != want {
+			t.Errorf("brokenFor(%d) = %s, want %s", n, got, want)
+		}
+	}
+	if _, ok := BrokenSince(); ok {
+		t.Fatal("broken with no mark")
+	}
+	MarkBroken()
+	MarkBroken()
+	if _, n, _ := brokenRead(); n != 2 {
+		t.Fatalf("count %d, want 2", n)
+	}
+	// 45 minutes ago: past one failure's 30 minutes, within two's hour
+	old := time.Now().Add(-45 * time.Minute)
+	_ = os.Chtimes(broken(), old, old)
+	if _, ok := BrokenSince(); !ok {
+		t.Fatal("two failures 45 minutes ago went back to the interactive mode")
+	}
+	_ = os.WriteFile(broken(), nil, 0o600) // a mark from before the count
+	_ = os.Chtimes(broken(), old, old)
+	if _, ok := BrokenSince(); ok {
+		t.Fatal("an old mark 45 minutes ago still holds")
+	}
+	clearBroken()
+	if _, _, ok := brokenRead(); ok {
+		t.Fatal("cleared, the mark stayed")
+	}
+}
+
+// A start that shows its prompt removes the mark of earlier failures, so
+// the next failure counts from one.
+func TestShimStartClearsBroken(t *testing.T) {
+	home := t.TempDir()
+	env := []string{"HOME=" + home, "XDG_CACHE_HOME=" + filepath.Join(home, "cache"), "LOCALAPPDATA=" + filepath.Join(home, "cache")}
+	for _, e := range env {
+		k, v, _ := strings.Cut(e, "=")
+		t.Setenv(k, v)
+	}
+	// three failures, the last a day and a half ago: past its 2 hours
+	MarkBroken()
+	MarkBroken()
+	MarkBroken()
+	old := time.Now().Add(-36 * time.Hour)
+	_ = os.Chtimes(broken(), old, old)
+	out := runShim(t, env, append([]string{fakePath(t)}, pArgs...), []string{"hello"}, 3)
+	if out[0]["subtype"] != "init" {
+		t.Fatalf("got %v, want an interactive turn", out)
+	}
+	if _, _, ok := brokenRead(); ok {
+		t.Fatal("a start that showed its prompt left the mark")
 	}
 }
 
@@ -435,5 +504,32 @@ func TestTranslatorAPIError(t *testing.T) {
 	}
 	if r := l.out[2]; r["is_error"] != true || r["result"] != "You've hit your limit" || r["api_error_status"] != float64(429) {
 		t.Fatalf("result %v", r)
+	}
+}
+
+// A Claude Code in WSL is pasted an image's path as the distro reads it,
+// and is handed TERM through WSLENV, the gateway's own names kept.
+func TestShimInWSL(t *testing.T) {
+	s := &shim{wsl: &WSL{Args: []string{"-d", "Ubuntu"}, Mount: "/mnt/", Projects: `\\wsl$\Ubuntu\home\me\.claude\projects`}}
+	if got := s.path(`C:\Users\me\AppData\Local\Temp\magpie-images-1\1.png`); got != "/mnt/c/Users/me/AppData/Local/Temp/magpie-images-1/1.png" {
+		t.Fatalf("path %q", got)
+	}
+	if got := (&shim{}).path("/tmp/a.png"); got != "/tmp/a.png" {
+		t.Fatalf("this machine's path %q", got)
+	}
+	t.Setenv(WSLEnv, `{"args":["-d","Ubuntu"],"projects":"x"}`)
+	t.Setenv("WSLENV", "CLAUDE_CONFIG_DIR/p")
+	env := childEnv()
+	var wslenv []string
+	for _, e := range env {
+		if strings.HasPrefix(e, WSLEnv+"=") {
+			t.Fatalf("the child was handed %s", e)
+		}
+		if strings.HasPrefix(strings.ToUpper(e), "WSLENV=") {
+			wslenv = append(wslenv, e)
+		}
+	}
+	if len(wslenv) != 1 || wslenv[0] != "WSLENV=CLAUDE_CONFIG_DIR/p:TERM" {
+		t.Fatalf("WSLENV %q", wslenv)
 	}
 }

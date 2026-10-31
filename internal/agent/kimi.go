@@ -309,7 +309,7 @@ func kimiIn(at place) *Agent {
 		},
 		Notice: func() string {
 			if Running(`(^|/)kimi( |$)`, `(^|/)kimi-cli( |$)`) {
-				return noticeKimi.String()
+				return kimiNotice(legacy).String()
 			}
 			return ""
 		},
@@ -424,7 +424,31 @@ func kimiModelTableForKey(path, key string) (map[string]string, error) {
 	return nil, nil
 }
 
-// what kimi says after a change (notice.go)
+// what kimi says after a change (notice.go). kimi-cli reads config.toml at
+// start-up. Kimi Code 2.x watches it and reloads it, so an open session takes
+// new models at once, but the model picker of its web and desktop app is
+// read again only when Settings › Providers is opened again (jiabubu: a
+// stale picker's pick said "is not configured in config.toml").
 var (
-	noticeKimi = newNotice("Kimi Code reads its settings at start-up — restart open kimi sessions to use this.")
+	noticeKimi        = newNotice("Kimi Code reads its settings at start-up — restart open kimi sessions to use this.")
+	noticeKimiCode    = newNotice("Kimi Code reads this as it runs; in its web or desktop app, reopen Settings › Providers or reload the page to see new models.")
+	noticeWSLKimi     = newNotice("{agent} in WSL {distro} reads its settings at start-up — restart open kimi sessions to use this.")
+	noticeWSLKimiCode = newNotice("{agent} in WSL {distro} reads this as it runs; in its web or desktop app, reopen Settings › Providers or reload the page to see new models.")
 )
+
+// kimiNotice is the advice after a change for kimi-cli (legacy) or Kimi
+// Code 2.x.
+func kimiNotice(legacy bool) notice {
+	if legacy {
+		return noticeKimi
+	}
+	return noticeKimiCode
+}
+
+// kimiWSLNotice is kimiNotice for Kimi in a WSL distro.
+func kimiWSLNotice(at place) notice {
+	if _, legacy := kimiDir(at); legacy {
+		return noticeWSLKimi
+	}
+	return noticeWSLKimiCode
+}

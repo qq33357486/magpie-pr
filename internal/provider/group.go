@@ -1073,6 +1073,33 @@ func entriesBy(entries []Entry) entryOf {
 	}
 }
 
+// groupSharedKimi gives a group what the providers' lists say of a model
+// (AlwaysThinks, DynamicTools, DefaultEffort) when every member's entry
+// says the same: a group of Kimi Code's models keeps always_thinking and
+// dynamically_loaded_tools in Kimi Code (jiabubu on Discord: one Kimi
+// model put in a group to list it first lost both). One member without it,
+// or one magpie has no entry for, and the group has none: Kimi Code would
+// send a member that can't the request shaped for one that can
+func groupSharedKimi(e *Entry, ms []Member, entries []Entry, find entryOf) {
+	for i, m := range ms {
+		j := find(m.Provider.ID, m.Model)
+		if j < 0 {
+			e.AlwaysThinks, e.DynamicTools, e.DefaultEffort = false, false, ""
+			return
+		}
+		x := &entries[j]
+		if i == 0 {
+			e.AlwaysThinks, e.DynamicTools, e.DefaultEffort = x.AlwaysThinks, x.DynamicTools, x.DefaultEffort
+			continue
+		}
+		e.AlwaysThinks = e.AlwaysThinks && x.AlwaysThinks
+		e.DynamicTools = e.DynamicTools && x.DynamicTools
+		if e.DefaultEffort != x.DefaultEffort {
+			e.DefaultEffort = ""
+		}
+	}
+}
+
 func buildGroupEntries(entries []Entry) []Entry {
 	var out []Entry
 	all := groupsIn(entries)
@@ -1220,6 +1247,7 @@ func buildGroupEntries(entries []Entry) []Entry {
 		// V2 for Ultra only when no member is a ChatGPT account's: a lead
 		// it answers seals its subagents' tasks (#141)
 		e.AgentsV2 = !chatgpt && slices.Contains(e.Efforts, "ultra")
+		groupSharedKimi(&e, ms, entries, find)
 		e.Reasoning = e.Reasoning || len(e.Efforts) > 0
 		if e.ImageInput != nil && !*e.ImageInput {
 			e.Images = false

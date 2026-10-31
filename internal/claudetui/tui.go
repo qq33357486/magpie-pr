@@ -28,16 +28,26 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yetone/magpie/internal/wslrun"
 )
+
+// ReadyWait is how long Claude Code may take to show its prompt before
+// the helper becomes -p (printMode). The bridge's wait for the helper's
+// answer to its initialize request is longer by as much as -p takes to
+// answer it (#4504): a wait shorter than this one ended the helper as it
+// waited, before it became -p, and the turn was answered 502.
+const ReadyWait = 45 * time.Second
 
 // how long Claude Code may take to show its prompt, a pasted message to
 // show in it, and a sent one to reach its transcript
 var (
-	readyWait = 45 * time.Second
+	readyWait = ReadyWait
 	pasteWait = 10 * time.Second
 	sentWait  = 3 * time.Second
 	// rows of one message are written together: a message is whole once
@@ -77,6 +87,10 @@ type shim struct {
 	// be pasted, made with the first; images counts them
 	images  string
 	nimages int
+
+	// wsl is a Claude Code in a WSL distro (WSLEnv); nil for this
+	// machine's
+	wsl *WSL
 }
 
 // Run runs Claude Code at path, args being the bridge's `claude -p` ones,
@@ -89,12 +103,21 @@ func Run(args []string) error {
 		return errors.New("usage: magpie " + Command + " <claude> [claude -p's arguments]")
 	}
 	path, pargs := args[0], args[1:]
-	if since, ok := brokenSince(); ok {
+	var wsl *WSL
+	if v := os.Getenv(WSLEnv); v != "" {
+		wsl = &WSL{}
+		if err := json.Unmarshal([]byte(v), wsl); err != nil || len(wsl.Args) == 0 || wsl.Projects == "" {
+			return fmt.Errorf("%s: %q", WSLEnv, v)
+		}
+		// wsl.exe's own arguments, then Claude Code's
+		pargs = append(slices.Clone(wsl.Args), pargs...)
+	}
+	if since, ok := BrokenSince(); ok {
 		fmt.Fprintf(os.Stderr, "claude-tui: Claude Code's interactive mode failed to start %s ago; this run is -p\n", time.Since(since).Round(time.Second))
 		return printMode(path, pargs)
 	}
-	args = interactiveArgs(pargs)
-	s := &shim{out: os.Stdout, changed: make(chan struct{}, 1), rowsCh: make(chan struct{}, 1), exited: make(chan struct{})}
+	args = interactiveArgs(pargs[len(wslArgs(wsl)):])
+	s := &shim{out: os.Stdout, changed: make(chan struct{}, 1), rowsCh: make(chan struct{}, 1), exited: make(chan struct{}), wsl: wsl}
 	resume := ""
 	for i, a := range args {
 		if a == "--resume" && i+1 < len(args) {
@@ -108,6 +131,9 @@ func Run(args []string) error {
 		args = append(args, "--session-id", s.sid)
 	}
 	s.projects = filepath.Join(configDir(), "projects")
+	if wsl != nil {
+		s.projects = wsl.Projects
+	}
 	// a resumed session's file has its earlier turns: only what is
 	// written after the start is read
 	var from int64
@@ -116,8 +142,8 @@ func Run(args []string) error {
 			from = fi.Size()
 		}
 	}
-	if err := s.start(path, args); err != nil {
-		markBroken()
+	if err := s.start(path, append(slices.Clone(wslArgs(wsl)), args...)); err != nil {
+		MarkBroken()
 		fmt.Fprintf(os.Stderr, "claude-tui: Claude Code's interactive mode could not start (%v); this run is -p\n", err)
 		return printMode(path, pargs)
 	}
@@ -134,16 +160,26 @@ func Run(args []string) error {
 	}()
 	if err := s.ready(); err != nil {
 		if !errors.Is(err, errUntrusted) {
-			markBroken()
+			MarkBroken()
 		}
 		signal.Reset()
 		s.stop()
 		fmt.Fprintf(os.Stderr, "claude-tui: %v; this run is -p\n", err)
 		return printMode(path, pargs)
 	}
+	clearBroken()
 	s.emit(map[string]any{"type": "system", "subtype": "init", "session_id": s.sid})
 	go s.tail(from)
 	return s.input(os.Stdin)
+}
+
+// wslArgs is wsl.exe's arguments before Claude Code's, none for this
+// machine's Claude Code.
+func wslArgs(wsl *WSL) []string {
+	if wsl == nil {
+		return nil
+	}
+	return wsl.Args
 }
 
 // configDir is the folder Claude Code keeps its state in.
@@ -167,10 +203,16 @@ func childEnv() []string {
 		case k == "CLAUDECODE", k == "CLAUDE_CODE_ENTRYPOINT", k == "CLAUDE_CODE_CHILD_SESSION",
 			k == "CLAUDE_CODE_SESSION_ID", k == "CLAUDE_CODE_SESSION_ATTENDED", k == "CLAUDE_CODE_EXECPATH",
 			k == "CLAUDE_PID", k == "CLAUDE_EFFORT", k == "TERM", k == "COLUMNS", k == "LINES",
-			strings.HasPrefix(k, "CLAUDE_CODE_MESSAGING_"):
+			strings.HasPrefix(k, "CLAUDE_CODE_MESSAGING_"), k == WSLEnv:
+			continue
+		case strings.EqualFold(k, "WSLENV") && os.Getenv(WSLEnv) != "":
+			// a Claude Code in WSL is given only what WSLENV names
 			continue
 		}
 		env = append(env, e)
+	}
+	if os.Getenv(WSLEnv) != "" {
+		env = append(env, "WSLENV="+strings.Trim(os.Getenv("WSLENV")+":TERM", ":"))
 	}
 	return append(env, "TERM=xterm-256color")
 }
@@ -250,6 +292,11 @@ func lastAt(re *regexp.Regexp, p string) int {
 
 var errUntrusted = errors.New("Claude Code asks whether to trust the folder, which only its user answers")
 
+// signIn is what Claude Code's interactive mode shows where it is not
+// signed in, as -p may be (CLAUDE_CODE_OAUTH_TOKEN, a container whose
+// ~/.claude.json has no onboarding done): nothing the helper may answer.
+var signIn = regexp.MustCompile(`Select login method|Log in with your Claude account|claude\.ai/oauth/authorize`)
+
 // ready waits for Claude Code's prompt. Asked whether to trust the folder
 // it runs in, it is told yes, as a person would, when TrustEnv says so.
 func (s *shim) ready() error {
@@ -261,6 +308,8 @@ func (s *shim) ready() error {
 		switch {
 		case strings.Contains(p, "trust this folder") && os.Getenv(TrustEnv) != "1":
 			return errUntrusted
+		case signIn.MatchString(p):
+			return fmt.Errorf("Claude Code's interactive mode asks to sign in: %s", s.lastScreen())
 		case strings.Contains(p, "trust this folder") && answered < 3:
 			// the choice is the last one drawn after ❯, "No, exit" at
 			// first. A key sent as the question is first drawn can be lost
@@ -534,7 +583,7 @@ func (s *shim) send(pieces []piece) error {
 	for i, p := range pieces {
 		if p.image != "" {
 			var err error
-			if image, err = s.pasteImage(p.image, image); err != nil {
+			if image, err = s.pasteImage(s.path(p.image), image); err != nil {
 				return err
 			}
 			continue
@@ -583,6 +632,15 @@ func (s *shim) send(pieces []piece) error {
 }
 
 var imageShown = regexp.MustCompile(`\[Image #(\d+)\]`)
+
+// path is where Claude Code reads a file of the helper's at path: one in
+// WSL under the distro's mount of the drive.
+func (s *shim) path(path string) string {
+	if s.wsl == nil {
+		return path
+	}
+	return wslrun.Tool{Mount: s.wsl.Mount}.Linux(path)
+}
 
 // pasteImage pastes an image file's path, and waits for the prompt to show
 // it taken as an image: one numbered past after, the message's image
@@ -760,8 +818,9 @@ func interactiveArgs(pargs []string) []string {
 	return append(out, "--permission-mode", "default", "--allowedTools", strings.Join(allowed, ","), "--no-chrome")
 }
 
-// broken is where a failed start is kept: for brokenFor after it, runs go
-// straight to -p, rather than each waiting out readyWait.
+// broken is where a failed start is kept: for a while after it
+// (brokenFor), runs go straight to -p, rather than each waiting out
+// readyWait. It holds how many starts in a row failed.
 func broken() string {
 	dir, err := os.UserCacheDir()
 	if err != nil {
@@ -770,27 +829,66 @@ func broken() string {
 	return filepath.Join(dir, "magpie", "claude-tui-broken")
 }
 
-const brokenFor = 30 * time.Minute
-
-func brokenSince() (time.Time, bool) {
-	p := broken()
-	if p == "" {
-		return time.Time{}, false
+// brokenFor is how long runs go to -p after the interactive mode failed
+// to start n times in a row: 30 minutes, doubled with each failure after,
+// to a day. A machine where it never starts (a container whose Claude Code
+// is signed in for -p only, #4504) waits out readyWait about once a day.
+func brokenFor(n int) time.Duration {
+	d := 30 * time.Minute
+	for i := 1; i < n && d < 24*time.Hour; i++ {
+		d *= 2
 	}
-	fi, err := os.Stat(p)
-	if err != nil || time.Since(fi.ModTime()) > brokenFor {
-		return time.Time{}, false
-	}
-	return fi.ModTime(), true
+	return min(d, 24*time.Hour)
 }
 
-func markBroken() {
+func brokenRead() (time.Time, int, bool) {
+	p := broken()
+	if p == "" {
+		return time.Time{}, 0, false
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		return time.Time{}, 0, false
+	}
+	b, _ := os.ReadFile(p)
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || n < 1 {
+		// a mark from before the count, or one half written
+		n = 1
+	}
+	return fi.ModTime(), n, true
+}
+
+// BrokenSince is when the interactive mode last failed to start, while
+// runs go to -p for it.
+func BrokenSince() (time.Time, bool) {
+	at, n, ok := brokenRead()
+	if !ok || time.Since(at) > brokenFor(n) {
+		return time.Time{}, false
+	}
+	return at, true
+}
+
+// MarkBroken notes that the interactive mode failed to start: by the
+// helper, and by the bridge when the helper didn't answer in time.
+func MarkBroken() {
 	p := broken()
 	if p == "" {
 		return
 	}
+	n := 1
+	if _, was, ok := brokenRead(); ok {
+		n = was + 1
+	}
 	_ = os.MkdirAll(filepath.Dir(p), 0o700)
-	_ = os.WriteFile(p, nil, 0o600)
+	_ = os.WriteFile(p, []byte(strconv.Itoa(n)), 0o600)
 	now := time.Now()
 	_ = os.Chtimes(p, now, now)
+}
+
+// clearBroken forgets failed starts once one shows its prompt.
+func clearBroken() {
+	if p := broken(); p != "" {
+		_ = os.Remove(p)
+	}
 }

@@ -4,7 +4,8 @@
 // along the window's foot, and every page stopped above it, its last rows
 // cut off over a blank bar beside the sidebar. Now a page runs to the
 // window's foot, and a line said there floats as a pill over it, inside the
-// window, and goes. The tray panel's footer, with Quit, is as it was.
+// window, and goes. A press under a passing note reaches the page
+// (plugin-namesake's Install at the window's foot). The tray panel's footer, with Quit, is as it was.
 // Both engines, every language, with the sidebar and the header's tabs,
 // wide and narrow.
 const assert = require("node:assert/strict");
@@ -77,6 +78,18 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert(got.status.left >= 0 && got.status.right <= got.vw && !got.status.cut, `it fits: ${JSON.stringify(got)}`);
         assert.notEqual(got.status.bg, "rgba(0, 0, 0, 0)", "it has its own ground over the page");
         assert(Math.abs(got.view - got.vh) < 1, `saying it doesn't make the page shorter: ${JSON.stringify(got)}`);
+        // a press where the note is lands on the page under it; an error
+        // stays on top, to be selected and copied
+        const hit = () => page.evaluate(() => {
+          const s = document.querySelector("#status").getBoundingClientRect();
+          const e = document.elementFromPoint(s.left + s.width / 2, s.top + s.height / 2);
+          return !!e && !!e.closest("#status");
+        });
+        assert(!(await hit()), "a press under a passing note reaches the page");
+        await page.evaluate(() => status("x".repeat(300), "ok"));
+        assert(!(await hit()), "under a long one too");
+        await page.evaluate(() => status("failed", "err"));
+        assert(await hit(), "an error can be selected");
         // a plain line too
         await page.evaluate(() => status("…"));
         got = await look(page);

@@ -264,6 +264,7 @@ magpie quota                             <span class="c"># acme · Pro · 5h 37%
     <div class="table-wrap"><table>
       <tr><th>字段</th><th>含义</th></tr>
       <tr><td><code>magpie.icon</code></td><td>插件自己的图标，用在「发现」里的卡片（从 npm 读取，GitHub 上的插件从仓库读取）和「已安装」里的那一行；没有自己图标的供应商也用它：<code>https://</code> 地址或 <code>data:image/…</code> URI，最大 1 MB，SVG、PNG 等都行。</td></tr>
+      <tr><td><code>magpie.name</code></td><td>插件在「已安装」里那一行的名字；它的页面没写标题时，也是侧边栏标签的名字。只对社区列表没收录的插件有效（列表里的名字优先）。npm 包名只能是 ASCII，所以「华为云 HUAWEI」这样的名字写在这里。一行，最多 80 字节，否则忽略。它只是包自己的说法：不会显示为已审核，也不会用来按名字查找插件。</td></tr>
       <tr><td><code>magpie.maxConcurrency</code></td><td>每个账号同时接多少个请求，1 到 1000 的整数。用户在供应商上设置的上限优先。</td></tr>
     </table></div>
     <p>同样的字段也可以写在 <code>auth</code> 钩子上（<code>auth.icon</code>、<code>auth.maxConcurrency</code>），优先于 <code>package.json</code>。一个插件登录多个供应商时，可以给每个供应商各写一个 <code>auth.icon</code>，<code>magpie.icon</code> 留给插件本身。</p>
@@ -694,7 +695,7 @@ m plugin logout acme</pre>
 magpie plugin options model-map '{"mapping": {"fast": "deepseek/deepseek-chat"}}'</pre>
     </div>
     <h3 id="middleware-options"><a class="anchor" href="#middleware-options">选项</a></h3>
-    <p>中间件从 <code>ctx.options</code> 读取设置，也就是 <code>plugins.json</code> 里它那一项的 <code>options</code>。可以在<span class="ui">插件 → 已安装</span>里点中间件的<span class="ui">选项</span>按钮，在它那一行里以 JSON 编辑；也可以用 <code>magpie plugin options &lt;名字&gt; '&lt;json&gt;'</code>（<code>off</code> 清除）。名字可以是包名、spec 或短名：<code>@magpie-community/middleware-model-map</code> 的短名是 <code>model-map</code>。从下一个请求起生效。包可以在 <code>package.json</code> 里用 <code>"magpie": { "options": { … } }</code> 给出建议的选项：没有设置时编辑框以它为起点，但在你保存之前，中间件运行时没有选项。</p>
+    <p>中间件从 <code>ctx.options</code> 读取设置，也就是 <code>plugins.json</code> 里它那一项的 <code>options</code>。可以在<span class="ui">插件 → 已安装</span>里点中间件的<span class="ui">选项</span>按钮，在它那一行里以 JSON 编辑；也可以用 <code>magpie plugin options &lt;名字&gt; '&lt;json&gt;'</code>（<code>off</code> 清除）。名字可以是包名、spec 或短名：<code>@magpie-community/middleware-model-map</code> 的短名是 <code>model-map</code>。从下一个请求起生效。包可以在 <code>package.json</code> 里用 <code>"magpie": { "options": { … } }</code> 给出建议的选项：没有设置时编辑框以它为起点，但在你保存之前，中间件运行时没有选项。提供方插件声明的开关（编辑页里的<span class="ui">插件选项</span>，比如 Cursor 的 <code>wire_trace</code>）会按开关保存：<code>magpie plugin options cursor '&lbrace;"wire_trace": true&rbrace;'</code> 打开它，<code>off</code> 把所有开关恢复为插件的默认值。</p>
     <h3>运行方式</h3>
     <p>中间件不在 Bun 里运行，而是在网关自己的进程里，用 Go 写的 JavaScript 引擎 <a href="https://github.com/MoeForge/moejs">moejs</a> 运行。原因是一个回复会流式传输成千上万个事件，每个事件都要等它处理完。在一个事件上调用一次钩子大约耗时 1 微秒，而和 Bun 往返一次要几十微秒。每个中间件只编译一次，每个请求有自己的运行时，所以请求之间可以并行，同一个请求的各个钩子共享 <code>ctx.state</code>。</p>
     <ul>

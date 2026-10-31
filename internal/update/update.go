@@ -376,9 +376,11 @@ func InstallAsAdmin(staged, bundle string) error {
 // window when window is set, else only its menu bar icon (`tray`, as a
 // login launch), which a restart by itself uses while no window was up.
 // Each try, and what it came to, is written to relaunch.log in magpie's
-// own folder.
-func Relaunch(bundle string, window bool) error {
-	return runAfterExit(os.Getpid(), relaunchCommand(bundle, window, relaunchLog()))
+// own folder. quiet, the restart is one magpie made by itself: the app
+// opens in the background (open -g), as it does too with no window, so it
+// takes no focus from the app the user is in (relaunchOpen).
+func Relaunch(bundle string, window, quiet bool) error {
+	return runAfterExit(os.Getpid(), relaunchCommand(bundle, window, quiet, relaunchLog()))
 }
 
 // openWaits are the pauses, in seconds, between tries of the relaunch's
@@ -420,12 +422,12 @@ func relaunchLog() string {
 // even with the 13s of tries (molvqingtai, after fb23bca5c): LaunchServices
 // can go on refusing the open for as long as the session is locked, and a
 // program run by its path needs nothing from it to start.
-func relaunchCommand(bundle string, window bool, log string) string {
-	return relaunchScript(bundle, window, log, openWaits)
+func relaunchCommand(bundle string, window, quiet bool, log string) string {
+	return relaunchScript(bundle, window, quiet, log, openWaits)
 }
 
 // relaunchScript is relaunchCommand with the pauses between opens.
-func relaunchScript(bundle string, window bool, log string, waits []string) string {
+func relaunchScript(bundle string, window, quiet bool, log string, waits []string) string {
 	if log == "" {
 		log = os.DevNull
 	}
@@ -438,7 +440,7 @@ func relaunchScript(bundle string, window bool, log string, waits []string) stri
 	b.WriteString("log=" + shellQuote(log) + "; ")
 	b.WriteString(`note() { echo "$(date '+%Y-%m-%d %H:%M:%S %z') $*" >> "$log" 2>/dev/null; }; `)
 	// open's own exit status and what it said, on one line
-	b.WriteString(`try() { n=$((n+1)); e=$(` + relaunchOpen(bundle, window) + ` 2>&1 >/dev/null); s=$?; note "open try $n: exit $s $(printf '%s' "$e" | tr '\n' ' ')"; return $s; }; `)
+	b.WriteString(`try() { n=$((n+1)); e=$(` + relaunchOpen(bundle, window, quiet) + ` 2>&1 >/dev/null); s=$?; note "open try $n: exit $s $(printf '%s' "$e" | tr '\n' ' ')"; return $s; }; `)
 	b.WriteString("n=0; note " + shellQuote("magpie has exited; opening "+bundle) + "; ")
 	b.WriteString(retried("try", waits))
 	b.WriteString(" || { note \"open gave up after $n tries; starting \"" + shellQuote(run) + "; ")
@@ -501,11 +503,27 @@ func runAfterExit(pid int, command string) error {
 // macOS 27.0.1, v0.1.1308), as often as it is tried. A magpie that is in
 // fact up still has the one instance: the new process finds the instance
 // lock held and hands over to it (runningAlready in internal/gui).
-func relaunchOpen(bundle string, window bool) string {
-	if window {
-		return fmt.Sprintf("open -n %q", bundle)
+//
+// -g opens it in the background, unless it comes back with its window on
+// a restart the user asked for. Without it, LaunchServices brings magpie
+// to the front as it starts: a restart into an update with only the menu
+// bar icon to come back, or one magpie made by itself (Settings'
+// AutoRestart), took the focus from the app the user was typing in
+// (xyxyxy_15591 on Discord).
+func relaunchOpen(bundle string, window, quiet bool) string {
+	return openCommand(bundle, window, quiet)
+}
+
+// openCommand is the open of relaunchOpen and openBeside.
+func openCommand(bundle string, window, quiet bool) string {
+	g := ""
+	if quiet || !window {
+		g = "-g "
 	}
-	return fmt.Sprintf("open -n %q --args tray", bundle)
+	if window {
+		return fmt.Sprintf("open -n %s%q", g, bundle)
+	}
+	return fmt.Sprintf("open -n %s%q --args tray", g, bundle)
 }
 
 // ReplaceBinary puts the release's build for this binary where the
@@ -1167,20 +1185,18 @@ func Alive(pid int) bool { return alive(pid) }
 // OpenBeside opens bundle now, a new instance beside this one (open -n),
 // tried again while open fails: a restart that hands the gateway over
 // (internal/handoff) starts the new version before this one quits. With
-// window, its window; else its menu bar icon only, as Relaunch.
-func OpenBeside(bundle string, window bool) error {
-	cmd := proc.Command("/bin/sh", "-c", retried(openBeside(bundle, window), openWaits))
+// window, its window; else its menu bar icon only, as Relaunch, in the
+// background as Relaunch's when quiet or with no window.
+func OpenBeside(bundle string, window, quiet bool) error {
+	cmd := proc.Command("/bin/sh", "-c", retried(openBeside(bundle, window, quiet), openWaits))
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
 	detach(cmd)
 	return cmd.Start()
 }
 
 // openBeside is the open command OpenBeside runs for bundle.
-func openBeside(bundle string, window bool) string {
-	if window {
-		return fmt.Sprintf("open -n %q", bundle)
-	}
-	return fmt.Sprintf("open -n %q --args tray", bundle)
+func openBeside(bundle string, window, quiet bool) string {
+	return openCommand(bundle, window, quiet)
 }
 
 // StartBeside starts exe now, beside this process, as RelaunchBinary's

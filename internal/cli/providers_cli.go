@@ -84,6 +84,9 @@ const providerUsage = `usage:
   magpie provider account-concurrency <id> [account|key [n|off|default]]
                                           how many requests one account or key has out at once, over every model,
                                           routing group and agent: its own, off for none, default for the provider's
+  magpie provider account-weight <id> [account [n|default]]
+                                          a subscription account's share of the requests with routing=weight:
+                                          one weighing 3 takes three for each one weighing 1 takes (default 1)
   magpie provider queue <id> [length [seconds]]
                                           how many may wait for each account or key past its limit, and how long;
                                           past either a request is turned away with a 429 (0: no bound)
@@ -117,6 +120,8 @@ const providerUsage = `usage:
        magpie provider add bailian-decision sk-… workspace=<workspace id>   (or region=ap-southeast-1, or region=token-plan with an sk-sp- key)
        magpie provider add bailian-token-plan sk-sp-…   (Bailian's Token Plan: its chat models, and its decision model for routing groups;
                                     qwen-token-plan is the Qwen AI platform's, qwen-decision its pay-as-you-go decision model)
+       magpie provider add qwencloud sk-ws-… region=us-east-1   (Qwen Cloud, Alibaba's international platform, pay as you go;
+                                    qwencloud-token-plan sk-sp-… is its Token Plan)
        magpie provider add google-vertex project=my-project impersonate=vertex@my-project.iam.gserviceaccount.com
                                    (Google Vertex AI in your Google Cloud project, with no key: signed with gcloud's
                                     Application Default Credentials (gcloud auth application-default login) unless
@@ -619,6 +624,8 @@ func providerCmd(args []string) error {
 		return poolCmd(rest)
 	case "account-concurrency", "account-limit":
 		return accountConcurrencyCmd(rest)
+	case "account-weight", "account-weights":
+		return accountWeightCmd(rest)
 	case "queue":
 		return queueCmd(rest)
 	case "rpm":
@@ -1594,10 +1601,12 @@ func accountCapCmd(rest []string) error {
 	}
 	refs := p.AccountRefs()
 	if len(rest) > 1 {
-		refs = slices.DeleteFunc(refs, func(r string) bool { return !strings.EqualFold(r, strings.TrimSpace(rest[1])) })
-		if len(refs) == 0 {
+		// by its name or the name the user gave it, as the caps are set
+		r, ok := p.AccountRefOf(rest[1])
+		if !ok {
 			return fmt.Errorf("%s has no account %q", p.Name, rest[1])
 		}
+		refs = []string{r}
 	}
 	if len(refs) == 0 {
 		fmt.Println(muted.Render(p.Name + " has no account"))
@@ -1701,6 +1710,57 @@ func accountConcurrencyCmd(rest []string) error {
 		default:
 			fmt.Println(name, muted.Render("· no limit at once"))
 		}
+	}
+	return nil
+}
+
+// accountWeightCmd shows, or sets, the weight of a subscription's accounts
+// under By weight routing (provider.AccountWeights): each one's share of
+// the requests, 1 when none is set.
+func accountWeightCmd(rest []string) error {
+	if len(rest) < 1 || len(rest) > 3 {
+		return fmt.Errorf("magpie provider account-weight <id> [account [n|default]]")
+	}
+	p, err := provider.Find(rest[0])
+	if err != nil {
+		return err
+	}
+	if p.Account == nil {
+		return fmt.Errorf("%s has keys, not subscription accounts: a key's weight is set beside it in the app", p.Name)
+	}
+	if len(rest) > 2 {
+		w, err := provider.ParseWeight(rest[2])
+		if err != nil {
+			return err
+		}
+		if err := provider.SetAccountWeight(p.ID, rest[1], w); err != nil {
+			return err
+		}
+		if p, err = provider.Find(p.ID); err != nil {
+			return err
+		}
+	}
+	refs := p.AccountRefs()
+	if len(rest) > 1 {
+		ref, ok := p.AccountRefOf(rest[1])
+		if !ok {
+			return fmt.Errorf("%s has no account %q", p.Name, rest[1])
+		}
+		refs = []string{ref}
+	}
+	if len(refs) == 0 {
+		fmt.Println(muted.Render(p.Name + " has no account"))
+		return nil
+	}
+	for _, r := range refs {
+		if w := p.AccountWeight(r); w > 1 {
+			fmt.Printf("%s · weight %d\n", r, w)
+		} else {
+			fmt.Println(r, muted.Render("· weight 1"))
+		}
+	}
+	if p.Routing != provider.Weighted {
+		fmt.Println(muted.Render("Weights count with routing=weight: magpie provider set " + p.ID + " routing=weight"))
 	}
 	return nil
 }

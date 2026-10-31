@@ -47,6 +47,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -631,6 +632,38 @@ func (c claudeCLI) file(path string) string {
 	return path
 }
 
+// tuiWSL is how the interactive mode's helper runs this Claude Code, one
+// in WSL, in config directory configDir (claudetui.WSL), as JSON: its
+// transcripts read from Windows, through \\wsl$ for the distro's own
+// folder.
+func (c claudeCLI) tuiWSL(configDir string) string {
+	projects := filepath.Join(configDir, "projects")
+	if configDir == "" {
+		projects = c.wsl.Windows(path.Join(c.wsl.Home, ".claude", "projects"))
+	}
+	b, _ := json.Marshal(claudetui.WSL{Args: c.wsl.Args(), Mount: c.wsl.Mount, Projects: projects})
+	return string(b)
+}
+
+// wslStat is os.Stat; a var for tests.
+var wslStat = os.Stat
+
+// tuiWSLUnread is the folder of this Claude Code in WSL that Windows can't
+// read, where its transcripts are in config directory configDir: the
+// distro user's home through \\wsl$ for its own folder, which a session
+// with no 9P redirector (one over ssh) has none of. "" when it is read,
+// or is the account's, a Windows folder.
+func (c claudeCLI) tuiWSLUnread(configDir string) string {
+	if configDir != "" {
+		return ""
+	}
+	home := c.wsl.Windows(c.wsl.Home)
+	if _, err := wslStat(home); err != nil {
+		return home
+	}
+	return ""
+}
+
 // exe is magpie's own executable, as this Claude Code starts it.
 func (c claudeCLI) exe() (string, error) {
 	if c.wsl != nil {
@@ -664,6 +697,13 @@ const claudeMCPPath = "/_magpie/claude-mcp/"
 // (FrierenF on Discord).
 func (b *subscriptionBridge) start(ctx context.Context, req *Request, model, configDir, owner string, from *savedSession) (*subscriptionRun, <-chan Event, error) {
 	run, events, err := b.startRun(ctx, req, model, configDir, owner, from)
+	var noStart *tuiNoStart
+	if errors.As(err, &noStart) && ctx.Err() == nil {
+		// marked broken, the next run is -p (claudePrintWhy); from was let
+		// go with the run
+		log.Printf("claude: Claude Code's interactive mode did not start (%v); the turn goes to -p", err)
+		return b.startRun(ctx, req, model, configDir, owner, nil)
+	}
 	var full *claudeFull
 	var refused *cliSchemaRefused
 	if err != nil && from != nil && !errors.As(err, &full) && !errors.As(err, &refused) && ctx.Err() == nil {
@@ -753,6 +793,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 		named, inTurns := clientNamedWorkPlace(req)
 		req.envElsewhere = named != ""
 		req.envInTurns = inTurns
+		req.envDir = named
 		// a caller on another computer that names no folder: Claude Code's
 		// environment is this computer's, and the tools run on the
 		// caller's (packinggoods on Discord: a Mac client of a Windows
@@ -820,9 +861,34 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	// the shim (claudetui) is handed the -p arguments, and becomes that -p
 	// run when the interactive one doesn't start
 	tui := claudeTUI(req, binary, prompt)
+	if tui && binary.wsl != nil {
+		// the helper would wait for a transcript it can't see
+		if dir := binary.tuiWSLUnread(configDir); dir != "" {
+			log.Printf("claude: this run is -p: Windows can't read %s, where Claude Code in WSL writes its transcripts", dir)
+			tui = false
+		}
+	}
 	var cmd *exec.Cmd
 	if tui {
-		cmd = proc.CommandContext(context.Background(), exe, append([]string{claudetui.Command, binary.path}, args...)...)
+		helper := exe
+		if binary.wsl != nil {
+			// the helper runs here, on Windows: exe is magpie as the
+			// distro starts it (/mnt/c/…), for the MCP helper
+			if helper, err = os.Executable(); err != nil {
+				cleanup()
+				return nil, nil, err
+			}
+		}
+		if claudeTUIHelper != "" {
+			helper = claudeTUIHelper
+		}
+		// Claude Code in WSL is run through wsl.exe, its arguments in
+		// claudetui.WSLEnv
+		claude := binary.path
+		if binary.wsl != nil {
+			claude = "wsl.exe"
+		}
+		cmd = proc.CommandContext(context.Background(), helper, append([]string{claudetui.Command, claude}, args...)...)
 	} else {
 		cmd = binary.command(context.Background(), args...)
 	}
@@ -846,6 +912,9 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 		env = append(env, claudetui.TrustEnv+"=1")
 	}
 	cmd.Env = binary.env(binary.asRoot(env), configDir)
+	if tui && binary.wsl != nil {
+		cmd.Env = append(cmd.Env, claudetui.WSLEnv+"="+binary.tuiWSL(configDir))
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cleanup()
@@ -917,8 +986,24 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 		// it has loaded the session, and one that can't exits instead
 		// (start tells a new one the whole conversation): told the turn
 		// first, it ended with no reply.
-		if err := run.cliControl(map[string]any{"subtype": "initialize"}); err != nil {
+		// The interactive mode's helper answers it once Claude Code shows
+		// its prompt, or, when it doesn't in claudetui.ReadyWait, once
+		// the helper has become -p: the wait is that long and -p's after
+		// it. 10s ended the helper as it waited, before it became -p, and
+		// every try of the turn was answered 502 (#4504).
+		wait := controlWait
+		if tui {
+			wait = tuiInitWait
+		}
+		if err := run.cliControlWithin(ctx, map[string]any{"subtype": "initialize"}, wait); err != nil {
 			run.abort()
+			var unanswered *controlUnanswered
+			if tui && errors.As(err, &unanswered) {
+				// the helper hung: runs here are -p for a while, this
+				// turn's next try too (start)
+				claudetui.MarkBroken()
+				return nil, nil, &tuiNoStart{err}
+			}
 			return nil, nil, err
 		}
 	}
@@ -942,6 +1027,32 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	return run, segment, nil
 }
 
+// claudeTUIHelper, when set, is run as the interactive mode's helper in
+// place of magpie's executable: a test's stand-in.
+var claudeTUIHelper string
+
+// controlWait is how long Claude Code may take to answer a control
+// request; tuiInitWait the interactive mode's helper its initialize: as
+// long as Claude Code may take to show its prompt, and then -p's
+// controlWait with room, for the helper become -p to answer it.
+var (
+	controlWait = 10 * time.Second
+	tuiInitWait = claudetui.ReadyWait + 2*controlWait
+)
+
+// controlUnanswered is a control request Claude Code took and didn't
+// answer in time.
+type controlUnanswered struct{ what string }
+
+func (e *controlUnanswered) Error() string { return "Claude Code has not " + e.what }
+
+// tuiNoStart is a run whose interactive mode's helper never answered its
+// initialize request: start tries the turn again as -p.
+type tuiNoStart struct{ err error }
+
+func (e *tuiNoStart) Error() string { return e.err.Error() }
+func (e *tuiNoStart) Unwrap() error { return e.err }
+
 // claudeTUIRuns is false where magpie's executable has no shim to run:
 // the gateway's tests, whose fake Claude Codes are -p ones.
 var claudeTUIRuns = true
@@ -955,8 +1066,8 @@ const tuiPromptMost = 400 << 10
 // person runs it (claudetui), rather than -p: the plan counts a -p
 // request, its entrypoint sdk-cli, at about twice the interactive mode's
 // (anthropics/claude-code#97074). On unless the user turned it off
-// (ClaudePrintMode), on macOS, Linux and Windows, for a run whose Claude Code is
-// this machine's; not for what only -p takes: safeguards and a client's
+// (ClaudePrintMode), on macOS, Linux and Windows, Claude Code in WSL too (its home
+// known, so its transcripts are found); not for what only -p takes: safeguards and a client's
 // cache marks (control requests and an extra body), a JSON schema, and
 // images. prompt is the run's first message.
 func claudeTUI(req *Request, binary claudeCLI, prompt []map[string]any) bool {
@@ -982,13 +1093,14 @@ func claudePrintWhy(req *Request, binary claudeCLI, prompt []map[string]any) str
 	}{
 		{!claudeTUIRuns, "no shim"},
 		{runtime.GOOS != "darwin" && runtime.GOOS != "linux" && runtime.GOOS != "windows", runtime.GOOS},
-		{binary.wsl != nil, "Claude Code in WSL"},
-		{binary.path == "", "no Claude Code path"},
+		{binary.wsl != nil && binary.wsl.Home == "", "Claude Code in WSL, its home unknown"},
+		{binary.wsl == nil && binary.path == "", "no Claude Code path"},
 		{len(req.Safeguards) > 0, "safeguards"},
 		{req.clientCache != nil, "the client's cache marks"},
 		{len(req.Format.schema()) > 0, "a JSON schema"},
 		{urlImages(req.Messages) > 0, "an image known by its URL"},
 		{settings.Load().ClaudePrintMode, "the interactive mode is turned off"},
+		{tuiBroken(), "the interactive mode failed to start lately"},
 		{len(b) > tuiPromptMost, "a first message over 400KB"},
 	} {
 		if c.is {
@@ -1044,9 +1156,22 @@ func (r *subscriptionRun) setSafeguards(req *Request) error {
 	return err
 }
 
+// tuiBroken is whether the interactive mode failed to start on this
+// machine lately (claudetui.BrokenSince): a run is -p at once, rather
+// than its helper's finding so after it starts.
+func tuiBroken() bool {
+	_, ok := claudetui.BrokenSince()
+	return ok
+}
+
 // cliControl shares the SDK reply dispatcher with rewind, so unrelated or
 // late control responses cannot acknowledge a safety-context update.
 func (r *subscriptionRun) cliControl(request map[string]any) error {
+	return r.cliControlWithin(context.Background(), request, controlWait)
+}
+
+// cliControlWithin is cliControl, answered within wait, while ctx lasts.
+func (r *subscriptionRun) cliControlWithin(ctx context.Context, request map[string]any, wait time.Duration) error {
 	id := randomToken()
 	ch := make(chan controlReply, 1)
 	// one that ended says how, and the last it wrote to stderr: "Claude
@@ -1071,7 +1196,7 @@ func (r *subscriptionRun) cliControl(request map[string]any) error {
 	if err := r.tell(line); err != nil {
 		return err
 	}
-	t := time.NewTimer(10 * time.Second)
+	t := time.NewTimer(wait)
 	defer t.Stop()
 	select {
 	case reply, ok := <-ch:
@@ -1082,8 +1207,10 @@ func (r *subscriptionRun) cliControl(request map[string]any) error {
 			return fmt.Errorf("Claude settings: %s", reply.Error)
 		}
 		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	case <-t.C:
-		return fmt.Errorf("Claude Code has not %s in 10s", what)
+		return &controlUnanswered{fmt.Sprintf("%s in %s", what, wait)}
 	}
 }
 
@@ -3088,15 +3215,21 @@ const envUnknownNote = "\n\nThe environment given elsewhere in this conversation
 
 // envTurnsNote is envElsewhereNote, in either mode, for a caller whose
 // environment is in its messages, not its instructions (Claude Code
-// 2.1.296 and later, req.envInTurns). envElsewhereNote pointed the model
-// at instructions that describe no environment, while the caller's own
-// came after them as a message, and the gateway's Claude Code gave its
-// own before them all (packinggoods on Discord: a Mac client of a
-// Windows gateway still had commands wrapped in PowerShell). The run's
-// own environment is always the first one given, at the start of its
-// first message, and the caller's comes after it, so the last one given
-// is the caller's. It names no app and no vendor.
-const envTurnsNote = "\n\nOf the environments given in this conversation (working directory, platform, OS, shell, git status), the last one given is the one every tool runs in. Where an earlier one differs, go by the last; nothing has changed and there is no need to check."
+// 2.1.296 and later, req.envInTurns), dir the working directory it names.
+// envElsewhereNote pointed the model at instructions that describe no
+// environment. d77da5bff then said the last environment given is the
+// caller's, taking the run's own to come first; but the run's Claude Code
+// gives its own as a {role: "system"} message after the run's first
+// message (2.1.316, claude-opus-5-5), so after the caller's, and the model
+// was pointed at the gateway's (packinggoods on Discord: a Mac client of a
+// Windows gateway told to use PowerShell). Which comes last depends on
+// Claude Code's version and the model, so the caller's environment is
+// named by its working directory, never by its place. It names no app and
+// no vendor.
+func envTurnsNote(dir string) string {
+	return "\n\nOf the environments given in this conversation (working directory, platform, OS, shell, git status), the one whose working directory is " + dir +
+		" is the one every tool runs in. Any other one describes a computer no tool runs on: don't take a platform, shell or path for a tool call from it. Nothing has changed and there is no need to check."
+}
 
 // envNote is what a run is told after the caller's instructions of where
 // its tools run: "" for a run in the caller's own folder, or for a caller
@@ -3104,7 +3237,7 @@ const envTurnsNote = "\n\nOf the environments given in this conversation (workin
 func envNote(req *Request) string {
 	switch {
 	case req.envElsewhere && req.envInTurns:
-		return envTurnsNote
+		return envTurnsNote(req.envDir)
 	case req.envElsewhere && req.leanPrompt:
 		return envElsewhereLeanNote
 	case req.envElsewhere:
@@ -4658,7 +4791,9 @@ func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request,
 			}
 			return nil, nil, err
 		}
-		return s.subscription.start(ctx, req, model, dir, owner, from)
+		// Claude Code is asked for the model by Anthropic's id, not one
+		// the user lists it by (SetModelID): no wire name reaches its run
+		return s.subscription.start(ctx, req, p.OwnModelID(model), dir, owner, from)
 	}
 	return s.serveSubscription(w, r, from, "Claude Code", model, owner, body, usage, start)
 }

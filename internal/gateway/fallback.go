@@ -275,8 +275,11 @@ func perKeyBarred(p provider.Provider, model string, from provider.Protocol) (ou
 		})
 		// an account whose plan lacks the model (a Free one behind a Plus)
 		// would only answer 400; it is tried only when none lists it
+		// (by the vendor's own id: an account's list names its models by
+		// theirs, not by one the user lists one by)
+		own := p.OwnModelID(model)
 		for _, c := range all {
-			if c.p.Account.Lists(model) {
+			if c.p.Account.Lists(own) {
 				out = append(out, c)
 			} else {
 				left = append(left, c)
@@ -1874,7 +1877,9 @@ type holdWriter struct {
 	// refusal may still end: held longer (holdThinking)
 	thinking bool
 	// thinkingShown: the model's vendor never refuses after reasoning
-	// (refusesAfterThinking), so its reasoning goes through as it comes
+	// (refusesAfterThinking), or the member has gone on from its thinking
+	// to an answer enough times running (holdsThinking), so its reasoning
+	// goes through as it comes
 	thinkingShown bool
 	// thoughtThrough: the try went through on its reasoning alone
 	// (thinkingShown) while the request could still have asked again, so
@@ -2283,7 +2288,76 @@ func refusesAfterThinking(model string) bool {
 	if i := strings.LastIndex(m, "/"); i >= 0 {
 		m = m[i+1:]
 	}
-	return strings.HasPrefix(m, "gemini") || strings.HasPrefix(m, "deepseek")
+	return strings.HasPrefix(m, "gemini") || deepseekAfterThinking(m)
+}
+
+// deepseekAfterThinking tells whether the model is DeepSeek's, the one
+// vendor whose reasoning the refusal hold lets go once the member has
+// gone on from its thinking to an answer enough times running
+// (holdsThinking): Claude's, GPT's and Gemini's is held whatever the
+// member has answered lately (#248).
+func deepseekAfterThinking(model string) bool {
+	m := strings.ToLower(model)
+	if i := strings.LastIndex(m, "/"); i >= 0 {
+		m = m[i+1:]
+	}
+	return strings.HasPrefix(m, "deepseek")
+}
+
+// thoughtCleanMost is how many thinking replies in a row that went on to
+// an answer trust a DeepSeek member with its reasoning as it comes
+// (holdsThinking): its filter refuses after thinking hardly ever (#4512:
+// one content_filter in 33,245 group requests over 7 days), and held,
+// every one of those requests kept the agent waiting its whole thinking
+// out. A refusal of its own takes the trust back (thoughtRefused).
+const thoughtCleanMost = 3
+
+// holdsThinking tells whether the try's reasoning is held back for a
+// refusal after it while another candidate could answer. DeepSeek's is,
+// until the member's thinking has gone on to an answer thoughtCleanMost
+// times running; past that it goes through as it comes, GLM's way.
+// Claude's, GPT's and Gemini's is held whatever the member answered
+// lately (#248).
+func (s *Server) holdsThinking(c candidate) bool {
+	if !refusesAfterThinking(c.model) {
+		return false
+	}
+	if !deepseekAfterThinking(c.model) {
+		return true
+	}
+	s.thoughtMu.Lock()
+	defer s.thoughtMu.Unlock()
+	return s.thoughtClean[c.p.ID+"/"+c.model] < thoughtCleanMost
+}
+
+// thoughtAnswered counts a thinking reply that went on to an answer, for
+// holdsThinking's trust to run out on.
+func (s *Server) thoughtAnswered(c candidate) {
+	if !deepseekAfterThinking(c.model) {
+		return
+	}
+	s.thoughtMu.Lock()
+	defer s.thoughtMu.Unlock()
+	if s.thoughtClean == nil {
+		s.thoughtClean = make(map[string]int)
+	}
+	s.thoughtClean[c.p.ID+"/"+c.model]++
+}
+
+// thoughtRefused takes the trust back: the member's filter refused a
+// reply after (or beside) its thinking (plugins #540), so its reasoning
+// is held again for the next requests, until it has answered
+// thoughtCleanMost times running.
+func (s *Server) thoughtRefused(c candidate) {
+	if !deepseekAfterThinking(c.model) {
+		return
+	}
+	s.thoughtMu.Lock()
+	defer s.thoughtMu.Unlock()
+	if s.thoughtClean == nil {
+		s.thoughtClean = make(map[string]int)
+	}
+	s.thoughtClean[c.p.ID+"/"+c.model] = 0
 }
 
 // scan reads the held stream's events so far: an error before any content
@@ -2649,6 +2723,13 @@ func (h *holdWriter) thoughtOnly() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.thoughtThrough
+}
+
+// sawThinking tells whether the try reasoned at all, held or as it came.
+func (h *holdWriter) sawThinking() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.thinking || h.thoughtThrough
 }
 
 // handBack sends a refusal held with nothing said as the vendor's own

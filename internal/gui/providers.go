@@ -57,6 +57,11 @@ type modelJSON struct {
 	Same       string   `json:"same,omitempty"`      // the model the user said it is the same as, for the groups magpie finds (#583)
 	Merge      string   `json:"merge,omitempty"`     // what those groups merge it by when the user says nothing
 	Kind       string   `json:"kind,omitempty"`      // what the user said it makes: image or video (#1399)
+	// Vendor is the provider's own id of a model the user lists by
+	// another (provider.SetModelID), "" for one listed by its own; IDs
+	// says the provider's models can be given ids at all (a key's)
+	Vendor string `json:"vendor,omitempty"`
+	IDs    bool   `json:"ids,omitempty"`
 	// Desktop is the number Claude Desktop's menu says beside this model
 	// (gateway.DesktopNumber), so a row of that menu can be matched to its
 	// provider (#2578): only for a model Claude Desktop, installed here,
@@ -246,6 +251,9 @@ type providerJSON struct {
 	// each key's or account's own limit over it (#892), by its name in
 	// lower case or its key id; 0 there is none
 	AccountConcurrency map[string]int `json:"accountConcurrency,omitempty"`
+	// each subscription account's weight under By weight routing, by its
+	// name in lower case; one not in it weighs 1 (provider.AccountWeights)
+	AccountWeights map[string]int `json:"accountWeights,omitempty"`
 	// how many may wait for each key or account, and for how many seconds
 	// (0: no bound)
 	QueueLimit int `json:"queueLimit,omitempty"`
@@ -276,7 +284,11 @@ type providerJSON struct {
 	// Groups are the routing groups ("group/<id>") each of its models is
 	// in, by model id: what an unlisted one is still used through, and the
 	// editor names those in none
-	Groups   map[string][]string `json:"groups,omitempty"`
+	Groups map[string][]string `json:"groups,omitempty"`
+	// KeptBy are the routing groups listing alone (Group.Unlists) that
+	// keep each of its models out of agents' lists, by model id: its own
+	// "Only through routing groups" switched off doesn't bring those back
+	KeptBy   map[string][]string `json:"keptBy,omitempty"`
 	Off      bool                `json:"off"`                // switched off: kept, but agents get none of its models
 	Contexts map[string]int      `json:"contexts,omitempty"` // the windows the user set, "*" for all its models
 	Outputs  map[string]int      `json:"outputs,omitempty"`  // the reply limits the user set (provider.OutputsOf)
@@ -648,7 +660,7 @@ func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string
 		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, CapStop: p.CapStop, CapCareful: p.CapCareful, Unlisted: p.Unlisted, NoModels: p.ServesNone(), BestInFamily: p.BestInFamily && len(p.Models) == 0 && !p.NoModels, Off: p.Off, Contexts: p.Contexts,
 		MaxConcurrency: p.MaxConcurrency, PluginConcurrency: p.PluginConcurrency(), PriceRate: p.PriceRate,
 		RateWindows: p.RateWindows, RateNow: rateNowOf(p, time.Now()),
-		AccountConcurrency: p.AccountConcurrency, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM,
+		AccountConcurrency: p.AccountConcurrency, AccountWeights: p.AccountWeights, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM,
 		Outputs: provider.OutputsOf(p.ID), Compacts: provider.CompactsOf(p.ID),
 	}
 	if p.Account != nil {
@@ -749,6 +761,14 @@ func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string
 			out.Groups[m] = gs
 		}
 	}
+	for id, gs := range provider.GroupKept() {
+		if m, ok := strings.CutPrefix(id, p.ID+"/"); ok {
+			if out.KeptBy == nil {
+				out.KeptBy = map[string][]string{}
+			}
+			out.KeptBy[m] = gs
+		}
+	}
 	if a := p.Account; a != nil {
 		out.Account = &accountJSON{Account: *a, Agent: a.Agent}
 		out.Account.Name, out.Account.Icon = accountLabel(p)
@@ -819,6 +839,10 @@ func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string
 		}
 		j.NoAPI = p.NoAPIFor(m.ID)
 		j.Same = sames[p.ID+"/"+m.ID]
+		if own := p.OwnModelID(m.ID); own != m.ID {
+			j.Vendor = own
+		}
+		j.IDs = p.TakesModelIDs()
 		j.Kind = p.ModelKind(m.ID)
 		j.Merge = provider.MergeName(m.ID)
 		j.Desktop = desktop[p.ID+"/"+m.ID]
@@ -1217,6 +1241,21 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		}
 		writeJSON(rw, map[string]string{"icon": icon})
 	})
+	// a picture's address typed for the icon, or with none the letter tile;
+	// one that can't be used gives the tile too, and failed says why
+	mux.HandleFunc("POST /api/icons/url", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ URL, Name, Base string }
+		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		icon, failed, err := provider.IconFromURL(r.Context(), in.URL, in.Name, in.Base)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]string{"icon": icon, "failed": failed})
+	})
 	mux.HandleFunc("GET /api/icons/{name}", func(rw http.ResponseWriter, r *http.Request) {
 		// a big picture comes scaled to what the window draws (#909)
 		f, ctype := provider.IconServed(r.PathValue("name"))
@@ -1357,6 +1396,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// it follow the account's cap
 			Cap    int    `json:"cap"`
 			Window string `json:"window"`
+			// Weight, for accountweight: the account's share under By
+			// weight routing, 1 to provider.MaxKeyWeight (0 or 1: none)
+			Weight int `json:"weight"`
 			// Alias, for accountname: the account's name of the user's
 			// own, "" to take it off (#1515)
 			Alias string `json:"alias"`
@@ -1700,11 +1742,13 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				if old != nil {
 					in.AccountModels = old.AccountModels
 				}
-				// and their usage caps, with accountcap and windowcap, and their
-				// limits on requests at once, with accountconcurrency
+				// and their usage caps, with accountcap and windowcap, their
+				// limits on requests at once, with accountconcurrency, and
+				// their weights, with accountweight
 				if old != nil {
 					in.AccountCaps, in.AccountWindowCaps = old.AccountCaps, old.AccountWindowCaps
 					in.AccountConcurrency = old.AccountConcurrency
+					in.AccountWeights = old.AccountWeights
 					in.AccountNames = old.AccountNames // with accountname
 				}
 				// the image models unticked in its editor likewise: []
@@ -1931,6 +1975,11 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			}
 		case "accountconcurrency":
 			if err := provider.SetAccountConcurrency(in.ID, req.Account, req.Limit); err != nil {
+				fail(rw, err)
+				return
+			}
+		case "accountweight":
+			if err := provider.SetAccountWeight(in.ID, req.Account, req.Weight); err != nil {
 				fail(rw, err)
 				return
 			}

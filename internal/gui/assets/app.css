@@ -433,6 +433,25 @@ body.side-nav #nav button.has-dot::after { top: 50%; right: 10px; margin-top: -3
    before the selection slides there */
 .nav-s:hover:not(.cur) { color: var(--fg); }
 .nav-s.cur { color: var(--fg); font-weight: 500; }
+/* the row under the pointer is lit as by a torch (navlamp.js), a page's
+   row and a sub-list's alike: --lx is the pointer's place in the word, --si
+   how lit the row is, --lo the row's own ink. Its heart is a step past the
+   text's ink (--fg taken to white in dark, black in light), the rest of the
+   row 15% of the way to it, and the plain hover above stands down. Where
+   color-mix is missing (Safari 15) the plain hover stays. */
+@supports (color: color-mix(in oklab, red, blue)) {
+  .navlamp .nav-s:hover:not(.cur) { color: var(--ctl-fg); }
+  .navlamp body.side-nav :is(#nav button[data-view], #prefs):hover:not(.on) { color: var(--fg-2); }
+  .navlamp body.side-nav :is(#nav button[data-view], #prefs) > span { --lo: var(--fg-2); }
+  :is(.nav-s, #nav button, #prefs) > span.lit {
+    --hi: var(--fg);
+    --hot: color-mix(in oklab, var(--hi) calc(var(--si) * 100%), var(--lo, var(--ctl-fg)));
+    --far: color-mix(in oklab, var(--fg) calc(var(--si) * 15%), var(--lo, var(--ctl-fg)));
+    background: radial-gradient(36px 400px at var(--lx) 50%, var(--hot) 0%, var(--hot) 12%, color-mix(in oklab, var(--hot) 45%, var(--far)) 45%, var(--far) 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+}
+@supports (color: oklch(from red round(l) c h)) { :is(.nav-s, #nav button, #prefs) > span.lit { --hi: oklch(from var(--fg) round(l) 0 h); } }
 /* a row pressed darkens, as a Mac sidebar's does: it never shrinks the way a
    button does (.seg button:active, .icon:active below) */
 body.side-nav #side button:active { transform: none; }
@@ -1521,7 +1540,7 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .led .src.access-subscription { --badge-ink: var(--tk-k); }
 .led .src.proto { --badge-ink: var(--muted); font-weight: 500; }
 .led .src.reported { --badge-ink: var(--tk-o); }
-.led .src.probe, .led .src.mcp { --badge-ink: var(--muted); }
+.led .src.probe, .led .src.mcp, .led .src.search { --badge-ink: var(--muted); }
 .led .duration { font-weight: 550; }
 .led .duration-fast { color: var(--tk-s); }
 .led .duration-slow { color: var(--amber); }
@@ -2140,6 +2159,10 @@ body.window .profiles.detailed > #save { margin-top: 4px; }
    the page's foot, and goes with it. The panel's footer is as it was. */
 body.window footer.foot { position: fixed; left: 0; bottom: 0; width: 0; height: 0; min-height: 0; padding: 0; overflow: visible; z-index: 21; }
 body.window .foot .status:not(:empty):not(.lift) { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); max-width: calc(100vw - 32px); font-size: 12.5px; line-height: 16px; font-weight: 500; padding: 3px 10px; border-radius: 11px; background: color-mix(in srgb, currentColor 16%, var(--card)); box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 30%, transparent), 0 6px 20px rgba(0, 0, 0, .28); animation: fade-in .2s var(--ease); }
+/* a passing note over the page's foot takes no clicks, as a toast: a press
+   on the row under it (the Plugins page's Install at the window's foot)
+   lands on the row. An error or warning stays selectable, to be copied. */
+body.window .foot .status:not(.err):not(.warn) { pointer-events: none; }
 .status { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: opacity .3s; }
 .status.ok { color: var(--green); }
 .status.err { color: var(--red); }
@@ -2884,6 +2907,8 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 /* a subscription's allowance, under its name */
 .accts .acc.with-aq { flex-wrap: wrap; row-gap: 3px; padding-top: 7px; padding-bottom: 8px; }
 .acc .aq { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; padding-left: 25px; font-size: 10.5px; color: var(--muted); min-height: 14px; }
+/* its refresh always shown, after its plan on the line that never wraps: on the readings' line it added a line where the meters filled it (the owner asked for a button here) */
+.acc-line > .quota-refresh { width: 14px; margin: 0 0 0 -5px; opacity: 1; }
 .acc .aq-w { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .acc .aq-track { width: 54px; height: 4px; border-radius: 2px; background: var(--pill); overflow: hidden; }
 .acc .aq-track i { display: block; height: 100%; border-radius: inherit; background: var(--fg-2); }
@@ -3174,7 +3199,7 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .opt { position: relative; z-index: 1; white-space: nowrap; height: 22px; padding: 0 10px; border-radius: 5px; font-size: 12px; color: var(--muted); transition: color .18s var(--ease), transform .14s var(--ease); }
 .opt.on { color: var(--fg); }
 /* how often magpie checks for updates, while it doesn't by itself */
-.update-every-row.off .segs, .update-restart-row.off .segs { opacity: .55; }
+.update-every-row.off .segs, .update-restart-row.off .segs, .search-all-row.off .segs { opacity: .55; }
 /* Command line: each shell's `magpie`, a dot for whether it runs this app */
 .cli-row .sub { overflow-wrap: anywhere; }
 .cli-shells { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
@@ -3224,18 +3249,18 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .link { font-size: 12px; color: var(--accent); padding: 3px 4px; white-space: nowrap; }
 .link:hover { text-decoration: underline; text-underline-offset: 2px; }
 .editor .more { grid-column: 1 / -1; }
-.editor .more summary { font-size: 12px; color: var(--muted); list-style: none; display: inline-flex; align-items: center; gap: 4px; padding: 2px 0; margin-left: 86px; }
+.editor .more summary { font-size: 12px; color: var(--muted); list-style: none; display: inline-flex; align-items: center; gap: 4px; padding: 2px 0; margin-left: var(--ed-at, 86px); }
 .editor .more summary::-webkit-details-marker { display: none; }
-.editor .more summary::before { content: "▸"; font-size: 10px; color: var(--faint); display: inline-block; transition: transform .42s cubic-bezier(.32, .72, 0, 1); }
+.editor .more summary::before { content: "▸"; font-size: 11px; color: var(--muted); display: inline-block; transition: transform .42s cubic-bezier(.32, .72, 0, 1); }
 .editor .more[open]:not(.closing) summary::before { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) { .editor .more summary::before { transition: none; } }
 .editor .more summary:hover { color: var(--fg); }
 /* its labels are longer (Anthropic 地址, Responses-URL): their column takes
    the longest, on one line, rather than wrap a last 址 under it (#875) */
-.editor .more .inner { display: grid; grid-template-columns: minmax(72px, max-content) minmax(0, 1fr); gap: 10px 14px; align-items: start; padding-top: 8px; }
+.editor .more .inner { display: grid; grid-template-columns: minmax(var(--ed-lab, 72px), max-content) minmax(0, 1fr); gap: 10px 14px; align-items: start; padding-top: 8px; }
 .editor .more .inner label { white-space: nowrap; }
 .editor .warnbox { grid-column: 1 / -1; font-size: 12px; line-height: 1.5; color: var(--fg); background: color-mix(in srgb, var(--amber) 12%, transparent); border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent); border-radius: 8px; padding: 8px 10px; }
-.editor .warnbox.soft { background: none; color: var(--amber); border: 0; padding: 0 0 0 86px; }
+.editor .warnbox.soft { background: none; color: var(--amber); border: 0; padding: 0 0 0 var(--ed-at, 86px); }
 .editor.import .mchips .mchip { cursor: default; }
 .editor .bar { grid-column: 1 / -1; display: flex; align-items: center; gap: 4px; padding-top: 10px; border-top: 1px solid var(--line-2); margin-top: 2px; }
 .editor .bar .danger { margin-left: -7px; }
@@ -3621,6 +3646,8 @@ input.words { width: 240px; max-width: 100%; }
 /* Settings → Long conversations: 272K or the size typed, beside it (#876) */
 .compact-at { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: none; }
 .row.pref .compact-at .segs { margin-left: 0; }
+.compact-held { font-size: 11.5px; user-select: text; -webkit-user-select: text; line-height: 1.4; color: var(--fg-2); margin-top: 6px; text-align: right; overflow-wrap: anywhere; }
+.compact-held button.text { font-size: inherit; margin-left: 0.3em; }
 input.words.compact-num { flex: none; width: 76px; font-variant-numeric: tabular-nums; }
 /* the masking rules' add row: its words in full, then on a line of their
    own a name, prefix or regex, the match taking the room left, Add */

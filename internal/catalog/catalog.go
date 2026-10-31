@@ -195,8 +195,38 @@ func imageInput(modalities []string) *bool {
 	if modalities == nil {
 		return nil
 	}
-	yes := slices.Contains(modalities, "image")
+	yes := slices.Contains(Kinds(modalities), "image")
 	return &yes
+}
+
+// Kinds is a list's modalities as models.dev words them (text, image,
+// audio, video, pdf), each once and in the order first met. A vendor may
+// list the media types it takes instead: OpenCode Go's /models gives
+// deepseek-v4.1-flash ["text","image/jpeg","image/png","image/gif",
+// "image/webp"] and Gemini's application/pdf, which read word for word
+// were no "image", so every model there that sees was taken for
+// text-only (zeo9901 on Discord). An unknown word is kept as it is; nil
+// stays nil, a list that said nothing.
+func Kinds(modalities []string) []string {
+	if modalities == nil {
+		return nil
+	}
+	out := make([]string, 0, len(modalities))
+	for _, m := range modalities {
+		k := strings.ToLower(strings.TrimSpace(m))
+		if typ, _, ok := strings.Cut(k, "/"); ok {
+			switch {
+			case typ == "image" || typ == "video" || typ == "audio" || typ == "text":
+				k = typ
+			case k == "application/pdf":
+				k = "pdf"
+			}
+		}
+		if k != "" && !slices.Contains(out, k) {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // Price is what a model costs, in USD per million tokens.

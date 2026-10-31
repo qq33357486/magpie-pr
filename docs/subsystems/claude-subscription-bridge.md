@@ -117,7 +117,23 @@ talks to it as it talks to `-p`: stream-json in and out. The helper:
   the `-p` run's (`proc.Command`). Ending, the helper closes the console
   (Claude Code is told as a closed window tells it) and kills it after
   3s. Its `-p` fallback runs Claude Code as a child, since Windows has no
-  exec;
+  exec. A Claude Code in WSL is run the same way, through `wsl.exe` in
+  the console: the gateway hands the helper `MAGPIE_CLAUDE_TUI_WSL`
+  (`claudetui.WSL`, `claudeCLI.tuiWSL`), wsl.exe's arguments up to
+  Claude Code's (`wslrun.Tool.Args`, `MAGPIE_WSL_RUN` among them), the
+  distro's mount of the drives, and the projects folder as Windows reads
+  it: the account's config directory (handed in as
+  `CLAUDE_CONFIG_DIR/p`), or the distro user's own `~/.claude/projects`
+  through `\\wsl$\<distro>` (`wslrun.Tool.Home`, from the probe). `TERM` is
+  added to `WSLENV`, and an image's path is pasted as the distro reads
+  it (`/mnt/c/…`, `shim.path`). The helper itself is the Windows
+  magpie.exe, not the `/mnt/c/…` path the MCP helper is started at.
+  In the distro user's own folder the run is `-p` when Windows can't
+  stat `\\wsl$\<distro>\<home>` (`tuiWSLUnread`), since the helper
+  would wait for a transcript it can't see: a session with no 9P
+  redirector, as one over ssh, reads nothing there.
+  Killing the gateway ended the distro's Claude Code with wsl.exe (tried
+  on Windows 11 26200, magpie-desktop, Claude Code 2.1.289);
 - pastes each user message into the prompt (bracketed paste) and presses
   Enter. A message opening with `/`, `!`, `#` or `&` is pasted after a
   line break, so it is words, not a command (`pasteable`);
@@ -173,7 +189,8 @@ A run is `-p`, as before, when (`claudeTUI`):
 
 - Settings › Models › Replies › Claude Code's interactive mode is Off
   (`claudePrintMode`);
-- it is Claude Code in WSL;
+- it is Claude Code in WSL whose home the probe didn't find, or, in
+  the distro user's own folder, one Windows can't read;
 - the request has safeguards, client cache marks, a JSON schema, an image
   known only by its URL (`urlImages`: the helper pastes files, and has no
   bytes of it), or words over 400KB (`tuiPromptMost`, images not counted),
@@ -189,11 +206,27 @@ back, an effort change. A run given up on (`letGo`) is not taken back, since the
 interactive mode can't answer a control request to stop a turn.
 
 If the interactive Claude Code doesn't start or show its prompt within 45
-seconds, the helper becomes `claude -p` with the same arguments
-(`printMode`, `exec` on the same pid, its input still unread), so the
-turn is answered all the same, and it writes
-`<cache>/magpie/claude-tui-broken`: for 30 minutes after, every run goes
-to `-p` at once. A folder not trusted goes to `-p` without the mark.
+seconds (`claudetui.ReadyWait`), or asks how to sign in (`signIn`: a
+Claude Code signed in for `-p` only, as in a container given
+`CLAUDE_CODE_OAUTH_TOKEN`), the helper becomes `claude -p` with the same
+arguments (`printMode`, `exec` on the same pid, its input still unread),
+so the turn is answered all the same, and it writes
+`<cache>/magpie/claude-tui-broken`, which holds the number of failed
+starts in a row. For 30 minutes after one, doubled with each one after
+to a day (`brokenFor`), every run goes to `-p` at once: the helper is
+not started (`claudePrintWhy`, "the interactive mode failed to start
+lately"). A start that shows its prompt removes the mark. A folder not
+trusted goes to `-p` without the mark.
+
+The helper answers the bridge's `initialize` only once the prompt is
+shown, or as `-p` after the fallback, so the bridge waits for it
+`tuiInitWait` (`ReadyWait` and twice a control request's 10s), not the
+10s of any other control request. With 10s, a Claude Code slower than
+that to start (2 vCPU in Docker) was ended as the helper waited, before
+it could become `-p`, and every try was answered 502 "Claude Code has
+not answered magpie's initialize request in 10s" (#4504). A helper that
+answers nothing even then is ended, the mark is written, and `start`
+starts the turn again as `-p`.
 
 ## Why turns go on in one run
 
