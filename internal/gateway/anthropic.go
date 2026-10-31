@@ -1518,8 +1518,13 @@ func (e *anthropicEncoder) start(ev Event) {
 	id := anthropicID(ev.MsgID)
 	e.id = id
 	// fork: the reply speaks the name the client asked, never the
-	// upstream's (a vendor's model behind an alias stays the alias)
+	// upstream's (a vendor's model behind an alias stays the alias); a
+	// provider-scoped pick ("provider/model") speaks the model, not the
+	// routing prefix
 	model := e.model
+	if i := strings.LastIndexByte(model, '/'); i >= 0 {
+		model = model[i+1:]
+	}
 	if model == "" {
 		model = ev.Model
 	}
@@ -1762,8 +1767,12 @@ func renderAnthropic(res Result, model string) []byte {
 		}
 	}
 	id := anthropicID(res.ID)
-	// fork: the reply keeps the name the client asked (render's model);
-	// the upstream's own is never echoed back
+	// fork: the reply keeps the name the client asked (render's model,
+	// minus a provider prefix it may carry); the upstream's own is never
+	// echoed back
+	if i := strings.LastIndexByte(model, '/'); i >= 0 {
+		model = model[i+1:]
+	}
 	reply := map[string]any{"id": id, "type": "message", "role": "assistant", "model": model,
 		"content": content, "stop_reason": stopToAnthropic(res.Stop), "stop_sequence": nil, "usage": res.Usage.anthropic()}
 	if len(res.SafeguardResults) > 0 {
