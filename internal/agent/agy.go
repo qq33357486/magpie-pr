@@ -391,7 +391,7 @@ func agyIn(at place) *Agent {
 				if c := cur["model"]; c != "" && !usesMagpie(c) && custom[c] == nil {
 					own = append([]Option{{Value: c, Icon: modelIcon("", c), Direct: "Google"}}, own...)
 				}
-				return append(group("Antigravity CLI", own), viaMagpie("agy", magpieID+"/")...)
+				return append(group("Antigravity CLI", own), viaMagpieShared("agy", magpieID+"/")...)
 			},
 		}},
 	}

@@ -380,7 +380,7 @@ func vscodeKindAt(k vscodeKind, dir string) *Agent {
 				if v := cur["model"]; v != "" && v != "auto" && !usesMagpie(v) {
 					own = append(own, Option{Value: v, Icon: modelIcon("", v)})
 				}
-				return append(group(k.name, own), viaMagpie(k.id, magpieID+"/")...)
+				return append(group(k.name, own), viaMagpieShared(k.id, magpieID+"/")...)
 			},
 		}},
 	}, path, models, stashPath())

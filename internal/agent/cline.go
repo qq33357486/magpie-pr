@@ -254,7 +254,7 @@ func clineIn(at place) *Agent {
 					edit.KV{Path: "providers." + p + ".settings.model", Value: v})
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(ownOptions("", cur["model"]), viaMagpie("cline", magpieID+"/")...)
+				return append(ownOptions("", cur["model"]), viaMagpieShared("cline", magpieID+"/")...)
 			},
 		}, {
 			// the reasoning of the provider in use, what Cline's --thinking

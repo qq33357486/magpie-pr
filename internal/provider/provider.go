@@ -563,7 +563,7 @@ type file struct {
 }
 
 // Path is the file the user's providers live in.
-func Path() string { return filepath.Join(appdir.Config(), "providers.json") }
+func Path() string { return appdir.Join(appdir.Config(), "providers.json") }
 
 // load is the file for a read that goes on without it: start-up, the
 // gateway, the catalog. One that can't be read is taken as empty there;
@@ -858,11 +858,14 @@ func withPicks(a, pk Provider) Provider {
 	return a
 }
 
-// Hidden lists the signed-in accounts the user removed from magpie.
+// Hidden lists the signed-in accounts the user removed from magpie. The
+// file is read once, as parsed until it changes: a parse of it for each
+// account was 68 MB of the Providers page's 1.4 GB in twenty loads.
 func Hidden() []Provider {
 	var out []Provider
+	saved := storedFile().Providers
 	for _, a := range Accounts() {
-		for _, p := range load().Providers {
+		for _, p := range saved {
 			if p.ID == a.ID && p.Hidden {
 				a.Quiet, a.Tucked = p.Quiet, p.Tucked
 				out = append(out, a)
@@ -1678,21 +1681,32 @@ func (p Provider) Base(proto Protocol) string {
 	return ""
 }
 
+// speaksLooked counts Speaks' looks, for a test.
+var speaksLooked atomic.Int64
+
 // Speaks lists the protocols the vendor serves natively, preferred first.
 func (p Provider) Speaks() []Protocol {
+	speaksLooked.Add(1)
+	return slices.Collect(p.speaking)
+}
+
+// speaking is Speaks one protocol at a time, for a look that wants only
+// the first (Host): a list built for it was 8 MB of what twenty polls of
+// the Providers page allocated with real accounts.
+func (p Provider) speaking(yield func(Protocol) bool) {
 	// a Google sign-in speaks Code Assist, and only that
 	if p.Account != nil && p.Account.codeAssist != "" && !p.IsPlugin() {
-		return []Protocol{CodeAssist}
+		yield(CodeAssist)
+		return
 	}
-	var out []Protocol
 	for _, pr := range Protocols {
-		if p.Base(pr) != "" {
-			out = append(out, pr)
+		if p.Base(pr) != "" && !yield(pr) {
+			return
 		}
 	}
 	// a plugin's Gemini models, beside what else it serves
-	if p.IsPlugin() && p.Account.codeAssist != "" {
-		out = append(out, CodeAssist)
+	if p.IsPlugin() && p.Account.codeAssist != "" && !yield(CodeAssist) {
+		return
 	}
 	// Factory's Gemini models, on generateContent. A model droid didn't
 	// list stays on the other three (factoryAPIs); this is not one of them.
@@ -1703,12 +1717,11 @@ func (p Provider) Speaks() []Protocol {
 	// one).
 	if p.IsVertex() {
 		if p.vertexBase() != "" {
-			out = append(out, Gemini)
+			yield(Gemini)
 		}
 	} else if p.FactoryGemini() || p.Gemini != "" {
-		out = append(out, Gemini)
+		yield(Gemini)
 	}
-	return out
 }
 
 // FactoryGemini is Factory's sign-in, whose Gemini models are asked on its
@@ -1843,7 +1856,7 @@ func (p Provider) Host() string {
 	if p.Account != nil && p.Account.moved {
 		return p.Account.wasHost // not plugin://<id>
 	}
-	for _, pr := range p.Speaks() {
+	for pr := range p.speaking {
 		if u := p.Base(pr); u != "" {
 			return HostOf(u)
 		}
@@ -1871,8 +1884,23 @@ func (p Provider) Where() string {
 // IsOpenCode reports whether the provider is OpenCode's gateway (Zen or Go),
 // which routes and caches by conversation and turns away requests that do
 // not name one in x-opencode-session.
-func (p Provider) IsOpenCode() bool {
-	return OpenCodeURL("//" + p.Host()) // its port, if it names one, aside
+func (p Provider) IsOpenCode() bool { return openCodeAt(p.Host()) }
+
+// openCodeAt is OpenCodeURL for a host as Host gives it, its port and
+// any user aside, read without parsing a URL: the providers' page asks
+// IsOpenCode for each model, and url.Parse there was 7 MB of what twenty
+// window polls allocated.
+func openCodeAt(h string) bool {
+	if i := strings.LastIndexByte(h, '@'); i >= 0 {
+		h = h[i+1:]
+	}
+	if strings.HasPrefix(h, "[") {
+		return false // an IPv6 address
+	}
+	if i := strings.IndexByte(h, ':'); i >= 0 {
+		h = h[:i]
+	}
+	return openCodeHost(h)
 }
 
 // IsBedrock reports whether the provider is Amazon Bedrock: its runtime

@@ -189,7 +189,7 @@ func miniMaxAt(at place, dir string) *Agent {
 				return nil
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(miniMaxOwnOptions(path, cur["model"]), viaMagpie("minimax-code", magpieID+"/")...)
+				return append(miniMaxOwnOptions(path, cur["model"]), viaMagpieShared("minimax-code", magpieID+"/")...)
 			},
 		}},
 	}, path)

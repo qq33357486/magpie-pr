@@ -225,7 +225,7 @@ func dshAt(at place) *Agent {
 						own[i].Direct = "DeepSeek"
 					}
 				}
-				return append(own, viaMagpie("dsh", magpieID+"/")...)
+				return append(own, viaMagpieShared("dsh", magpieID+"/")...)
 			},
 		}, {
 			// the thinking effort sessions start with: agent-default-model's
@@ -1555,6 +1555,9 @@ func dshPutProviders(providers *yaml.Node, on bool, models []catalog.Model, gw s
 		if cur := yamlKey(providers, k.key); cur != nil && cur.Kind == yaml.MappingNode {
 			dshKeepCompat(cur, &route)
 			for j := 0; j+1 < len(route.Content); j += 2 {
+				if route.Content[j].Value == dshIdleKey && yamlKey(cur, dshIdleKey) != nil {
+					continue // the user's own wait, or the one magpie wrote
+				}
 				yamlSetKey(cur, route.Content[j].Value, route.Content[j+1])
 			}
 		} else {
@@ -1612,7 +1615,27 @@ type dshPiRoute struct {
 	API         string       `yaml:"api"`
 	BaseURL     string       `yaml:"baseURL"`
 	Models      []dshPiModel `yaml:"models"`
+	// StreamIdleTimeoutMs is dshIdleWait.
+	StreamIdleTimeoutMs int `yaml:"streamIdleTimeoutMs,omitempty"`
 }
+
+// dshIdleWait is how long llm-pi-ai waits on magpie's route for the next
+// event of a reply before it gives the turn up, in ms: the gateway's own
+// wait for a reply's headers (upstreamHeaderWait, 10 minutes). llm-pi-ai's
+// own is 5 minutes (DEFAULT_STREAM_IDLE_TIMEOUT_MS, 0.1.5 to 0.2.2), and
+// it counts pi-ai's events only: the ": keepalive" comments the gateway
+// sends while a request waits in a provider's queue (keepQueued) or on a
+// slow first byte (keepQuiet) aren't events, and pi-ai has none before the
+// reply's headers. So a turn queued behind dsh's own title request on a
+// plugin that serves one at a time (magpie-gemini-web, maxConcurrency 1)
+// was cut at 5 minutes, recorded as 499, while magpie and the plugin were
+// still within their waits (tim on Discord). Codex's comment-blind limit
+// is met by agentQuietMost in the gateway; dsh's is a setting of the
+// route. A value already on the route (one set in dsh, or by hand) stays.
+const dshIdleWait = 600000
+
+// dshIdleKey is the route's field dshIdleWait goes in.
+const dshIdleKey = "streamIdleTimeoutMs"
 
 // dshPiModel is one model of the route. Without contextWindow and maxTokens
 // dsh takes every model for a 128K one writing 16K at most, and without
@@ -1840,7 +1863,7 @@ func dshRouteConfig(models []catalog.Model, api, gw string) dshPiRoute {
 // thinking adaptively, output_config.effort on Messages.
 func dshKindConfig(k dshKind, models []catalog.Model, api, gw string) dshPiRoute {
 	api = dshAPI(api, k.api)
-	r := dshPiRoute{DisplayName: k.name, APIKeyEnv: dshKeyRef, API: api, BaseURL: dshBaseURL(api, gw), Models: []dshPiModel{}}
+	r := dshPiRoute{DisplayName: k.name, APIKeyEnv: dshKeyRef, API: api, BaseURL: dshBaseURL(api, gw), Models: []dshPiModel{}, StreamIdleTimeoutMs: dshIdleWait}
 	for _, m := range models {
 		e := dshPiModel{ID: m.ID, Name: m.Name, ContextWindow: m.Context}
 		if m.Output > 0 {

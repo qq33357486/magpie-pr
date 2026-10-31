@@ -130,13 +130,14 @@ func TestLoopCutMidLine(t *testing.T) {
 	}
 }
 
-// A whole stream goes through untouched, nothing added after its end.
+// A whole stream goes through untouched, nothing added after its end,
+// but for the model it names: the one the agent asked for (memberWriter).
 func TestPassthroughStreamWhole(t *testing.T) {
 	fresh(t)
 	f := &fake{reply: anthropicStart + anthropicText + anthropicStop}
 	setup(t, "anthropic", f)
 	code, body := postMessages(t, `{"model":"fake/m1","stream":true,"max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
-	if code != 200 || body != anthropicStart+anthropicText+anthropicStop {
+	if code != 200 || body != namedAs(anthropicStart+anthropicText+anthropicStop, "fake/m1") {
 		t.Fatalf("a whole stream was changed: %d %q", code, body)
 	}
 }
@@ -163,7 +164,7 @@ func TestPassthroughResponsesBigLastEvent(t *testing.T) {
 	f := &fake{reply: reply}
 	setup(t, "responses", f)
 	code, body := post(t, "/v1/responses", `{"model":"fake/m1","stream":true,"input":"hi"}`)
-	if code != 200 || body != reply {
+	if code != 200 || body != namedAs(reply, "fake/m1") {
 		t.Fatalf("a whole stream with a big last event was changed: %d, %d bytes added", code, len(body)-len(reply))
 	}
 }

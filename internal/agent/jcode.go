@@ -353,7 +353,7 @@ func jcodeAt(at place) *Agent {
 				return setPick(jcodePick{c.Provider.DefaultProvider, v})
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(jcodeOwn(path, keyPick, cur["model"]), viaMagpie("jcode", magpieID+"/")...)
+				return append(jcodeOwn(path, keyPick, cur["model"]), viaMagpieShared("jcode", magpieID+"/")...)
 			},
 		}},
 	}, path)
@@ -364,7 +364,7 @@ func jcodeAt(at place) *Agent {
 // can't list.
 func jcodeOwn(path, keyPick, cur string) []Option {
 	var was jcodePick
-	json.Unmarshal([]byte(stashLoad()[keyPick]), &was)
+	json.Unmarshal([]byte(stashShared()[keyPick]), &was)
 	var out []Option
 	for _, m := range []string{was.Model, cur} {
 		if m == "" || prefixed(m) || slices.ContainsFunc(out, func(o Option) bool { return o.Value == m }) {

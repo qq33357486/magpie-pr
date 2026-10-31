@@ -221,7 +221,7 @@ func atomcodeIn(at place) *Agent {
 				return nil
 			},
 			Options: func(c map[string]string) []Option {
-				return append(atomcodeOwnModels(path, c["model"]), viaMagpie("atomcode", magpieID+"/")...)
+				return append(atomcodeOwnModels(path, c["model"]), viaMagpieShared("atomcode", magpieID+"/")...)
 			},
 		}, {
 			// the current model table's reasoning_effort, sent with every

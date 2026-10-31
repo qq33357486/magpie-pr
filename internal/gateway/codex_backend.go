@@ -1646,8 +1646,14 @@ func codexRelayedAccount(base string, h http.Header, on *provider.Provider) (pro
 var unreadableItem = regexp.MustCompile(`(?i)(?:encrypted content for item|item with id) '?([A-Za-z]+_[A-Za-z0-9_-]+)'?`)
 
 // withoutUnreadable is body without what OpenAI's refusal msg says it
-// can't read: the item it names, or the reasoning another account sealed.
+// can't read: the item it names, the reasoning another account sealed, or
+// a member of Codex's passthrough it doesn't know.
 func withoutUnreadable(body, msg []byte) ([]byte, bool) {
+	if f, ok := refusedPassthrough(msg); ok {
+		// a member of Codex's passthrough the backend doesn't know yet
+		// (passthrough_refused.go)
+		return withoutPassthrough(body, f)
+	}
 	if !foreignReasoning.Match(msg) && !bytes.Contains(bytes.ToLower(msg), []byte("not found")) {
 		return nil, false
 	}

@@ -98,7 +98,7 @@ func commandCodeIn(at place) *Agent {
 				if v := cur["model"]; v != "" && !usesMagpie(v) {
 					out = append(out, Option{Value: v, Icon: modelIcon("", v)})
 				}
-				return append(out, viaMagpie("commandcode", magpieID+"/")...)
+				return append(out, viaMagpieShared("commandcode", magpieID+"/")...)
 			},
 		}, {
 			// settings.json's reasoningEffort keeps an effort for each model

@@ -119,7 +119,7 @@ func mothxIn(at place) *Agent {
 					return pair(v)
 				},
 				Options: func(cur map[string]string) []Option {
-					return append(mothxOwn(path, cur["model"]), viaMagpie("mothx", magpieID+"/")...)
+					return append(mothxOwn(path, cur["model"]), viaMagpieShared("mothx", magpieID+"/")...)
 				},
 			},
 			{

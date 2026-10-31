@@ -257,6 +257,7 @@ func onMachine(home, cfg string) []*Agent {
 		empryo(home),
 		ante(home),
 		astrbot(home),
+		qwenpaw(home),
 		openClaw(home),
 		jcode(home),
 		miniMax(home),
@@ -283,7 +284,7 @@ func onMachine(home, cfg string) []*Agent {
 		cindy(),
 		aionui(),
 		lody(home),
-	}, ompProfiles(home)...)
+	}, append(ompProfiles(home), qwenpawAgents(home)...)...)
 }
 
 // ---- accessors -------------------------------------------------------------
@@ -493,7 +494,10 @@ func magpieProviderJSONAt(shape, catalog, gw string) any {
 	models := magpieModels(catalog) // the catalog is the agent's
 	switch shape {
 	case "opencode":
-		ms := map[string]any{}
+		// models in the order magpieModels has them (#4575): OpenCode lists
+		// the models in the file's key order, and a map's keys marshal
+		// sorted — the variants under each kept theirs since #713
+		ms := orderedJSON{}
 		for _, m := range models {
 			e := map[string]any{"name": m.Name}
 			// modalities alone says a model takes images: OpenCode 1 takes
@@ -519,7 +523,7 @@ func magpieProviderJSONAt(shape, catalog, gw string) any {
 			if p := m.Price; p != nil {
 				e["cost"] = map[string]any{"input": p.Input, "output": p.Output, "cache_read": p.CacheRead, "cache_write": p.CacheWrite}
 			}
-			ms[m.ID] = e
+			ms = append(ms, jsonPair{m.ID, e})
 		}
 		return map[string]any{"npm": "@ai-sdk/openai-compatible", "name": "magpie",
 			"options": map[string]any{"baseURL": gw + "/v1", "apiKey": openCodeKeyAt(catalog, gw)}, "models": ms}
@@ -609,12 +613,16 @@ func openCodeKept(path string, value func() any) func() any {
 		}
 		var have map[string]json.RawMessage
 		block, _ := v.(map[string]any)
-		ms, _ := block["models"].(map[string]any)
+		ms, _ := block["models"].(orderedJSON)
 		if json.Unmarshal([]byte(raw), &have) != nil || ms == nil {
 			return v
 		}
 		for id, h := range have {
-			e, _ := ms[id].(map[string]any)
+			i := slices.IndexFunc(ms, func(p jsonPair) bool { return p.k == id })
+			if i < 0 {
+				continue
+			}
+			e, _ := ms[i].v.(map[string]any)
 			ours, ok := e["variants"].(orderedJSON)
 			var was struct {
 				Variants json.RawMessage `json:"variants"`
@@ -972,7 +980,7 @@ func openCodeLike(at place, id, name, icon, bin, dir, auth string, ua []string, 
 	provider := openCodeKept(path, func() any { return magpieProviderJSONAt("opencode", id, at.gw()) })
 	opts := func(key string) func(map[string]string) []Option {
 		return func(cur map[string]string) []Option {
-			return append(ownOptions(auth, cur[key]), viaMagpie(id, magpieID+"/")...)
+			return append(ownOptions(auth, cur[key]), viaMagpieShared(id, magpieID+"/")...)
 		}
 	}
 	get := func(k string) string { v, _ := edit.GetJSON(path, k); return v }
@@ -1388,7 +1396,7 @@ func piLikeKeyed(at place, id, name, dir string, key func() string) *Agent {
 					return piScopeWith(path, v)
 				},
 				Options: func(cur map[string]string) []Option {
-					return append(ownOptionsFrom(piRegistry(id), auth, cur["model"]), viaMagpie(id, magpieID+"/")...)
+					return append(ownOptionsFrom(piRegistry(id), auth, cur["model"]), viaMagpieShared(id, magpieID+"/")...)
 				},
 			},
 			{
@@ -1508,7 +1516,7 @@ func gooseIn(at place, cfg string) *Agent {
 				// only the native providers this goose is set up with (#987:
 				// every one of four was listed, OpenRouter's hundreds of
 				// models on a goose that had only magpie)
-				return append(ownOptions("", cur["model"], gooseConfigured(path, keyEnv)...), viaMagpie("goose", gooseProviderID+"/")...)
+				return append(ownOptions("", cur["model"], gooseConfigured(path, keyEnv)...), viaMagpieShared("goose", gooseProviderID+"/")...)
 			},
 		}, {
 			// GOOSE_THINKING_EFFORT, the effort goose asks of a model that
@@ -1726,7 +1734,7 @@ func crushAt(at place, path, data string) *Agent {
 					}
 				}
 			}
-			return append(ownOptions("", cur[key], extra...), viaMagpie("crush", magpieID+"/")...)
+			return append(ownOptions("", cur[key], extra...), viaMagpieShared("crush", magpieID+"/")...)
 		}
 	}
 	// replacePick puts v in place of the whole models.<type> object in the

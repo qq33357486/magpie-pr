@@ -626,7 +626,7 @@ func stepcodeIn(at place) *Agent {
 					return nil
 				},
 				Options: func(cur map[string]string) []Option {
-					return append(ownOptions(authPath, cur["model"]), viaMagpie("stepcode", magpieID+"/")...)
+					return append(ownOptions(authPath, cur["model"]), viaMagpieShared("stepcode", magpieID+"/")...)
 				},
 			},
 		},

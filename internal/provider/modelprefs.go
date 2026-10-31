@@ -351,9 +351,9 @@ func Reasonless(pid, model string) bool {
 // models, by model id.
 func (p Provider) ModelEfforts() map[string][]string {
 	out := map[string][]string{}
-	for k, es := range settings.Load().ModelEfforts {
+	for k, es := range settings.Shared().ModelEfforts {
 		if m, ok := strings.CutPrefix(k, p.ID+"/"); ok && len(es) > 0 {
-			out[m] = es
+			out[m] = slices.Clone(es) // the shared settings' own
 		}
 	}
 	return out
@@ -469,9 +469,12 @@ func setModelAPI(ref, api string) (bool, error) {
 
 // ModelAPI is the API the user said p's model is asked on, when p has a
 // URL for it still.
-func (p Provider) ModelAPI(model string) (Protocol, bool) {
+func (p Provider) ModelAPI(model string) (Protocol, bool) { return p.modelAPIAmong(p.Speaks(), model) }
+
+// modelAPIAmong is ModelAPI with the protocols p speaks found already.
+func (p Provider) modelAPIAmong(speaks []Protocol, model string) (Protocol, bool) {
 	// Vertex AI's model id says its one API (ListedAPIs)
-	if len(p.Speaks()) < 2 || p.IsVertex() {
+	if len(speaks) < 2 || p.IsVertex() {
 		return "", false
 	}
 	proto := Protocol(heldSettings().ModelAPIs[p.ID+"/"+model])
@@ -931,7 +934,7 @@ func SetPlainNames(on bool) error {
 // ModelNames are the names the user gave the provider's models, by model id.
 func (p Provider) ModelNames() map[string]string {
 	out := map[string]string{}
-	for k, n := range settings.Load().ModelNames {
+	for k, n := range settings.Shared().ModelNames {
 		if m, ok := strings.CutPrefix(k, p.ID+"/"); ok && n != "" {
 			out[m] = n
 		}

@@ -134,7 +134,7 @@ func hermesIn(at place) *Agent {
 			// and forgets it; while the config is on a model of its own, that
 			// one. The model magpie set (setKey) stays recorded, for the bots
 			// put back on it to follow the next one once connected again.
-			own := hermesModel{Provider: stashLoad()[key+"model.provider"], Default: stashLoad()[key+"model.default"]}
+			own := hermesModel{Provider: stashShared()[key+"model.provider"], Default: stashShared()[key+"model.default"]}
 			if !onMagpie() {
 				own = hermesModel{Provider: getKey("model.provider"), Default: getKey("model.default")}
 			}
@@ -193,7 +193,7 @@ func hermesIn(at place) *Agent {
 					// and the one it is on through magpie now, which Hermes
 					// seeds a new bot with too, picked there by `hermes
 					// model` or before the record was kept
-					was := stashLoad()[setKey]
+					was := stashShared()[setKey]
 					now := ""
 					if onMagpie() {
 						now = getKey("model.default")
@@ -222,7 +222,7 @@ func hermesIn(at place) *Agent {
 				return edit.SetYAML(path, edit.KV{Path: "model.default", Value: v})
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(ownOptions("", cur["model"]), viaMagpie("hermes", magpieID+"/")...)
+				return append(ownOptions("", cur["model"]), viaMagpieShared("hermes", magpieID+"/")...)
 			},
 		}, {
 			// agent.reasoning_effort, which Hermes's /reasoning saves; none
@@ -323,7 +323,7 @@ func hermesProfileFields(at place, dir string, provider func(string) any) []Fiel
 				return edit.SetYAML(p, edit.KV{Path: "model.default", Value: v})
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(ownOptions("", cur[hermesProfileKey+name]), viaMagpie("hermes", magpieID+"/")...)
+				return append(ownOptions("", cur[hermesProfileKey+name]), viaMagpieShared("hermes", magpieID+"/")...)
 			},
 		})
 	}

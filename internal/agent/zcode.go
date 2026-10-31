@@ -111,7 +111,7 @@ func zcode(home string) *Agent {
 					return err
 				}
 				if v == "" {
-					if _, ok := stashLoad()[zcodeSearchedKey]; ok {
+					if _, ok := stashShared()[zcodeSearchedKey]; ok {
 						forget(zcodeSearchedKey)
 					}
 					return edit.DelJSON(path, key)
@@ -613,7 +613,7 @@ func zcodeSearchedPut(searched map[string]bool, ids []string) {
 		}
 	}
 	v := strings.Join(keep, "\n")
-	if stashLoad()[zcodeSearchedKey] != v {
+	if stashShared()[zcodeSearchedKey] != v {
 		stash(map[string]string{zcodeSearchedKey: v})
 	}
 }

@@ -142,7 +142,7 @@ func hanako(home string) *Agent {
 					}
 					if onMagpie() {
 						// the stash goes only once the model is back
-						if err := hanakoBack(dir, agent, stashLoad()[key()]); err != nil {
+						if err := hanakoBack(dir, agent, stashShared()[key()]); err != nil {
 							return err
 						}
 						forget(key())
@@ -169,7 +169,7 @@ func hanako(home string) *Agent {
 				return hanakoChat(dir, agent, v)
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(hanakoOwn(dir, cur["model"]), viaMagpie("hanako", magpieID+"/")...)
+				return append(hanakoOwn(dir, cur["model"]), viaMagpieShared("hanako", magpieID+"/")...)
 			},
 		}},
 	}

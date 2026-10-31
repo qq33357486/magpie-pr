@@ -72,6 +72,13 @@ type candidate struct {
 	// members' busy failures, the group asked for only those that set none;
 	// 0 falls back to the asked group's Waits, PatienceOff skips replan
 	patience int
+	// member is the member of the group asked for it is of, as the group
+	// spells it (Member.Path[0]): a group in the group is one member.
+	// place is that member's place in the group's list, 1 for its first,
+	// 0 for one not of a group (planGroup): what the user put first is
+	// what a member listed after it stands in for (standsInFor)
+	member string
+	place  int
 }
 
 // capHold is how an account is held at its usage cap: the cap of the
@@ -529,7 +536,23 @@ func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider
 	if len(out) == 0 {
 		return nil, pl
 	}
+	placed(ms, out)
+	placed(ms, pl.unlisted)
 	return restLast(out, pl)
+}
+
+// placed sets each of cs's place: where its member is in ms, the group's
+// models in the order its list has them, a group in the group by its first.
+func placed(ms []provider.Member, cs []candidate) {
+	at := map[string]int{}
+	for _, m := range ms {
+		if len(m.Path) > 0 && at[m.Path[0]] == 0 {
+			at[m.Path[0]] = len(at) + 1
+		}
+	}
+	for i := range cs {
+		cs[i].place = at[cs[i].member]
+	}
 }
 
 // innerFirstToken is the FirstToken of the innermost group m is in
@@ -568,6 +591,9 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 				l[i].effort, l[i].levels, l[i].fast = m.Effort, m.Levels, m.Fast
 				l[i].firstToken = innerFirstToken(m)
 				l[i].patience = innerPatience(m)
+				if len(m.Path) > 0 {
+					l[i].member = m.Path[0]
+				}
 			}
 		}
 		pl.left = append(pl.left, barredOf(barred, m.Provider, false, from, m.Groups())...)

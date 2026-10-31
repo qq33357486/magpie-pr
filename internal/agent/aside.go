@@ -54,7 +54,7 @@ func asideIn(at place) *Agent {
 				}
 				return opts
 			}
-			return append(asideOwnOptions(c.models, cur[key]), viaMagpie("aside", "magpie/")...)
+			return append(asideOwnOptions(c.models, cur[key]), viaMagpieShared("aside", "magpie/")...)
 		}
 		a.Fields = append(a.Fields, f)
 	}

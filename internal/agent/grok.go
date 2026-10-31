@@ -196,7 +196,7 @@ func grokIn(at place) *Agent {
 			return err
 		}
 		var wrote map[string]int
-		saved := stashLoad()[keyWindows]
+		saved := stashShared()[keyWindows]
 		if saved != "" {
 			json.Unmarshal([]byte(saved), &wrote)
 		}

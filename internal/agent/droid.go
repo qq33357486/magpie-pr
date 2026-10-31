@@ -320,7 +320,7 @@ func droidIn(at place) *Agent {
 			ms = append(ms, c.raw)
 		}
 		if with {
-			saved := stashLoad()[keyWrote]
+			saved := stashShared()[keyWrote]
 			var last map[string]map[string]json.RawMessage
 			json.Unmarshal([]byte(saved), &last)
 			wrote := map[string]map[string]json.RawMessage{}
@@ -450,7 +450,7 @@ func droidIn(at place) *Agent {
 				if c := cur["model"]; c != "" && !usesMagpie(c) && !seen[c] {
 					own = append([]Option{{Value: c, Icon: modelIcon("", c)}}, own...)
 				}
-				return append(group("Droid", own), viaMagpie("droid", magpieID+"/")...)
+				return append(group("Droid", own), viaMagpieShared("droid", magpieID+"/")...)
 			},
 		}},
 	}

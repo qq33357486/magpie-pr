@@ -128,7 +128,7 @@ func zedAtWith(dir, bin string, processes []string) *Agent {
 				if v := cur["model"]; v != "" && !usesMagpie(v) {
 					own = append(own, Option{Value: v, Icon: modelIcon("", v)})
 				}
-				return append(group("Zed", own), viaMagpie("zed", magpieID+"/")...)
+				return append(group("Zed", own), viaMagpieShared("zed", magpieID+"/")...)
 			},
 		}},
 	}, path, stashPath())

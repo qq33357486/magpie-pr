@@ -126,9 +126,9 @@ func ompRoot(home string) string {
 // it names.
 func ompDir(home string) (dir string, shared bool) {
 	root := ompRoot(home)
-	p, set := os.LookupEnv("OMP_PROFILE")
+	p, set := appdir.LookupEnv("OMP_PROFILE")
 	if !set {
-		p = os.Getenv("PI_PROFILE")
+		p = appdir.Getenv("PI_PROFILE")
 	}
 	if p = strings.TrimSpace(p); ompProfileOK(p) {
 		return filepath.Join(root, "profiles", p, "agent"), false
@@ -342,7 +342,7 @@ func ompAt(at place, dir string, entry func() ompProviderEntry) *Agent {
 				return dropMagpie()
 			},
 			Options: func(cur map[string]string) []Option {
-				opts := append(ompOwnOptions(pick("models"), cur[key]), viaMagpie("omp", magpieID+"/")...)
+				opts := append(ompOwnOptions(pick("models"), cur[key]), viaMagpieShared("omp", magpieID+"/")...)
 				// a catalog model with a thinking level is offered as it
 				// reads, beside the model: that keeps the level, the model
 				// alone clears it
@@ -492,7 +492,7 @@ func ompAt(at place, dir string, entry func() ompProviderEntry) *Agent {
 			}
 			scopeGoneRename(gone, from, to)
 			for _, w := range was {
-				s := stashLoad()[w]
+				s := stashShared()[w]
 				ns := move(s)
 				if ompYAMLList(s) {
 					t, err := edit.EditYAMLTextStrings(edit.YAMLText(s), move)

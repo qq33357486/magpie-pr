@@ -446,7 +446,7 @@ func (a *Agent) forgetSetUp() {
 // keeps an entry in). A field set in magpie to a model of the agent's own,
 // or its thinking level, doesn't set it up.
 func (a *Agent) setUp() bool {
-	if stashLoad()[a.ID+".connect.was"] != "" {
+	if stashShared()[a.ID+".connect.was"] != "" {
 		return true
 	}
 	rec := appliedOf(a.ID)
@@ -608,7 +608,7 @@ const disconnectedKey = ".disconnected"
 
 // Disconnected reports whether the user disconnected the agent and hasn't
 // connected it since.
-func (a *Agent) Disconnected() bool { return stashLoad()[a.ID+disconnectedKey] == "1" }
+func (a *Agent) Disconnected() bool { return stashShared()[a.ID+disconnectedKey] == "1" }
 
 // noModelLeft says why there is no model of magpie's to connect the agent
 // to: none added yet (NoModelsError), or every one taken out of its lists

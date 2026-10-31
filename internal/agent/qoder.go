@@ -189,7 +189,7 @@ func qoderAt(at place, b qoderBuild) *Agent {
 				return edit.SetJSON(path, edit.KV{Path: "model.name", Value: v})
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(ownOptions("", cur["model"]), viaMagpie(b.id, magpieID+"/")...)
+				return append(ownOptions("", cur["model"]), viaMagpieShared(b.id, magpieID+"/")...)
 			},
 		}, {
 			// the effort of the model in use, in its model.preferences

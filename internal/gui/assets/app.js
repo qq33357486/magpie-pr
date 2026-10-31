@@ -9321,6 +9321,7 @@ function drawEditor(p, presetID) {
     const a = p.account;
     if (subOf(a.agent)) {
       // no Claude Code on Windows: the gateway runs the one in WSL
+      if (a.agent === "claude" && !p.switchOnly) ed.append(claudeModeRow());
       const via = a.wsl ? t("Runs through WSL · {distro}: Claude Code there signs in and answers; Windows has none of its own.", { distro: a.wsl }) + " " : "";
       ed.append(...field(t("Accounts"), renderAccounts(a, p), via + (p.routing ? t("Tick every account to use; Routing says how requests spread over them.") : subOf(a.agent).single ? t("{agent} keeps one account; the gateway runs it for every request. Signing in to another replaces it.", { agent: a.agentName }) : subOf(a.agent).own && (a.logins || []).some((l) => l.own) ? t("The gateway uses the first. Tick more and it moves on to the next when the one before it is out of quota. {agent} itself stays signed in as it is.", { agent: a.agentName && a.agentName !== a.agent ? a.agentName : p.name }) : subOf(a.agent).own || subOf(a.agent).plugin ? t("The gateway uses the first. Tick more and it moves on to the next when the one before it is out of quota.") : t("{agent} signs in to the first. Tick more and magpie moves on to the next when the one before it is out of quota. Sessions already running keep theirs until restarted.", { agent: a.agentName }))));
       if ((a.logins || []).filter((l) => l.active || l.on).length > 1) ed.append(...renderRouting(p));
@@ -11947,7 +11948,9 @@ function renderRouting(p) {
       ? t("Routing picks the account for each request through magpie; {agent} on its own stays signed in to the first account, whatever it has left.", { agent: a.agentName })
       : routing === "order"
         ? t("Routing picks the account for each request through magpie; {agent} on its own uses the one it is signed in to, which magpie moves to the next ticked account with room once it is used up, and back to the first once that has room again.", { agent: a.agentName })
-        : t("Routing picks the account for each request through magpie; {agent} on its own uses the one it is signed in to, which magpie moves to the next ticked account with room once it is 98% used, and back to the first once that has room again.", { agent: a.agentName }));
+        : a.agent === "codex" && !p.switchOnly || p.keepLogin
+        ? t("Routing picks the account for each request through magpie; {agent} on its own uses the one it is signed in to, which magpie moves to the next ticked account with room once it is 98% used, and back to the first once that has room again.", { agent: a.agentName })
+        : t("Routing picks the account for each request through magpie; {agent} on its own uses the one it is signed in to, which magpie moves to the next ticked account with room once it is 98% used, and keeps it there till that one is 98% used too.", { agent: a.agentName }));
   // what the Save will make of it differs from what it is: said beside it
   const unsaved = () => {
     const u = el("span", "hint munsaved", t("unsaved"));
@@ -13279,14 +13282,12 @@ function renderAccounts(a, p) {
   const cx = a.agent === "codex", ag = { agent: a.agentName };
   if (p && (cx && several || a.agent === "claude")) {
     const [only, cb] = tick(t("Only switch {agent}'s sign-in", ag), p.switchOnly);
-    const [tip, on, off] = cx ? [t("magpie signs {agent} in to the next account with room when the one it is on is used up, and back once that has room again, by writing {agent}'s own sign-in; {agent}'s requests go straight to OpenAI, never through magpie. A {agent} app or session already open stays on its account until it is opened again. Connected to magpie, {agent}'s requests go through it as before.", ag), t("magpie only switches {agent}'s sign-in; its requests go straight to OpenAI", ag), t("{agent}'s requests go through magpie to fail over to your other accounts again", ag)]
-      : [t("magpie moves {agent}'s own sign-in to the next account with room when one is used up, and back once it has room. Nothing on these accounts is served through magpie.", ag), t("magpie serves no requests on these accounts"), t("magpie serves requests on these accounts again")];
+    const [tip, on, off] = cx ? [t("magpie signs {agent} in to the next account with room when the one it is on is used up, and keeps it there till that one is used up too, by writing {agent}'s own sign-in; {agent}'s requests go straight to OpenAI, never through magpie. A {agent} app or session already open stays on its account until it is opened again. Connected to magpie, {agent}'s requests go through it as before.", ag), t("magpie only switches {agent}'s sign-in; its requests go straight to OpenAI", ag), t("{agent}'s requests go through magpie to fail over to your other accounts again", ag)]
+      : [t("magpie moves {agent}'s own sign-in to the next account with room when one is used up, and keeps it there till that one is used up too. Nothing on these accounts is served through magpie.", ag), t("magpie serves no requests on these accounts"), t("magpie serves requests on these accounts again")];
     only.title = tip;
     cb.onchange = () => accountAction("provider/switchonly", { id: p.id, switchOnly: cb.checked }, cb.checked ? on : off);
     list.append(el("div", "switch-only", only));
   }
-  // whether these accounts' runs are Claude Code's interactive mode or -p
-  if (p && a.agent === "claude" && !p.switchOnly) list.append(claudeModeRow());
   // how a pool ends at its caps (plugins#349)
   const capped = (l) => accountCapOf(p, l.user) || windowCapsOf(p, l.user);
   if (p && (ls.some(capped) || p.capStop || p.capCareful)) {
@@ -13324,7 +13325,6 @@ function renderAccounts(a, p) {
 let claudeMode = null, claudeModeAt = 0, claudeModeRead = null;
 function claudeModeRow() {
   const box = el("div", "claude-mode");
-  box.hidden = true;
   const draw = () => window.claudeModeDraw(box, claudeMode);
   if (claudeMode && Date.now() - claudeModeAt < 30000) draw();
   else {
@@ -18061,51 +18061,11 @@ function wbToday() {
   return new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
 }
 
-// askReset: spending a Codex account's reset can't be taken
-// back, so it asks first; then it says what came of it and reads the
-// usage again.
+// askReset: a Codex reset's confirmation, in resetask.js, loaded when asked
 let confirmAsk = null;
-function askReset(q) {
-  const ed = el("div", "editor reset-ask");
-  const head = el("div", "ehead");
-  head.append(icon(q.icon || "codex"), el("b", "", t("Use a Codex reset?")));
-  ed.append(head);
-  const who = q.alias || q.user || q.name;
-  ed.append(el("p", "lib-confirm", t(q.resets.count === 1
-    ? "{who} has 1 reset. Using it starts its windows again at once, as if none of them had been used. It can't be undone."
-    : "{who} has {n} resets. Using one starts its windows again at once, as if none of them had been used. It can't be undone.", { who, n: q.resets.count })));
-  if (q.resets.until) ed.append(el("p", "lib-confirm", t("The one used is the one that runs out first, {when}.", { when: new Date(q.resets.until).toLocaleString(intlLang()) })));
-  // nothing used yet: a reset would start nothing again
-  if (!q.windows?.some((w) => w.used > 0)) ed.append(el("p", "lib-confirm reset-idle", t("None of its windows has been used yet, so there is nothing to start again.")));
-  const bar = el("div", "bar");
-  const go = el("button", "text primary", t("Use a reset"));
-  go.onclick = async (e) => {
-    e.stopPropagation();
-    go.disabled = true;
-    go.classList.add("busy");
-    try {
-      const out = await api("usage/codex-reset", { user: q.user || "" });
-      closeConfirmAsk();
-      status(who + ": " + resetOutcome(out), out.code === "reset" ? "ok" : "err");
-      // the providers' editor reads the account's windows and resets
-      // on its own, kept a minute: read again, as Usage is (#1491)
-      delete loginUsage.codex;
-      if (editing && view === "providers") renderProviders();
-      loadQuotas();
-    } catch (err) {
-      go.disabled = false;
-      go.classList.remove("busy");
-      statusErr(err);
-    }
-  };
-  const cancel = el("button", "text", t("Cancel"));
-  cancel.onclick = cancelAsk;
-  bar.append(el("span", "grow"), cancel, go);
-  ed.append(bar);
-  confirmAsk = ed;
-  openModal(ed);
-  $("#modal").classList.add("lib");
-  go.focus();
+async function askReset(q) {
+  try { await import("./resetask.js"); } catch (err) { return statusErr(err); }
+  askResetSheet(q);
 }
 // closes a confirmation, nothing more (its Cancel, or an OK that only dismisses)
 function cancelAsk(e) { e.stopPropagation(); closeConfirmAsk(); }
@@ -18143,7 +18103,8 @@ $("#modal").addEventListener("click", (e) => {
   if (confirmAsk && modalBackdrop(e)) { e.stopImmediatePropagation(); closeConfirmAsk(); }
 }, true);
 document.addEventListener("keydown", (e) => {
-  if (!confirmationPending && confirmAsk && e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); closeConfirmAsk(); }
+  // an open menu in it (the reset to use) closes first, on its own
+  if (!confirmationPending && confirmAsk && !protoMenu && e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); closeConfirmAsk(); }
 }, true);
 function resetOutcome(out) {
   switch (out.code) {
@@ -21548,15 +21509,19 @@ function renderImageGen(s, keep, box) {
     [5, 10, 15, 30, 60], s.imageTimeout > 0 ? s.imageTimeout : 5, "{n} min", (n) => savePrefs({ ...keep, imageTimeout: n })));
 }
 
-// waitRow: a Settings row of how long something is given, ns (in unit)
-// offered, and cur too when set by hand in settings.json
-function waitRow(id, name, sub, ns, cur, unit, pick) {
+// segRow: a Settings row, its name and sub, and segs of items at cur
+function segRow(id, name, sub, items, cur, pick, cls = "sub wraps") {
   const r = el("div", "row pref"), who = el("div", "who"), val = el("div", "val");
   r.id = id;
-  who.append(el("div", "name", name), el("div", "sub wraps", sub));
-  val.append(segs([...new Set([...ns, cur])].map((n) => [String(n), t(unit, { n })]), String(cur), (v) => pick(Number(v))));
+  who.append(el("div", "name", name), el("div", cls, sub));
+  val.append(segs(items, cur, pick));
   r.append(who, val);
   return r;
+}
+// waitRow: a segRow of how long something is given, ns (in unit) offered,
+// and cur too when set by hand in settings.json
+function waitRow(id, name, sub, ns, cur, unit, pick) {
+  return segRow(id, name, sub, [...new Set([...ns, cur])].map((n) => [String(n), t(unit, { n })]), String(cur), (v) => pick(Number(v)));
 }
 
 // mcpAddress: where one of the gateway's own MCP servers is, at path. A
@@ -21595,66 +21560,38 @@ function sideEffortChip(val, levels, saved, now, cls, dflt, save) {
 function renderReplies(s, keep) {
   const box = $("#replyList");
   box.replaceChildren();
-  const r = el("div", "row pref");
-  r.id = "memberModelRow";
-  const who = el("div", "who");
-  who.append(el("div", "name", t("Name the member in replies")),
-    el("div", "sub", t("A reply's model says magpie's provider/model that answered (workbuddy/glm-5.3-flash), not the vendor's own name, for agents that count usage by it. Claude Code, Claude Desktop and Codex keep the vendor's; the X-Magpie-Model header says it to every agent")));
-  const val = el("div", "val");
-  val.append(segs([["off", t("Off")], ["on", t("On")]], s.memberModel ? "on" : "off",
-    (v) => savePrefs({ ...keep, memberModel: v === "on" })));
-  r.append(who, val);
+  const onOff = [["off", t("Off")], ["on", t("On")]];
+  const r = segRow("memberModelRow", t("Name the member in replies"),
+    t("A reply's model says magpie's provider/model that answered (workbuddy/glm-5.3-flash), not the vendor's own name, for agents that count usage by it. Claude Code, Claude Desktop and Codex keep the vendor's; the X-Magpie-Model header says it to every agent"),
+    onOff, s.memberModel ? "on" : "off", (v) => savePrefs({ ...keep, memberModel: v === "on" }), "sub");
   // a reply stuck in a loop is ended with an error the agent can act on,
   // not let run to its output limit (#1359): on unless turned off
-  const l = el("div", "row pref");
-  l.id = "loopGuardRow";
-  const lwho = el("div", "who");
-  lwho.append(el("div", "name", t("Stop looping replies")),
-    el("div", "sub wraps", t("A reply whose reasoning or text goes round the same few lines is ended with an error the agent can retry, not left to run to its output limit")));
-  const lval = el("div", "val");
-  lval.append(segs([["off", t("Off")], ["on", t("On")]], s.noLoopGuard ? "off" : "on",
-    (v) => savePrefs({ ...keep, noLoopGuard: v === "off" })));
-  l.append(lwho, lval);
+  const l = segRow("loopGuardRow", t("Stop looping replies"),
+    t("A reply whose reasoning or text goes round the same few lines is ended with an error the agent can retry, not left to run to its output limit"),
+    onOff, s.noLoopGuard ? "off" : "on", (v) => savePrefs({ ...keep, noLoopGuard: v === "off" }));
   // how many more accounts or members a request the vendor's safety filter
   // refused is asked of (#248): every one left unless set. Never hands the
   // refusal back, which Claude Code answers with its own fallback model (DD
   // on Discord)
-  const f = el("div", "row pref");
-  f.id = "refusalRetriesRow";
-  const fwho = el("div", "who");
-  fwho.append(el("div", "name", t("Ask again after a refusal")),
-    el("div", "sub wraps", t("When a vendor's safety filter refuses a request before anything is said, how many more accounts or routing group members are asked. Never ask again hands the refusal straight back: Claude Code then switches to its own fallback model, as it does on Anthropic's API")));
-  const fval = el("div", "val");
   const counts = [["0", t("Never ask again")], ["1", "1"], ["2", "2"], ["3", "3"]];
   const n = s.refusalRetries == null || s.refusalRetries < 0 ? "" : String(s.refusalRetries);
   if (n && !counts.some(([id]) => id === n)) counts.push([n, n]); // set by hand in settings.json
-  fval.append(segs([...counts, ["", t("All")]], n,
-    (v) => savePrefs({ ...keep, refusalRetries: v === "" ? null : Number(v) })));
-  f.append(fwho, fval);
+  const f = segRow("refusalRetriesRow", t("Ask again after a refusal"),
+    t("When a vendor's safety filter refuses a request before anything is said, how many more accounts or routing group members are asked. Never ask again hands the refusal straight back: Claude Code then switches to its own fallback model, as it does on Anthropic's API"),
+    [...counts, ["", t("All")]], n, (v) => savePrefs({ ...keep, refusalRetries: v === "" ? null : Number(v) }));
   // how long a routing group's classifier is given: 8 seconds unless set (#2934)
   const k = waitRow("classifyTimeoutRow", t("Intent classifier timeout"), t("How long a routing group's classifier is given to say which intent a turn is. The turn waits for it before it goes anywhere, and past it goes on without its answer. A slow classifier may need longer"),
     [8, 15, 30, 60], s.classifyTimeout > 0 ? s.classifyTimeout : 8, "{n} s", (n) => savePrefs({ ...keep, classifyTimeout: n }));
   // the agent's instructions as a Claude run's system prompt (off unless on)
-  const c = el("div", "row pref");
-  c.id = "claudeLeanRow";
-  const cwho = el("div", "who");
-  cwho.append(el("div", "name", t("Short Claude system prompt")),
-    el("div", "sub wraps", t("A Claude subscription answers with the agent's own instructions as its system prompt, in place of Claude Code's, about 1K fewer tokens each request. Still the real Claude Code, but its requests look less like Claude Code's own, which can put the account more at risk")));
-  const cval = el("div", "val");
-  cval.append(segs([["off", t("Off")], ["on", t("On")]], s.claudeLeanPrompt ? "on" : "off",
-    (v) => savePrefs({ ...keep, claudeLeanPrompt: v === "on" })));
-  c.append(cwho, cval);
-  // a Claude run as Claude Code's interactive mode, -p when turned off
-  // (on unless off: the plan counts a -p request at about twice)
-  const u = el("div", "row pref");
-  u.id = "claudeTuiRow";
-  const uwho = el("div", "who");
-  uwho.append(el("div", "name", t("Claude Code's interactive mode")),
-    el("div", "sub wraps", t("A Claude subscription runs Claude Code as a person does, in its interactive mode, where the plan counts a request at about half of what -p uses. Off runs it as claude -p")));
-  const uval = el("div", "val");
-  uval.append(segs([["off", t("Off")], ["on", t("On")]], s.claudePrintMode ? "off" : "on",
-    (v) => { claudeMode = null; savePrefs({ ...keep, claudePrintMode: v === "off" }); }));
-  u.append(uwho, uval);
+  const c = segRow("claudeLeanRow", t("Short Claude system prompt"),
+    t("A Claude subscription answers with the agent's own instructions as its system prompt, in place of Claude Code's, about 1K fewer tokens each request. Still the real Claude Code, but its requests look less like Claude Code's own, which can put the account more at risk"),
+    onOff, s.claudeLeanPrompt ? "on" : "off", (v) => savePrefs({ ...keep, claudeLeanPrompt: v === "on" }));
+  // a Claude run as Claude Code's interactive mode, -p when off (the plan
+  // counts a -p request at about twice); only: never -p, failing instead
+  const u = segRow("claudeTuiRow", t("Claude Code's interactive mode"),
+    t("A Claude subscription runs Claude Code as a person does, in its interactive mode, where the plan counts a request at about half of what -p uses. Off runs it as claude -p. Interactive only never sends a model request as -p: one the interactive mode can't take fails, saying why (reading the plan's allowance asks no model and stays -p)"),
+    [...onOff, ["only", t("Interactive only")]], s.claudePrintMode ? "off" : s.claudeTUIOnly ? "only" : "on",
+    (v) => { claudeMode = null; savePrefs({ ...keep, claudePrintMode: v === "off", claudeTUIOnly: v === "only" }); });
   box.append(r, l, f, k, c, u);
 }
 
@@ -22664,7 +22601,7 @@ function prefsKeep(s) {
     redact: !!s.redact, redactPersonal: !!s.redactPersonal, redactKinds: s.redactKinds || {}, redactWords: s.redactWords || [], redactWordsAnyCase: !!s.redactWordsAnyCase, redactWordsWhole: !!s.redactWordsWhole, redactShape: !!s.redactShape, codexWarmup: s.codexWarmup || "",
     claudeWarmup: s.claudeWarmup || "", codexWarmAt: s.codexWarmAt || "", claudeWarmAt: s.claudeWarmAt || "",
     codexWarmAts: warmTimes(s.codexWarmAts, s.codexWarmAt), claudeWarmAts: warmTimes(s.claudeWarmAts, s.claudeWarmAt), workbuddyCheckin: !!s.workbuddyCheckin, traeCheckin: !!s.traeCheckin, minimaxCheckin: !!s.minimaxCheckin, qoderCheckin: !!s.qoderCheckin, noStats: !!s.noStats, noUsageStats: !!s.noUsageStats, signInLinkOnly: !!s.signInLinkOnly,
-    memberModel: !!s.memberModel, noLoopGuard: !!s.noLoopGuard, claudeLeanPrompt: !!s.claudeLeanPrompt, claudePrintMode: !!s.claudePrintMode, refusalRetries: s.refusalRetries ?? null,
+    memberModel: !!s.memberModel, noLoopGuard: !!s.noLoopGuard, claudeLeanPrompt: !!s.claudeLeanPrompt, claudePrintMode: !!s.claudePrintMode, claudeTUIOnly: !!s.claudeTUIOnly, refusalRetries: s.refusalRetries ?? null,
     noUpdatePill: !!s.noUpdatePill, noAutoUpdate: !!s.noAutoUpdate, updateEvery: s.updateEvery || 360, autoRestart: !!s.autoRestart, noAutoDownload: !!s.noAutoDownload, updateChannel: s.updateChannel || "",
     trayUsage: s.trayUsage || "", trayUsageEvery: s.trayUsageEvery || 3, trayNoLogos: !!s.trayNoLogos, trayNoBird: !!s.trayNoBird, trayPace: !!s.trayPace, trayNoCost: !!s.trayNoCost, trayWindows: s.trayWindows || {}, vision: s.vision || "", visionEffort: s.visionEffort || "", searcherEffort: s.searcherEffort || "", imageGen: s.imageGen || "", imageTimeout: s.imageTimeout || 0, classifyTimeout: s.classifyTimeout || 0, searcher: s.searcher || "", searchFirst: s.searchFirst || "", currency: s.currency || "usd",
     chineseUnits: !!s.chineseUnits, usageAlert: s.usageAlert || 0, balanceAlert: s.balanceAlert || 0, resetReminder: s.resetReminder || 0,
@@ -23166,6 +23103,7 @@ for (const v of document.querySelectorAll(".view")) {
   }, { passive: true });
 }
 
+let settingsLoad = Promise.resolve(); // show()'s read of Settings, for openSettingsAt
 async function show(v) {
   // a built-in page a plugin's page replaces (magpie.page.replaces) opens that
   v = magpie.replacing?.(v) || v;
@@ -23224,7 +23162,7 @@ async function show(v) {
   // Routing's accounts show their windows as the Usage page read them
   // (#1833): what is kept, read in an ordinary way, never an asked read
   if (v === "routing" && (!quotas || Date.now() - quotasAt > 60e3)) loadQuotas();
-  if (v === "settings") loadSettings().then(back, statusErr);
+  if (v === "settings") (settingsLoad = loadSettings()).then(back, statusErr);
   if (v === "plugins") window.loadPlugins?.()?.then(back);
   syncTitle();
   syncURL();
@@ -23366,6 +23304,8 @@ async function openSettingsAt(e, tab, row) {
   if (!await show("settings")) return;
   if (setQuery) { $("#setQ").value = ""; searchSettings(""); }
   setSetTab(tab, true);
+  // a selector: the row as drawn from the page's read
+  if (typeof row == "string") row = await settingsLoad.then(() => $(row), () => null);
   if (!row) return;
   if (go) { row.scrollIntoView({ block: "center" }); arrived($("#view-settings")); }
   row.classList.remove("flash");

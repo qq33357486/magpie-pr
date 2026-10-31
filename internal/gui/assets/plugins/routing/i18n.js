@@ -2,6 +2,8 @@
 // kernel adds them to i18n.js's (magpie.strings).
 magpie.strings({
   zh: {
+    "Each session's context window": "各会话的上下文窗口",
+    "Show this session's newest request": "显示这个会话最新的请求",
     "Its plugin sent this request itself, so magpie can't split its time": "此请求由插件自行发出，magpie 无法拆分它的耗时",
     "Claude Code sent this request itself, so magpie can't split its time": "此请求由 Claude Code 自行发出，magpie 无法拆分它的耗时",
     "magpie is masking this request before routing it (Settings › Privacy), so who takes it isn't picked yet.": "magpie 正在给这个请求脱敏（设置 › 隐私），脱敏完才路由，所以还没选出由谁处理。",
@@ -579,6 +581,7 @@ magpie.strings({
     "{who} answered this conversation last, but it is no longer one to route to.": "此会话上次由 {who} 回答，但它已不可路由。",
     "{who} answered this conversation last, but the group goes in order and {first}, ahead of it, is ready again, so turn {n} goes back to {first}.": "此会话上次由 {who} 回答，但该组按顺序路由，排在它前面的 {first} 已恢复可用，所以第 {n} 轮回到 {first}。",
     "{who}, a fallback, answered this conversation last, but the provider's own {first} is ready again, so turn {n} goes back to it.": "此会话上次由备用 {who} 回答，但提供商自己的 {first} 已恢复可用，所以第 {n} 轮回到它。",
+    "{who} took this conversation while {first}, listed ahead of it in the group, couldn't; {first} is ready again, so turn {n} goes back to it.": "此会话由 {who} 接手，当时组里排在它前面的 {first} 无法处理；{first} 已恢复可用，所以第 {n} 轮回到它。",
     "{who}, a fallback, answered this conversation last. The provider's own {first} is ready again, but Stays is Strict, which never moves a conversation, so it stays on the fallback; new conversations go to {first}.": "此会话上次由备用 {who} 回答。提供商自己的 {first} 已恢复可用，但会话保持设为严格，从不移动会话，所以它留在备用上；新会话会走 {first}。",
     "{who} answered this conversation last, but the vendor then read only {r} tokens of it from its cache and wrote {w} — not worth staying for.": "此会话上次由 {who} 回答，但当时厂商只从缓存读取了 {r} tokens、写入了 {w} tokens，不值得保留。",
     "{who} answered this conversation {d} ago, longer than the 5 minutes a vendor keeps a prompt cached — so routing decides afresh.": "此会话 {d}前由 {who} 回答，已超过厂商缓存提示词的 5 分钟，路由重新决定。",
@@ -627,6 +630,8 @@ magpie.strings({
     "Open Folder": "打开文件夹",
   },
   "zh-TW": {
+    "Each session's context window": "各會話的上下文視窗",
+    "Show this session's newest request": "顯示這個會話最新的請求",
     "Its plugin sent this request itself, so magpie can't split its time": "此請求由外掛自行發出，magpie 無法拆分它的耗時",
     "Claude Code sent this request itself, so magpie can't split its time": "此請求由 Claude Code 自行發出，magpie 無法拆分它的耗時",
     "magpie is masking this request before routing it (Settings › Privacy), so who takes it isn't picked yet.": "magpie 正在為這個請求脫敏（設定 › 隱私），脫敏完才路由，所以還沒選出由誰處理。",
@@ -1204,6 +1209,7 @@ magpie.strings({
     "{who} answered this conversation last, but it is no longer one to route to.": "此會話上次由 {who} 回答，但它已不可路由。",
     "{who} answered this conversation last, but the group goes in order and {first}, ahead of it, is ready again, so turn {n} goes back to {first}.": "此會話上次由 {who} 回答，但該群組按順序路由，排在它前面的 {first} 已恢復可用，所以第 {n} 輪回到 {first}。",
     "{who}, a fallback, answered this conversation last, but the provider's own {first} is ready again, so turn {n} goes back to it.": "此會話上次由備用 {who} 回答，但供應商自己的 {first} 已恢復可用，所以第 {n} 輪回到它。",
+    "{who} took this conversation while {first}, listed ahead of it in the group, couldn't; {first} is ready again, so turn {n} goes back to it.": "此會話由 {who} 接手，當時群組裡排在它前面的 {first} 無法處理；{first} 已恢復可用，所以第 {n} 輪回到它。",
     "{who}, a fallback, answered this conversation last. The provider's own {first} is ready again, but Stays is Strict, which never moves a conversation, so it stays on the fallback; new conversations go to {first}.": "此會話上次由備用 {who} 回答。供應商自己的 {first} 已恢復可用，但會話保持設為嚴格，從不移動會話，所以它留在備用上；新會話會走 {first}。",
     "{who} answered this conversation last, but the vendor then read only {r} tokens of it from its cache and wrote {w} — not worth staying for.": "此會話上次由 {who} 回答，但當時廠商只從快取讀取了 {r} tokens、寫入了 {w} tokens，不值得保留。",
     "{who} answered this conversation {d} ago, longer than the 5 minutes a vendor keeps a prompt cached — so routing decides afresh.": "此會話 {d}前由 {who} 回答，已超過廠商快取提示詞的 5 分鐘，路由重新決定。",
@@ -1252,6 +1258,8 @@ magpie.strings({
     "Open Folder": "打開資料夾",
   },
   ja: {
+    "Each session's context window": "セッションごとのコンテキストウィンドウ",
+    "Show this session's newest request": "このセッションの最新のリクエストを表示",
     "Its plugin sent this request itself, so magpie can't split its time": "このリクエストはプラグインが自ら送信したため、magpie では時間の内訳を出せません",
     "Claude Code sent this request itself, so magpie can't split its time": "このリクエストは Claude Code が自ら送信したため、magpie では時間の内訳を出せません",
     "magpie is masking this request before routing it (Settings › Privacy), so who takes it isn't picked yet.": "magpie はルーティングの前にこのリクエストをマスクしています（設定 › プライバシー）。誰が処理するかはまだ決まっていません。",
@@ -1827,6 +1835,7 @@ magpie.strings({
     "{who} answered this conversation last, but it is no longer one to route to.": "この会話に前回応答したのは {who} ですが、もうルーティング対象ではありません。",
     "{who} answered this conversation last, but the group goes in order and {first}, ahead of it, is ready again, so turn {n} goes back to {first}.": "この会話に前回応答したのは {who} ですが、このグループは順番どおりにルーティングし、その前にある {first} が再び使えるため、ターン {n} は {first} に戻ります。",
     "{who}, a fallback, answered this conversation last, but the provider's own {first} is ready again, so turn {n} goes back to it.": "この会話に前回応答したのは代替の {who} ですが、プロバイダー自身の {first} が再び使えるため、ターン {n} はそちらに戻ります。",
+    "{who} took this conversation while {first}, listed ahead of it in the group, couldn't; {first} is ready again, so turn {n} goes back to it.": "この会話は、グループでその前にある {first} が受けられなかったため {who} が引き継ぎました。{first} が再び使えるため、ターン {n} はそちらに戻ります。",
     "{who}, a fallback, answered this conversation last. The provider's own {first} is ready again, but Stays is Strict, which never moves a conversation, so it stays on the fallback; new conversations go to {first}.": "この会話に前回応答したのは代替の {who} です。プロバイダー自身の {first} は再び使えますが、維持が「厳格」で会話を移さないため、代替のままです。新しい会話は {first} に行きます。",
     "{who} answered this conversation last, but the vendor then read only {r} tokens of it from its cache and wrote {w} — not worth staying for.": "この会話に前回応答したのは {who} ですが、そのときベンダーがキャッシュから読んだのは {r} トークン、書き込んだのは {w} トークンだけでした — 留まる価値はありません。",
     "{who} answered this conversation {d} ago, longer than the 5 minutes a vendor keeps a prompt cached — so routing decides afresh.": "この会話に {who} が応答したのは {d} 前で、ベンダーがプロンプトをキャッシュする 5 分を超えています — そのためルーティングを新たに決めます。",
@@ -1877,6 +1886,8 @@ magpie.strings({
     "Open Folder": "フォルダを開く",
   },
   de: {
+    "Each session's context window": "Kontextfenster jeder Sitzung",
+    "Show this session's newest request": "Die neueste Anfrage dieser Sitzung zeigen",
     "Its plugin sent this request itself, so magpie can't split its time": "Diese Anfrage hat die Erweiterung selbst gesendet, daher kann magpie ihre Zeit nicht aufschlüsseln",
     "Claude Code sent this request itself, so magpie can't split its time": "Diese Anfrage hat Claude Code selbst gesendet, daher kann magpie ihre Zeit nicht aufschlüsseln",
     "magpie is masking this request before routing it (Settings › Privacy), so who takes it isn't picked yet.": "magpie maskiert diese Anfrage vor der Weiterleitung (Einstellungen › Datenschutz), daher steht noch nicht fest, wer sie übernimmt.",
@@ -2452,6 +2463,7 @@ magpie.strings({
     "{who} answered this conversation last, but it is no longer one to route to.": "{who} hat diese Unterhaltung zuletzt beantwortet, kommt aber für die Weiterleitung nicht mehr in Frage.",
     "{who} answered this conversation last, but the group goes in order and {first}, ahead of it, is ready again, so turn {n} goes back to {first}.": "{who} hat diese Unterhaltung zuletzt beantwortet, aber die Gruppe geht der Reihe nach vor und {first}, das davor steht, ist wieder bereit, daher geht Runde {n} zurück an {first}.",
     "{who}, a fallback, answered this conversation last, but the provider's own {first} is ready again, so turn {n} goes back to it.": "{who}, ein Ersatz, hat diese Unterhaltung zuletzt beantwortet, aber {first} des Anbieters selbst ist wieder bereit, daher geht Runde {n} dorthin zurück.",
+    "{who} took this conversation while {first}, listed ahead of it in the group, couldn't; {first} is ready again, so turn {n} goes back to it.": "{who} hat diese Unterhaltung übernommen, als {first}, in der Gruppe davor, sie nicht annehmen konnte; {first} ist wieder bereit, daher geht Runde {n} dorthin zurück.",
     "{who}, a fallback, answered this conversation last. The provider's own {first} is ready again, but Stays is Strict, which never moves a conversation, so it stays on the fallback; new conversations go to {first}.": "{who}, ein Ersatz, hat diese Unterhaltung zuletzt beantwortet. {first} des Anbieters selbst ist wieder bereit, aber Bleibt steht auf Strikt, das eine Unterhaltung nie verschiebt, daher bleibt sie beim Ersatz; neue Unterhaltungen gehen an {first}.",
     "{who} answered this conversation last, but the vendor then read only {r} tokens of it from its cache and wrote {w} — not worth staying for.": "{who} hat diese Unterhaltung zuletzt beantwortet, aber der Anbieter hat damals nur {r} Token davon aus seinem Cache gelesen und {w} hineingeschrieben – das lohnt das Bleiben nicht.",
     "{who} answered this conversation {d} ago, longer than the 5 minutes a vendor keeps a prompt cached — so routing decides afresh.": "{who} hat diese Unterhaltung vor {d} beantwortet, länger als die 5 Minuten, die ein Anbieter einen Prompt im Cache hält – daher entscheidet die Weiterleitung neu.",

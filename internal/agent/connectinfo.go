@@ -236,7 +236,7 @@ func (a *Agent) changedAt(files []string, reads func() string) time.Time {
 	sum := sha256.Sum256([]byte(reads()))
 	digest := hex.EncodeToString(sum[:8])
 	key := a.ID + ".started"
-	was, at, ok := strings.Cut(stashLoad()[key], " ")
+	was, at, ok := strings.Cut(stashShared()[key], " ")
 	n, err := strconv.ParseInt(at, 10, 64)
 	if ok && err == nil && was == digest {
 		return time.Unix(0, n)

@@ -153,7 +153,7 @@ func morphIn(at place) *Agent {
 				return edit.SetYAML(path, edit.KV{Path: "llm.model", Value: v})
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(ownOptions("", cur["model"]), viaMagpie("morph", magpieID+"/")...)
+				return append(ownOptions("", cur["model"]), viaMagpieShared("morph", magpieID+"/")...)
 			},
 		}, {
 			// llm.reasoning_effort; unset, morph sends none

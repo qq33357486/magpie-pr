@@ -389,7 +389,7 @@ func openClawAt(at place) *Agent {
 		}
 		c := gjson.ParseBytes(s)
 		var was openClawWas
-		if b := stashLoad()[keyWas]; b != "" {
+		if b := stashShared()[keyWas]; b != "" {
 			json.Unmarshal([]byte(b), &was)
 		} else if !ours(c) {
 			m := c.Get(openClawModel)
@@ -478,7 +478,7 @@ func openClawAt(at place) *Agent {
 				return patch([]edit.KV{{Path: openClawModel, Value: v}}, nil)
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(openClawOwn(keyWas, cur["model"]), viaMagpie("openclaw", magpieID+"/")...)
+				return append(openClawOwn(keyWas, cur["model"]), viaMagpieShared("openclaw", magpieID+"/")...)
 			},
 		}},
 	}, path)
@@ -489,7 +489,7 @@ func openClawAt(at place) *Agent {
 // which magpie can't list.
 func openClawOwn(keyWas, cur string) []Option {
 	var was openClawWas
-	json.Unmarshal([]byte(stashLoad()[keyWas]), &was)
+	json.Unmarshal([]byte(stashShared()[keyWas]), &was)
 	var out []Option
 	for _, m := range []string{openClawPrimary(gjson.ParseBytes(was.Model)), cur} {
 		if m == "" || prefixed(m) || slices.ContainsFunc(out, func(o Option) bool { return o.Value == m }) {

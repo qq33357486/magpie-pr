@@ -177,7 +177,7 @@ func kimiWroteKey(path string) string { return "kimi:" + path + ":wrote" }
 
 func kimiWrote(path string) map[string]map[string]string {
 	out := map[string]map[string]string{}
-	if v := stashLoad()[kimiWroteKey(path)]; v != "" {
+	if v := stashShared()[kimiWroteKey(path)]; v != "" {
 		json.Unmarshal([]byte(v), &out)
 	}
 	return out
@@ -361,7 +361,7 @@ func kimiIn(at place) *Agent {
 				return dropMagpie()
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(kimiOwnOptions(path, cur["model"]), viaMagpie("kimi", magpieID+"/")...)
+				return append(kimiOwnOptions(path, cur["model"]), viaMagpieShared("kimi", magpieID+"/")...)
 			},
 		}},
 	}, path)

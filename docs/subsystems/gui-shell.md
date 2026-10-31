@@ -496,6 +496,18 @@ take it from one that was routed. Requests that come meanwhile still fly on
 the stage, without a caption of their own. With several
 conversations sending at once it used to follow the newest and jump between
 them (qiang2040 on Discord, `routing-concurrent-hold.test.cjs`).
+While two or more sessions send at once, a block for each sits under the
+context window card (`renderCtxSessions`), so the card never moves when one
+comes or goes. Each shows its session's newest reading,
+keyed as the card's own line of prompts is (`sessionKey`, else the
+conversation), named by the agent's title for it (`sessionName`), else
+its folder's last level, never its id alone. A session is live while a
+request of it is under way or its newest is within 15 minutes of the newest
+request; at most six show, the newest session first, and a block keeps its
+place while the sessions take turns. The block of the request the card
+tells of is lit (`aria-pressed`); a click picks that session's newest
+request. The card's footer names the session by its title too (tjhhhh on
+Discord, `routing-ctx-sessions.test.cjs`).
 
 The Plugins page updates the npm search-results section when a search answers,
 leaving suggested plugin cards in place so a click begun before the answer still

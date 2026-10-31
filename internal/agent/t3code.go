@@ -508,7 +508,7 @@ func t3CodexBaseOf(args string) string {
 func t3Stashed(key string) bool {
 	stashMu.Lock()
 	defer stashMu.Unlock()
-	return stashLoad()[key] != ""
+	return stashShared()[key] != ""
 }
 
 // t3Tokens is T3 Code's tokenizeCliArgs (packages/shared/src/cliArgs.ts),
