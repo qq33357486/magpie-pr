@@ -46,7 +46,7 @@ func init() {
 		return agy(home).Launch()
 	}
 	// a Copilot CLI signed in inside a running distro (#723)
-	provider.CopilotWSLHomes = copilotWSLHomes
+	provider.CopilotWSLDirs = copilotWSLDirs
 	// the Codex app's app-server is restarted when magpie becomes Codex's
 	// provider for its used-up ChatGPT account, and when it stops being it;
 	// and when Codex is connected or disconnected, or its route otherwise
@@ -87,7 +87,12 @@ func codexAppRoute() (route string, out, known bool) {
 	defer filememo.Hold()()
 	home, _ := homes()
 	a := codex(home)
-	if _, err := os.ReadFile(a.Path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	// opened, not read: a config.toml of 1.5 MB (Codex keeps every
+	// project's trust level in it) read whole every 3s was 1.55 GB of a
+	// live magpie's 33 GB in 53 minutes; the keys below come from filememo
+	if f, err := os.Open(a.Path); err == nil {
+		f.Close()
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return "", false, false
 	}
 	out = a.AppOut != nil && a.AppOut()
@@ -1109,7 +1114,7 @@ func opencode(home, cfg string) *Agent {
 // distro's variables, aren't read; OpenChamber, a Windows app, isn't there.
 func opencodeIn(at place) *Agent {
 	return openCodeLike(at, "opencode", "OpenCode", "opencode", "opencode",
-		filepath.Join(at.home, ".config", "opencode"), filepath.Join(at.home, ".local", "share", "opencode", "auth.json"),
+		at.join(".config", "opencode"), at.join(".local", "share", "opencode", "auth.json"),
 		[]string{"opencode"}, "oc")
 }
 
@@ -1117,7 +1122,7 @@ func opencodeIn(at place) *Agent {
 // MIMOCODE_HOME isn't read there.
 func mimocodeIn(at place) *Agent {
 	return openCodeLike(at, "mimocode", "MiMo Code", "mimocode", "mimo",
-		filepath.Join(at.home, ".config", "mimocode"), filepath.Join(at.home, ".local", "share", "mimocode", "auth.json"),
+		at.join(".config", "mimocode"), at.join(".local", "share", "mimocode", "auth.json"),
 		[]string{"mimocode"}, "mimo")
 }
 
@@ -1194,7 +1199,7 @@ func piDir(at place) string {
 			return d
 		}
 	}
-	return filepath.Join(at.home, ".pi", "agent")
+	return at.join(".pi", "agent")
 }
 
 // homeDir is the folder an agent's variable names, "~" and "~/…" expanded
@@ -1435,7 +1440,7 @@ func goose(home, cfg string) *Agent { return gooseIn(here(home), cfg) }
 // layout and its custom provider names the gateway as the distro reaches
 // it, with the key it takes from there.
 func gooseIn(at place, cfg string) *Agent {
-	path := filepath.Join(cfg, "goose", "config.yaml")
+	path := filepath.Join(at.open(filepath.Join(cfg, "goose")), "config.yaml")
 	if runtime.GOOS == "windows" && at.spell == nil {
 		if app := appdir.Getenv("APPDATA"); app != "" {
 			path = filepath.Join(app, "Block", "goose", "config", "config.yaml")
@@ -1671,8 +1676,8 @@ func crush(home, cfg string) *Agent {
 // place for it.
 func crushIn(at place) *Agent {
 	// Crush's data file is in Linux's place there too
-	return crushAt(at, filepath.Join(at.home, ".config", "crush", "crush.json"),
-		filepath.Join(at.home, ".local", "share", "crush", "crush.json"))
+	return crushAt(at, at.join(".config", "crush", "crush.json"),
+		at.join(".local", "share", "crush", "crush.json"))
 }
 
 // crushAt is Crush with its config at path and its data file at data,

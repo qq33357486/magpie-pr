@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -9,7 +9,19 @@ import { fileURLToPath } from "node:url";
 
 const installer = fileURLToPath(new URL("./public/install.sh", import.meta.url));
 
-function install(t, { termux = true, arch = "aarch64", override = false, prefixOnly = false, missing = false, corrupt = false, desktop = false, github = false, args = [], env: extra = {}, tamper = "", libs = desktop, cli = !desktop, distro = "ID=ubuntu\nID_LIKE=debian\n", sessions = [], login = "" } = {}) {
+// systemPath: a folder of links to what the script runs, without sudo, for
+// a computer that has none
+function systemPath(dir) {
+  const sys = join(dir, "sys");
+  mkdirSync(sys, { recursive: true });
+  for (const n of ["sh", "dash", "bash", "sed", "head", "tr", "grep", "cut", "mktemp", "rm", "mkdir", "install", "cat", "sha256sum", "shasum", "ls", "rmdir", "mv", "ln", "chmod", "env", "perl"]) {
+    const w = spawnSync("sh", ["-c", `command -v ${n}`], { encoding: "utf8" }).stdout.trim();
+    if (w.startsWith("/")) symlinkSync(w, join(sys, n));
+  }
+  return sys;
+}
+
+function install(t, { termux = true, arch = "aarch64", override = false, prefixOnly = false, missing = false, corrupt = false, desktop = false, github = false, args = [], env: extra = {}, tamper = "", libs = desktop, cli = !desktop, distro = "ID=ubuntu\nID_LIKE=debian\n", sessions = [], login = "", tty = false, uid = 1000, sudo = true, pmFails = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "magpie-install-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const tools = join(dir, "tools");
@@ -47,6 +59,26 @@ id=\${INSTALL_LOGIN%% *} type=\${INSTALL_LOGIN#* }
 [ "$1 $3 $4 $5" = "show-user -p Display --value" ] && [ -n "$id" ] && echo "$id"
 [ "$1 $2 $3 $4 $5" = "show-session $id -p Type --value" ] && [ -n "$id" ] && echo "$type"
 exit 0
+`, { mode: 0o755 });
+  // the package managers, sudo and id: each call logged ("sudo" before a
+  // command sudo ran), and an install puts the libraries in ldconfig's
+  // cache unless it fails
+  const pmLog = join(dir, "pm-log");
+  const ldTxt = join(tools, "ldconfig.txt").replaceAll("\\", "/");
+  for (const pm of ["apt-get", "dnf", "pacman", "zypper"]) {
+    writeFileSync(join(tools, pm), `#!/bin/sh
+echo "\${INSTALL_SUDO:+sudo }${pm} $*" >> "$INSTALL_PM_LOG"
+case "$*" in update|"") exit 0 ;; esac
+[ -z "$INSTALL_PM_FAILS" ] || exit 100
+[ "$INSTALL_PM_FAILS_ONCE" != 1 ] || [ -e "$INSTALL_PM_LOG.once" ] || { : > "$INSTALL_PM_LOG.once"; exit 100; }
+printf '\\tlibgtk-3.so.0 (libc6,x86-64) => /usr/lib/libgtk-3.so.0\\n\\tlibwebkit2gtk-4.1.so.0 (libc6,x86-64) => /usr/lib/libwebkit2gtk-4.1.so.0\\n' >> "${ldTxt}"
+`, { mode: 0o755 });
+  }
+  if (sudo) writeFileSync(join(tools, "sudo"), `#!/bin/sh
+INSTALL_SUDO=1 exec "$@"
+`, { mode: 0o755 });
+  writeFileSync(join(tools, "id"), `#!/bin/sh
+case "$1" in -u) echo ${uid};; *) echo tester;; esac
 `, { mode: 0o755 });
   const dataDirs = join(dir, "data-dirs");
   for (const s of sessions) {
@@ -88,7 +120,12 @@ else fs.writeFileSync(args[args.indexOf("-o") + 1], tamper && url.startsWith(tam
     XDG_DATA_DIRS: dataDirs,
     INSTALL_LOGIN: login,
     MAGPIE_OS_RELEASE: join(dir, "os-release"),
-    PATH: tools + ":" + process.env.PATH,
+    // no terminal unless a test gives it one: the run never reaches a real
+    // sudo or package manager
+    MAGPIE_TTY: tty ? join(dir, "tty") : join(dir, "no-tty"),
+    INSTALL_PM_LOG: pmLog,
+    INSTALL_PM_FAILS: pmFails ? "1" : "",
+    PATH: tools + ":" + (sudo ? process.env.PATH : systemPath(dir)),
     XDG_CONFIG_HOME: join(dir, "config"),
     XDG_DATA_HOME: join(dir, "share"),
     INSTALL_REQUESTS: requests,
@@ -100,13 +137,14 @@ else fs.writeFileSync(args[args.indexOf("-o") + 1], tamper && url.startsWith(tam
     MAGPIE_MIRROR: "",
     ...extra,
   };
+  if (tty) writeFileSync(join(dir, "tty"), "");
   const read = (p) => (existsSync(p) ? readFileSync(p, "utf8") : "");
   const run = (args) => {
     rmSync(requests, { force: true });
     rmSync(env.INSTALL_ARGS, { force: true });
     const result = spawnSync("sh", [installer, ...args], { env, encoding: "utf8" });
     const calls = read(env.INSTALL_ARGS).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
-    return { ...result, requests: read(requests), calls };
+    return { ...result, requests: read(requests), calls, pm: read(pmLog) };
   };
   return { ...run(args), run, bin, file, payload, home, env, share: env.XDG_DATA_HOME, config: env.XDG_CONFIG_HOME };
 }
@@ -410,4 +448,71 @@ test("--tui and MAGPIE_CLI=1 install the terminal build on a desktop with WebKit
   assert.equal(help.status, 0);
   assert.match(help.stdout, /--gui .*desktop app/);
   assert.match(help.stdout, /--tui .*terminal build/);
+});
+
+// shuhai on Discord: "为什么不能帮用户直接装好？" A desktop without
+// WebKitGTK 4.1 has it installed with the distribution's package manager,
+// through sudo, when someone is at the terminal (curl | sh: /dev/tty, not
+// stdin), and then gets the desktop app. Anything else keeps the terminal
+// build and the command.
+test("a desktop without WebKitGTK at a terminal has it installed through sudo and gets the desktop app", (t) => {
+  for (const [distro, want] of [
+    ["ID=ubuntu\nID_LIKE=debian\n", "sudo apt-get install -y libwebkit2gtk-4.1-0"],
+    ["ID=fedora\n", "sudo dnf install -y webkit2gtk4.1"],
+    ["ID=endeavouros\nID_LIKE=arch\n", "sudo pacman -S --needed --noconfirm webkit2gtk-4.1"],
+    ['ID="opensuse-tumbleweed"\nID_LIKE="opensuse suse"\n', "sudo zypper --non-interactive install libwebkit2gtk-4_1-0"],
+  ]) {
+    const r = linux(t, { libs: false, tty: true, distro, env: { DISPLAY: ":0" } });
+    assert.ok(r.gui, distro + r.stdout);
+    assert.equal(r.pm, want + "\n", distro);
+    // what and why, said before sudo asks
+    assert.match(r.stdout, new RegExp(`needs WebKitGTK 4\\.1, so installing it: ${want.replace(/[.+]/g, "\\$&")} \\(sudo may ask for your password\\)`));
+    assert.doesNotMatch(r.stdout, /aren't installed|didn't work|run this again/);
+  }
+});
+
+test("as root the package manager runs without sudo", (t) => {
+  const r = linux(t, { libs: false, tty: true, uid: 0, env: { DISPLAY: ":0" } });
+  assert.ok(r.gui);
+  assert.equal(r.pm, "apt-get install -y libwebkit2gtk-4.1-0\n");
+  assert.doesNotMatch(r.stdout, /sudo/);
+});
+
+test("with no terminal, no sudo, an unknown distribution or a failed install, the terminal build and the command", (t) => {
+  for (const opts of [
+    { tty: false },
+    { tty: true, sudo: false },
+    { tty: true, distro: "ID=void\n" },
+    { tty: true, distro: "ID=nixos\n" },
+  ]) {
+    const r = linux(t, { libs: false, env: { DISPLAY: ":0" }, ...opts });
+    assert.equal(r.gui, false, JSON.stringify(opts));
+    assert.equal(r.pm, "", JSON.stringify(opts));
+    assert.doesNotMatch(r.stdout, /installing it|didn't work/);
+    assert.match(r.stdout, /has a desktop, but the desktop app needs GTK 3 and WebKitGTK 4\.1, which aren't installed/);
+  }
+  const f = linux(t, { libs: false, tty: true, pmFails: true, env: { DISPLAY: ":0" } });
+  assert.equal(f.gui, false);
+  // apt read its lists again and tried once more
+  assert.equal(f.pm, "sudo apt-get install -y libwebkit2gtk-4.1-0\nsudo apt-get update\nsudo apt-get install -y libwebkit2gtk-4.1-0\n");
+  assert.match(last(f, 5), /installing GTK 3 and WebKitGTK 4\.1 for the desktop app didn't work/);
+  assert.match(last(f, 4), /sudo apt install libwebkit2gtk-4\.1-0/);
+});
+
+test("a stale apt list is read again and the install tried once more", (t) => {
+  const r = linux(t, { libs: false, tty: true, env: { DISPLAY: ":0", INSTALL_PM_FAILS_ONCE: "1" } });
+  assert.ok(r.gui, r.stdout);
+  assert.equal(r.pm, "sudo apt-get install -y libwebkit2gtk-4.1-0\nsudo apt-get update\nsudo apt-get install -y libwebkit2gtk-4.1-0\n");
+});
+
+test("--gui installs WebKitGTK at a terminal too; --tui, MAGPIE_CLI=1 and a headless computer never do", (t) => {
+  const g = linux(t, { libs: false, tty: true, args: ["--gui"] });
+  assert.ok(g.gui);
+  assert.equal(g.pm, "sudo apt-get install -y libwebkit2gtk-4.1-0\n");
+  assert.doesNotMatch(g.stdout, /aren't installed/);
+  for (const opts of [{ args: ["--tui"], env: { DISPLAY: ":0" } }, { cli: true, env: { DISPLAY: ":0" } }, {}]) {
+    const r = linux(t, { libs: false, tty: true, ...opts });
+    assert.equal(r.gui, false, JSON.stringify(opts));
+    assert.equal(r.pm, "", JSON.stringify(opts));
+  }
 });

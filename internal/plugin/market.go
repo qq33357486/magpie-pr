@@ -478,8 +478,15 @@ func npmAsk(ctx context.Context, name string) (NPM, error) {
 	// a @magpie-community package npm doesn't have yet, or has an older
 	// version of, is as the community repo's dist branch has it, which
 	// magpie installs it from (dist.go)
-	if d, ok := distInfo(ctx, name); ok && (latestErr != nil || update.Newer(d.Version, info.Version)) {
+	d, ok, derr := distInfo(ctx, name)
+	if ok && (latestErr != nil || update.Newer(d.Version, info.Version)) {
 		info, latestErr = d, nil
+	}
+	// npm not having it is "missing" only once the dist branch has
+	// said it hasn't either: the branch not read leaves it unknown, and
+	// it is asked again, not kept as missing for an hour (ferock)
+	if errors.Is(latestErr, errNotFound) && derr != nil {
+		latestErr = derr
 	}
 	info.Weekly = weekly
 	if latestErr != nil {
@@ -635,8 +642,12 @@ func Readme(ctx context.Context, name string) (Page, error) {
 	if err != nil {
 		// one npm doesn't have (yet): the README the community repo's
 		// dist branch packed with it
-		if d := distPkg(ctx, name); d != nil && d.Readme != "" {
+		d, derr := distPkg(ctx, name)
+		if d != nil && d.Readme != "" {
 			return Page{Readme: d.Readme}, nil
+		}
+		if errors.Is(err, errNotFound) && derr != nil {
+			return Page{}, derr // not known to be missing
 		}
 		return Page{}, err
 	}

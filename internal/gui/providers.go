@@ -2298,6 +2298,12 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		writeJSON(rw, st)
 		keepProviders(st) // as a provider action's: the panel's switch draws it
 	})
+	// whether a Claude subscription's runs are Claude Code's interactive
+	// mode or -p, and why -p, for the Claude Code provider page; read when
+	// the page opens, not in /api/providers' polls
+	mux.HandleFunc("GET /api/claude/mode", func(rw http.ResponseWriter, r *http.Request) {
+		writeJSON(rw, gateway.ClaudeModeNow())
+	})
 	// Codex's background app-server, left on the account before a switch
 	// or on the model list before a change (the Agents row's Restart):
 	// restarting it (Codex 0.162's sessions on it reconnect, after a turn

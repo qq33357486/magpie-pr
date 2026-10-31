@@ -314,6 +314,9 @@ type Agent struct {
 	// wslVersion is an agent in a WSL distro's CLI's version, as the
 	// distro's probe asked it (wslKind.version); "" when not asked
 	wslVersion string
+	// unreached, for an agent in a WSL distro, is why its folder there
+	// can't be opened: a link the distro couldn't resolve (distro.open)
+	unreached error
 	// move, when set, points the agent's config at to where it names the
 	// gateway at from: an address of WSL's that changed (#1013).
 	move func(from, to string) error

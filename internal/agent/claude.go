@@ -136,8 +136,8 @@ func claudeCloud(at place, path string) string {
 	}
 	dir := filepath.Dir(path)
 	global := filepath.Join(dir, ".claude.json")
-	if dir == filepath.Join(at.home, ".claude") {
-		global = filepath.Join(at.home, ".claude.json")
+	if dir == at.join(".claude") {
+		global = at.join(".claude.json")
 	}
 	for _, k := range agentenv.ClaudeProviders {
 		set := false

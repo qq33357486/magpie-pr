@@ -394,6 +394,9 @@ const (
 	// *_PROXY variables, the system's) didn't take the connection (#381) —
 	// nothing reached the vendor, so the next one is asked, and nobody rests
 	failProxy = "proxy"
+	// failOffline: this computer had no network (offline.go) — nothing
+	// reached the vendor, so the next one is asked, and nobody rests
+	failOffline = "offline"
 	// failOverflow: the conversation is too long for the member's model
 	// (#700) — another member, with room for it, is asked, and nobody rests
 	failOverflow = "overflow"
@@ -1139,6 +1142,11 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		// the model and the account are as good as they were, and answer
 		// as soon as the switch is off
 		return Rest{Why: why, Status: status, By: "off", Until: now}
+	}
+	if offlineFailure(c, status, body) {
+		// this computer had no network: the provider is as good as it
+		// was, and is asked again once the network is back (offline.go)
+		return Rest{Why: failOffline, Status: status, By: "off", Until: now}
 	}
 	if status == http.StatusBadGateway && bytes.Contains(body, []byte(openCodeBare)) {
 		// OpenCode's bare 400 (openCodeBareRefusal, #3740) is about the

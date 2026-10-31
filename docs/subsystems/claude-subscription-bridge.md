@@ -152,11 +152,59 @@ talks to it as it talks to `-p`: stream-json in and out. The helper:
   this command (`leaveSignals`), since it re-raised SIGTERM and killed the
   helper before it could end Claude Code and remove its files. Windows
   ends a run by killing its job, which no handler hears, so a helper
-  starting removes such folders over an hour old (`dropLeftImages`);
+  starting removes such folders, and the tap's, over an hour old
+  (`dropLeft`);
 - tails `<CLAUDE_CONFIG_DIR>/projects/*/<session>.jsonl` and tells each
-  row as `-p` would (`translator`): assistant messages whole (no partial
-  stream), a tool's result, a `<synthetic>` API error as the turn's error
-  result with its `rate_limit_info`, and `turn_duration` as the result.
+  row as `-p` would (`translator`): assistant messages whole, a tool's
+  result, a `<synthetic>` API error as the turn's error result with its
+  `rate_limit_info`, and `turn_duration` as the result;
+- streams each reply as it comes, through the tap (`tap.go`, `tap.js`).
+
+The transcript has a message only once it ends, so the tap streams it.
+Claude Code is a Bun program, and Bun loads first what `BUN_OPTIONS`
+names with `--preload`. The helper writes `tap.js` and an empty
+`tap.jsonl` to a `magpie-claude-tap-*` temp folder, and starts Claude
+Code with `BUN_OPTIONS` set to the user's own value followed by
+`--preload <tap.js>`, and `MAGPIE_CLAUDE_TAP` set to the file. Claude Code
+in WSL gets both through `WSLENV`, with the paths as WSL reads them, and
+not the user's Windows `BUN_OPTIONS`. `BUN_OPTIONS` has no quoting, so on
+Windows a path with a space takes its short name. A path that still has
+whitespace gets no tap.
+
+`tap.js` takes itself out of `BUN_OPTIONS`, `process.execArgv` and the
+environment, so nothing Claude Code runs loads it. Claude Code sends its
+API requests through `Bun.FetchSession`, and the tap puts a subclass in
+its place. That subclass calls the real fetch, with the request,
+connection and TLS left as they were, and tees the body of each reply to
+a request with `x-claude-code-request-class: main`, a `/v1/messages` path
+and a `text/event-stream` reply. Claude Code reads one branch as before.
+The tap parses the other and writes one JSON line per event to the file:
+`{s, open}` when a stream starts, `{s, e}` for each event other than
+`ping`, and `{s, end: "done"|"cut"}` when it ends. At load it writes
+`{tap: "on"}`, or `{tap: "none"}` when there is no `FetchSession` to
+replace.
+
+The helper reads the file every time round the tail loop, every 10ms
+while a stream is open, and tells each event as `-p` does: a
+`stream_event` line. Order is kept two ways:
+
+- Before an assistant message `X` from the transcript is told,
+  `tap.before` waits up to 1s (`tapWait`) for a stream with no
+  `message_start` yet to start as `X`. If none does, `X` is told whole,
+  and when its stream comes late it is left out (`dropped`).
+- Before a turn's result, `tap.settle` waits up to 1s for the open
+  streams to end, and ends the rest there.
+
+A stream cut short gets a `message_stop` with no `message_delta`, as `-p`
+ends such a stream, and the bridge counts it as an attempt and asks
+again. In the bridge, a message that was streamed (`streamed`, by id) has
+its whole rows left out, a late one too. A client's `tool_use` that was
+streamed is marked `told`, so `onCall` doesn't tell it a second time.
+
+A Claude Code that isn't Bun, or doesn't load the tap, writes nothing to
+the file. Its messages are told whole, with no wait, as before. Claude
+Code 2.1.281 on Windows doesn't send through `FetchSession`. 2.1.289 (WSL)
+and 2.1.316 (macOS, Windows) do.
 
 The transcript has a message only once it ends, and Claude Code doesn't
 always write the message calling a client's tool before that call is
@@ -200,6 +248,20 @@ The gateway's log says which (`claude: this run is -p: …`,
 `claudePrintWhy`), and the helper's own line when it becomes `-p` (below)
 is logged from the run's stderr (`lockedWriter`).
 
+The Claude Code provider page says under its accounts whether runs are
+the interactive mode (TUI) or `-p` (CLI), with why when every run is
+`-p`, and opens what tells the two apart (`claudeModeRow` in app.js, drawn by
+claudemode.js, which it loads with its first read).
+It reads `GET /api/claude/mode` (`gateway.ClaudeModeNow`) as the page
+opens, kept 30 seconds and dropped when the setting changes, not in
+`/api/providers`' polls. What decides it for every run on the machine is
+`claudeMachineWhy`, whose codes the page words: `off` (the setting),
+`broken` (failed to start lately), `wsl-home`, `missing` (no Claude Code
+found), `os` and `no-shim`. What only a request decides (safeguards and
+the rest above) the page names as still `-p`; the WSL folder Windows
+can't read is per account, so the page doesn't know it. A subscription
+with Only switch serves nothing through magpie and shows no row.
+
 A turn the interactive mode can't take ends the run, and the next starts
 anew: a turn with an image known by its URL, one that takes earlier turns
 back, an effort change. A run given up on (`letGo`) is not taken back, since the
@@ -208,7 +270,8 @@ interactive mode can't answer a control request to stop a turn.
 If the interactive Claude Code doesn't start or show its prompt within 45
 seconds (`claudetui.ReadyWait`), or asks how to sign in (`signIn`: a
 Claude Code signed in for `-p` only, as in a container given
-`CLAUDE_CODE_OAUTH_TOKEN`), the helper becomes `claude -p` with the same
+`CLAUDE_CODE_OAUTH_TOKEN`), or shows its first-run notes (`firstRun`:
+"Security notes", a config folder whose onboarding isn't done), the helper becomes `claude -p` with the same
 arguments (`printMode`, `exec` on the same pid, its input still unread),
 so the turn is answered all the same, and it writes
 `<cache>/magpie/claude-tui-broken`, which holds the number of failed

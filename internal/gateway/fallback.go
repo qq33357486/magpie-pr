@@ -1959,6 +1959,12 @@ type holdWriter struct {
 	// upstreamKeys are the headers of the vendor's reply heardUpstream put
 	// in header (#4145)
 	upstreamKeys []string
+
+	// over, when another candidate stands behind the try, reads what
+	// passes before its answer begins for a refusal to hand to the next
+	// one in the same stream (refusalHandover); handedOver says it was
+	over       *refusalHandover
+	handedOver bool
 }
 
 // onLoop sets what is told of a loop before it ends the reply (reask),
@@ -2053,6 +2059,9 @@ func (h *holdWriter) Write(b []byte) (int, error) {
 	if h.looped != "" || h.relooped {
 		return 0, errLooped
 	}
+	if h.handedOver {
+		return 0, errHandedOver
+	}
 	if h.status == 0 {
 		h.writeHeader(http.StatusOK)
 	}
@@ -2087,6 +2096,14 @@ func (h *holdWriter) Write(b []byte) (int, error) {
 			}
 		}
 	}
+	if h.overActive() {
+		// nothing said yet: a refusal is handed to the next candidate
+		h.passOver(b)
+		if h.handedOver {
+			return 0, errHandedOver
+		}
+		return len(b), nil
+	}
 	if h.first.first != 0 || h.passing {
 		h.refusalAfter(b)
 	}
@@ -2097,6 +2114,9 @@ func (h *holdWriter) Write(b []byte) (int, error) {
 	n, err := h.held.Write(b)
 	if h.stream && h.failure == 0 {
 		h.scan()
+	}
+	if h.handedOver {
+		return 0, errHandedOver
 	}
 	return n, err
 }
@@ -2477,6 +2497,8 @@ type keptAlive struct {
 	// it asked; streams, whether it asked for a stream
 	told    time.Time
 	streams bool
+	// codex, whether Codex sent the request (fromCodex)
+	codex bool
 	// Only opted-in Claude cache reporting can defer initial keepalives.
 	// Selection releases it before process startup; expiry keeps the stream alive.
 	cacheReportUntil time.Time
@@ -2492,6 +2514,18 @@ type keptAlive struct {
 // Discord). Each try was held for up to holdThinking or holdLead by
 // itself, so a second held try, or a group's pause (#1418), went past it.
 var agentQuietMost = 4 * time.Minute
+
+// compactsInStream says a refusal of a request too large to be taken —
+// past the vendor's byte cap (413) or the model's window (tooLong) — goes
+// to the agent in its stream though none was sent yet: Codex compacts on
+// response.failed context_length_exceeded alone. Told by status, it takes
+// a 413 for an unexpected status and a 400 context_length_exceeded for an
+// invalid request, and either ends the turn with nothing compacted, a
+// compaction refused the same way failing outright (codex-rs codex-api
+// api_bridge.rs). Another client keeps the status.
+func (a *keptAlive) compactsInStream(status int, msg string) bool {
+	return a.codex && a.streams && a.proto == provider.Responses && (status == http.StatusRequestEntityTooLarge || tooLong(status, msg))
+}
 
 // tooQuiet says whether a Responses agent that has had no event of its
 // reply would go agentQuietMost without one after d more.
@@ -2613,11 +2647,21 @@ func mayRefuse(ev []byte) bool {
 var refusalSays = [][]byte{
 	[]byte(`error`), []byte(`failed`), []byte(`refusal`), []byte(`filter`),
 	[]byte(`incomplete`), []byte(`finishReason`), []byte(`blockReason`),
+	[]byte(`"sensitive"`), // Zhipu's finish_reason
 }
 
 // flow lets a held stream through, and what follows it.
 func (h *holdWriter) flow() {
+	if h.handedOver {
+		return
+	}
 	h.pass()
+	if h.overActive() {
+		held := bytes.Clone(h.held.Bytes())
+		h.held.Reset()
+		h.passOver(held)
+		return
+	}
 	h.sent(h.held.Bytes())
 	h.w.Write(h.held.Bytes())
 	h.held.Reset()
@@ -3037,11 +3081,17 @@ var filterReasons = map[string]string{
 	// agent took it for a failed sign-in (sweanng on Discord, ZCode:
 	// "Provider authentication failed", reason=auth_failed status=403)
 	"content_policy_rejected": "content_policy_rejected",
-	"SAFETY":                  "safety",
-	"PROHIBITED_CONTENT":      "safety",
-	"BLOCKLIST":               "safety",
-	"SPII":                    "safety",
-	"IMAGE_SAFETY":            "safety",
+	// Zhipu's finish_reason when its filter stops GLM's reply, and
+	// DashScope's error code when Alibaba's stops Qwen's: both after the
+	// reasoning went to the agent, which had it end there (yhwangl on X)
+	"sensitive":              "sensitive",
+	"data_inspection_failed": "data_inspection_failed",
+	"DataInspectionFailed":   "data_inspection_failed",
+	"SAFETY":                 "safety",
+	"PROHIBITED_CONTENT":     "safety",
+	"BLOCKLIST":              "safety",
+	"SPII":                   "safety",
+	"IMAGE_SAFETY":           "safety",
 }
 
 // finishFailed is what a 200 stream the vendor ends with finish_reason
@@ -3449,6 +3499,12 @@ func errorCode(raw json.RawMessage) string {
 // risk"), cyber_policy and the like (#248).
 var policyCode = regexp.MustCompile(`^[a-z]+_policy$`)
 
+// sensitiveCode is how Volcengine Ark's errors say its filter refused the
+// input or the reply: InputTextSensitiveContentDetected,
+// OutputTextSensitiveContentDetected, SensitiveContentDetected and the
+// image and video kinds of them.
+var sensitiveCode = regexp.MustCompile(`SensitiveContentDetected$`)
+
 // flaggedWords are how OpenAI's invalid_prompt says the prompt was held to
 // its usage policy, rather than malformed.
 var flaggedWords = regexp.MustCompile(`(?i)flagged|usage polic`)
@@ -3496,8 +3552,11 @@ func policyRefusal(raw []byte) (string, bool) {
 	switch r, ok := filterReasons[c]; {
 	case ok:
 		return note(r)
-	case policyCode.MatchString(c):
+	case policyCode.MatchString(c), sensitiveCode.MatchString(c):
 		return note(c)
+	case c == "1301" && strings.Contains(msg, "敏感"):
+		// Zhipu's: "系统检测到输入或生成内容可能包含不安全或敏感内容"
+		return note("sensitive")
 	case c == "invalid_prompt" && flaggedWords.MatchString(msg):
 		return note(c)
 	case strings.TrimSpace(msg) == highRiskRefusal:

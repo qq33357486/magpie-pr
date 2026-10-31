@@ -5,9 +5,12 @@
 # writable) and links the magpie command into ~/.local/bin.
 # Linux: puts magpie in ~/.local/bin — the desktop app (with a menu entry)
 # when GTK 3 and WebKitGTK 4.1 are installed, the terminal build otherwise.
-# A computer with a desktop but without them gets the terminal build and
-# the command that installs them on its distribution; --gui and --tui
-# choose instead (MAGPIE_CLI=1 is --tui). Nothing is asked.
+# A computer with a desktop but without them has WebKitGTK 4.1 installed
+# with its package manager (apt-get, dnf, pacman or zypper, through sudo,
+# which asks for the password) when someone is at the terminal, then gets
+# the desktop app; with no terminal, no sudo or a failed install, the
+# terminal build and the command that installs them. --gui and --tui
+# choose instead (MAGPIE_CLI=1 is --tui).
 # Termux: installs the Android terminal build into $PREFIX/bin.
 # Every download is checked against the release's SHA-256.
 #
@@ -22,8 +25,8 @@
 #                      list and its SHA-256 still come from usemagpie.ai,
 #                      never from the mirror, so a file the mirror changed is
 #                      refused.
-#   --gui              the desktop app, on Linux even before its libraries are
-#                      installed (it opens once they are)
+#   --gui              the desktop app, on Linux even when its libraries can't
+#                      be installed now (it opens once they are)
 #   --tui              the terminal build (TUI, web UI and CLI), on Linux even
 #                      with a desktop (MAGPIE_CLI=1 does the same)
 #   --uninstall        takes off what this script put there: the magpie
@@ -65,7 +68,7 @@ while [ $# -gt 0 ]; do
         "  --proxy <url>      http://, https://, socks5:// or socks5h:// proxy for the downloads (or MAGPIE_PROXY=)" \
         "  --mirror <prefix>  GitHub download mirror put before the release's github.com URL (or MAGPIE_MIRROR=);" \
         "                     the SHA-256 is still checked against $site's" \
-        "  --gui              Linux: the desktop app, even before GTK 3 and WebKitGTK 4.1 are installed" \
+        "  --gui              Linux: the desktop app, even when GTK 3 and WebKitGTK 4.1 can't be installed now" \
         "  --tui              Linux: the terminal build (TUI, web UI, CLI), even on a desktop (or MAGPIE_CLI=1)" \
         "  --uninstall        take off what this script installed; your settings in ~/.config/magpie stay" \
         "  --purge            with --uninstall: also disconnect every agent and delete magpie's settings (magpie uninstall)"
@@ -248,9 +251,13 @@ has_desktop() {
   return 1
 }
 
-# gui_packages: the command that installs the desktop app's libraries on
-# this distribution, or nothing when it isn't one we know
+# gui_packages: sets pkg, the package that brings WebKitGTK 4.1 (and GTK 3
+# with it) on this distribution, pm, the package manager this script runs
+# to install it, and hint, the command to tell the user; each is empty when
+# the distribution isn't one we know (pm too where installing it isn't
+# quick: Gentoo builds it from source)
 gui_packages() {
+  pkg='' pm='' hint=''
   id='' like=''
   # MAGPIE_OS_RELEASE: another os-release, for the installer's tests
   rel=${MAGPIE_OS_RELEASE:-/etc/os-release}
@@ -262,19 +269,56 @@ gui_packages() {
   for d in $id $like; do
     case "$d" in
       debian|ubuntu|linuxmint|pop|elementary|zorin|kali|raspbian|deepin|uos)
-        echo "sudo apt install libwebkit2gtk-4.1-0"; return ;;
+        pm=apt-get pkg=libwebkit2gtk-4.1-0 hint="sudo apt install libwebkit2gtk-4.1-0" ;;
       fedora|rhel|centos|rocky|almalinux|nobara|openeuler|anolis)
-        echo "sudo dnf install webkit2gtk4.1"; return ;;
+        pm=dnf pkg=webkit2gtk4.1 hint="sudo dnf install webkit2gtk4.1" ;;
       arch|manjaro|endeavouros|cachyos|garuda)
-        echo "sudo pacman -S --needed webkit2gtk-4.1"; return ;;
+        pm=pacman pkg=webkit2gtk-4.1 hint="sudo pacman -S --needed webkit2gtk-4.1" ;;
       opensuse*|suse|sles)
-        echo "sudo zypper install libwebkit2gtk-4_1-0"; return ;;
+        pm=zypper pkg=libwebkit2gtk-4_1-0 hint="sudo zypper install libwebkit2gtk-4_1-0" ;;
       void)
-        echo "sudo xbps-install -S libwebkit2gtk41"; return ;;
+        hint="sudo xbps-install -S libwebkit2gtk41" ;;
       gentoo)
-        echo "sudo emerge net-libs/webkit-gtk:4.1"; return ;;
+        hint="sudo emerge net-libs/webkit-gtk:4.1" ;;
+      *) continue ;;
     esac
+    return 0
   done
+}
+
+# install_gui_libs: installs WebKitGTK 4.1 with the distribution's package
+# manager, saying first what and why, when someone is at the terminal to
+# answer sudo's password (or the script runs as root). curl | sh gives the
+# script the pipe for stdin, so the terminal is /dev/tty, and every command
+# here reads it. Fails, and the caller falls back to the terminal build,
+# with no terminal, no sudo, a package manager we don't run, or a failed
+# install. MAGPIE_TTY: another terminal, for the installer's tests.
+install_gui_libs() {
+  tried=
+  gui_packages
+  [ -n "$pm" ] && command -v "$pm" >/dev/null 2>&1 || return 1
+  tty=${MAGPIE_TTY:-/dev/tty}
+  # a subshell: a redirection that fails would end the script itself
+  (: <"$tty") 2>/dev/null || return 1
+  as=
+  if [ "$(id -u 2>/dev/null)" != 0 ]; then
+    command -v sudo >/dev/null 2>&1 || return 1
+    as=sudo
+  fi
+  case "$pm" in
+    apt-get) set -- apt-get install -y "$pkg" ;;
+    dnf) set -- dnf install -y "$pkg" ;;
+    pacman) set -- pacman -S --needed --noconfirm "$pkg" ;;
+    zypper) set -- zypper --non-interactive install "$pkg" ;;
+  esac
+  tried=1
+  say "the desktop app needs WebKitGTK 4.1, so installing it: ${as:+$as }$*${as:+ (sudo may ask for your password)}"
+  # apt's package lists can be missing (a fresh system) or out of date
+  # (a 404 for a version gone from the mirror): read them again and retry
+  if $as "$@" <"$tty"; then :
+  elif [ "$pm" = apt-get ] && $as apt-get update <"$tty" && $as "$@" <"$tty"; then :
+  else return 1; fi
+  has_gui_libs
 }
 
 case "$(uname -m)" in
@@ -289,11 +333,14 @@ case "$os" in
     file="magpie-cli-linux-$arch"
     case "$build" in
       gui) ! musl || die "the desktop app is built for glibc and can't run on musl (Alpine): install the terminal build with --tui"
-           file="magpie-linux-$arch" ;;
+           file="magpie-linux-$arch"
+           has_gui_libs || install_gui_libs || true ;;
       tui) ;;
       *) if musl; then :
          elif has_gui_libs; then file="magpie-linux-$arch"
-         elif has_desktop; then nolibs=1; fi ;;
+         elif has_desktop; then
+           if install_gui_libs; then file="magpie-linux-$arch"; else nolibs=1; fi
+         fi ;;
     esac ;;
 esac
 
@@ -380,16 +427,18 @@ esac
 # the desktop app without what it needs: what installs it, said last so it
 # is what the user reads
 if [ "$file" = "magpie-linux-$arch" ] && ! has_gui_libs; then
-  pkgs=$(gui_packages)
+  gui_packages
   say ""
-  say "the desktop app needs GTK 3 and WebKitGTK 4.1, which aren't installed; it opens once they are:"
-  say "  ${pkgs:-install WebKitGTK 4.1 (webkit2gtk 4.1) from your distribution}"
+  if [ -n "${tried:-}" ]; then say "installing GTK 3 and WebKitGTK 4.1 didn't work (see above); the desktop app opens once they are installed:"
+  else say "the desktop app needs GTK 3 and WebKitGTK 4.1, which aren't installed; it opens once they are:"; fi
+  say "  ${hint:-install WebKitGTK 4.1 (webkit2gtk 4.1) from your distribution}"
 elif [ -n "${nolibs:-}" ]; then
-  pkgs=$(gui_packages)
+  gui_packages
   say ""
-  say "this computer has a desktop, but the desktop app needs GTK 3 and WebKitGTK 4.1, which aren't installed,"
+  if [ -n "${tried:-}" ]; then say "this computer has a desktop, but installing GTK 3 and WebKitGTK 4.1 for the desktop app didn't work (see above),"
+  else say "this computer has a desktop, but the desktop app needs GTK 3 and WebKitGTK 4.1, which aren't installed,"; fi
   say "so the terminal build was installed. For the desktop app, install them and run this again:"
-  say "  ${pkgs:-install WebKitGTK 4.1 (webkit2gtk 4.1) from your distribution}"
+  say "  ${hint:-install WebKitGTK 4.1 (webkit2gtk 4.1) from your distribution}"
   say "  curl -fsSL $site/install.sh | sh"
   say "or install the desktop app now and the libraries after: curl -fsSL $site/install.sh | sh -s -- --gui"
 fi

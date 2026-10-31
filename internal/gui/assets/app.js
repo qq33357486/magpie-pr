@@ -12230,14 +12230,19 @@ const signingOpen = () => signing?.state === "waiting" || signing?.state === "in
 let justAdded = ""; // the account that just came in, to greet it
 const accountToolsOpen = new Set(); // rows whose ⋯ is open
 
+// hasLogins: the subscription has an account signed in already
+const hasLogins = (agent) => (providers?.providers || []).some((p) => p.account?.agent === agent && p.account.logins?.length);
+
 // o: { user } signing that account in again, { proxy } the one picked to
 // sign in through (#1663): none picked, the one the account's requests go
 // through
 async function startSignIn(agent, risky, site, o = {}) {
   if (signingOpen()) api("signin/" + signing.id + "/cancel", {}).catch(() => {});
   if (signing?.behind) api("signin/" + signing.behind + "/cancel", {}).catch(() => {});
-  // an account Google may suspend is added only once that is said
-  if (subOf(agent)?.risk && !risky) {
+  // an account Google may suspend is added only once that is said, and
+  // said once: not again beside accounts already signed in, nor to sign
+  // one of them in again (the owner: "这里就不要显示可能被封禁了")
+  if (subOf(agent)?.risk && !risky && !o.user && !hasLogins(agent)) {
     signing = { agent, state: "risk", forUser: o.user, picked: o.proxy };
     renderProviders();
     return;
@@ -13280,6 +13285,8 @@ function renderAccounts(a, p) {
     cb.onchange = () => accountAction("provider/switchonly", { id: p.id, switchOnly: cb.checked }, cb.checked ? on : off);
     list.append(el("div", "switch-only", only));
   }
+  // whether these accounts' runs are Claude Code's interactive mode or -p
+  if (p && a.agent === "claude" && !p.switchOnly) list.append(claudeModeRow());
   // how a pool ends at its caps (plugins#349)
   const capped = (l) => accountCapOf(p, l.user) || windowCapsOf(p, l.user);
   if (p && (ls.some(capped) || p.capStop || p.capCareful)) {
@@ -13310,6 +13317,22 @@ function renderAccounts(a, p) {
   }
   arrangeAccountRows(list, p);
   return list;
+}
+
+// claudeModeRow: TUI or claude -p, and why; /api/claude/mode kept 30s, the
+// row drawn by claudemode.js, loaded with its first read
+let claudeMode = null, claudeModeAt = 0, claudeModeRead = null;
+function claudeModeRow() {
+  const box = el("div", "claude-mode");
+  box.hidden = true;
+  const draw = () => window.claudeModeDraw(box, claudeMode);
+  if (claudeMode && Date.now() - claudeModeAt < 30000) draw();
+  else {
+    claudeModeRead ||= Promise.all([api("claude/mode"), import("./claudemode.js")]).then(([m]) => { claudeMode = m; claudeModeAt = Date.now(); })
+      .finally(() => { claudeModeRead = null; });
+    claudeModeRead.then(draw, () => box.remove());
+  }
+  return box;
 }
 
 // renderCodexDaemon: Codex's background app-server, on the account before a
@@ -21630,7 +21653,7 @@ function renderReplies(s, keep) {
     el("div", "sub wraps", t("A Claude subscription runs Claude Code as a person does, in its interactive mode, where the plan counts a request at about half of what -p uses. Off runs it as claude -p")));
   const uval = el("div", "val");
   uval.append(segs([["off", t("Off")], ["on", t("On")]], s.claudePrintMode ? "off" : "on",
-    (v) => savePrefs({ ...keep, claudePrintMode: v === "off" })));
+    (v) => { claudeMode = null; savePrefs({ ...keep, claudePrintMode: v === "off" }); }));
   u.append(uwho, uval);
   box.append(r, l, f, k, c, u);
 }

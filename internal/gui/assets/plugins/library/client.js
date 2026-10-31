@@ -90,11 +90,13 @@ magpie.plugin("library", (ctx) => {
     });
   }
 
-  // the hub's mark: magpie's bird, the one server each agent is given
-  // (the owner didn't like a made-up glyph for it)
+  // the hub's mark: magpie's bird, the one server each agent is given,
+  // its tail three lines out to three servers (the owner's pick, 10-31)
   function hubMark() {
     const g = el("span", "lib-glyph lib-hubmark");
-    g.innerHTML = '<svg viewBox="0 0 44 44" aria-hidden="true"><use href="#bird"/></svg>';
+    g.innerHTML = '<svg viewBox="0 0 44 44" aria-hidden="true"><use href="#bird" clip-path="url(#bird-notail)"/>'
+      + '<g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M13.5 24C9 21 7 15 4.5 9.5"/><path d="M13 25C9 24 6 21.5 3 19.5"/><path d="M12.5 26.2C9 27 6.5 28 4 29.5"/></g>'
+      + '<g fill="currentColor"><circle cx="4" cy="8.5" r="2.6"/><circle cx="2.8" cy="19.2" r="2.6"/><circle cx="3.6" cy="29.8" r="2.6"/></g></svg>';
     return g;
   }
   function glyph(d, cls = "lib-glyph") {

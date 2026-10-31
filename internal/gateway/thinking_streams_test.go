@@ -283,15 +283,15 @@ func TestDeepSeekRefusalHoldsATrustedMemberAgain(t *testing.T) {
 			t.Fatalf("warm-up %d: %d %s (a %d, b %d)", i+1, code, body, a.n, b.n)
 		}
 	}
-	// trusted, the refusal's reasoning went through and ended the reply
-	// with it, the try recorded done/200 as itspig's was; a reply that has
-	// begun is nobody's to take back, so nobody else is asked
-	if code, body := sendTo(s, "/v1/messages", claudeCodeAsk); code != 200 || !strings.Contains(body, "The user is asking") || strings.Contains(body, "from b") || a.n != thoughtCleanMost+1 || b.n != 0 {
+	// trusted, the refusal's reasoning went through as it came, and the
+	// refusal after it, with nothing yet said, went to the next member,
+	// whose answer follows the reasoning in the same stream (refusalHandover)
+	if code, body := sendTo(s, "/v1/messages", claudeCodeAsk); code != 200 || !strings.Contains(body, "The user is asking") || !strings.Contains(body, "from b") || a.n != thoughtCleanMost+1 || b.n != 1 {
 		t.Fatalf("trusted refusal: %d %s (a %d, b %d)", code, body, a.n, b.n)
 	}
 	// and the member is held again: the same refusal now goes to the next
 	// member, its reasoning with nothing shown
-	if code, body := sendTo(s, "/v1/messages", claudeCodeAsk); code != 200 || !strings.Contains(body, "from b") || strings.Contains(body, "The user is asking") || a.n != thoughtCleanMost+2 || b.n != 1 {
+	if code, body := sendTo(s, "/v1/messages", claudeCodeAsk); code != 200 || !strings.Contains(body, "from b") || strings.Contains(body, "The user is asking") || a.n != thoughtCleanMost+2 || b.n != 2 {
 		t.Fatalf("held again: %d %s (a %d, b %d)", code, body, a.n, b.n)
 	}
 	if r := lastRoute(s); len(r.Tries) != 2 || r.Tries[0].Fail != failRefused || r.Tries[1].Fail != "" {

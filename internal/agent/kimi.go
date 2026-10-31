@@ -45,14 +45,14 @@ func kimiDir(at place) (dir string, legacy bool) {
 	if d := at.getenv("KIMI_CODE_HOME"); d != "" {
 		return d, false
 	}
-	code := filepath.Join(at.home, ".kimi-code")
+	code := at.join(".kimi-code")
 	if at.isDir(code) {
 		return code, false
 	}
 	if d := at.getenv("KIMI_SHARE_DIR"); d != "" {
 		return d, true
 	}
-	if d := filepath.Join(at.home, ".kimi"); at.isDir(d) {
+	if d := at.join(".kimi"); at.isDir(d) {
 		return d, true
 	}
 	return code, false
