@@ -331,9 +331,11 @@ func pluginsState(ctx context.Context, w Windows) pluginsJSON {
 		if file, only := plugin.Middleware(plugin.Target(e.Spec)); file != "" {
 			j.IsMiddleware, j.MiddlewareOnly = true, only
 		}
-		if j.IsMiddleware || j.IsGateway {
-			j.OptionsExample = plugin.OptionsExample(plugin.Target(e.Spec))
-		}
+		// every plugin's, a provider plugin's too (Devin's keepalive,
+		// plugins#592): its row offers the same options editor. Not only
+		// one whose providers are known, as those are named in the
+		// background and the button would come and go with them
+		j.OptionsExample = plugin.OptionsExample(plugin.Target(e.Spec))
 		if file, _ := plugin.Agent(plugin.Target(e.Spec)); file != "" {
 			j.IsAgent = true
 			j.InMagpieOnly = plugin.InMagpieOnly(plugin.Target(e.Spec))
@@ -548,8 +550,13 @@ func pluginMarketState(ctx context.Context, w Windows) pluginMarketJSON {
 	info := plugin.Info(ctx, names)
 	m := pluginMarketJSON{Listings: []pluginListingJSON{}, State: st}
 	for _, l := range ls {
-		n := info[l.Package]
-		m.Listings = append(m.Listings, pluginListingJSON{Listing: l, NPM: &n})
+		j := pluginListingJSON{Listing: l}
+		// npm not answered for (or the dist branch unread) is unknown:
+		// no npm, not an empty one that reads as Coming soon
+		if n, ok := info[l.Package]; ok {
+			j.NPM = &n
+		}
+		m.Listings = append(m.Listings, j)
 	}
 	listingIcons(m.Listings, 3*time.Second)
 	for i, e := range m.State.Plugins {

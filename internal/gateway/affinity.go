@@ -114,8 +114,15 @@ type Affinity struct {
 	// "main" (a provider's fallback answered it, and the provider's own
 	// model is ready again: backToMain), "order" (a later member of a
 	// group routed In order answered it, and a member ahead is ready
-	// again at a new turn: backToFirst), "strict" (Stays: Strict, kept
-	// whatever it is).
+	// again at a new turn: backToFirst), "back" (a member of a group
+	// routed any other way stood in for one listed ahead of it that
+	// couldn't take the conversation, and a member ahead is ready first
+	// at a new turn: backFromStandIn), "credits" (a Codex account gone
+	// onto its credits answered it, set to spend them only after
+	// everything else, and one not on its credits leads: lastBehind),
+	// "busy" (its plugin says the model is busier than settings.BusyLoad
+	// and one that isn't leads, at a new turn: busyBehind),
+	// "strict" (Stays: Strict, kept whatever it is).
 	Why string `json:"why"`
 	// Main is, for a conversation kept strictly on a provider's fallback,
 	// the provider's own key or account that is ready again: it would have
@@ -134,6 +141,11 @@ type stick struct {
 	cacheRead  int
 	cacheWrite int
 	hour       hourCache
+	// stoodIn: it answered while a member the group lists ahead of its
+	// own couldn't take the conversation (standsInFor), or answered it
+	// on after one that had: a stand-in, given back at a new turn once a
+	// member ahead is ready (backFromStandIn). Kept on disk too
+	stoodIn bool
 }
 
 // hourCache is the part of a conversation's prompt the vendor said it keeps
@@ -263,6 +275,9 @@ type savedStick struct {
 	// written for an hour
 	CacheHour   int       `json:"cacheHour,omitempty"`
 	CacheHourAt time.Time `json:"cacheHourAt,omitzero"`
+	// StoodIn is its stoodIn, absent from a file written before it was
+	// kept: such a stick is no stand-in, kept by its cache as it was
+	StoodIn bool `json:"stoodIn,omitempty"`
 }
 
 func sticksPath() string { return filepath.Join(filepath.Dir(provider.Path()), "affinity.json") }
@@ -296,7 +311,7 @@ func stickOf(key string) (stick, bool) {
 			continue
 		}
 		sticks.m[k] = stick{rest: v.Rest, who: v.Who, model: v.Model, effort: v.Effort, turn: v.Turn, at: v.At, cacheRead: v.CacheRead, cacheWrite: v.CacheWrite,
-			hour: hourCache{tokens: v.CacheHour, at: v.CacheHourAt}}
+			hour: hourCache{tokens: v.CacheHour, at: v.CacheHourAt}, stoodIn: v.StoodIn}
 	}
 	st, ok := sticks.m[key]
 	return st, ok
@@ -321,7 +336,7 @@ func saveSticks() {
 	sticks.Lock()
 	for k, st := range sticks.m {
 		if now.Sub(st.at) <= stickKeep {
-			ks = append(ks, kept{k, savedStick{st.rest, st.who, st.model, st.effort, st.turn, st.at, st.cacheRead, st.cacheWrite, st.hour.tokens, st.hour.at}})
+			ks = append(ks, kept{k, savedStick{st.rest, st.who, st.model, st.effort, st.turn, st.at, st.cacheRead, st.cacheWrite, st.hour.tokens, st.hour.at, st.stoodIn}})
 		}
 	}
 	sticks.Unlock()
@@ -568,8 +583,27 @@ func affine(scope, mode string, rotate, spread, inOrder bool, in http.Header, fr
 			m := pl.order[0]
 			a.Main = &m
 		}
+	case at < len(pl.order) && pl.order[at].Reserve > 0:
+		// held back, its provider's accounts at once taken by those
+		// before it (keepAtOnce): asked when they all failed, it keeps no
+		// conversation, which goes back to them whatever it cached
+		// (01huadalang on Discord: a third ZCode account in use at once
+		// had the address banned). Strict, the user's own, keeps it
+		a.Why = "reserve"
 	case pl.order[at].Rest != nil:
 		a.Why = "resting"
+	case lastBehind(pl.order, at):
+		// a Codex account gone onto its credits, which the user set to
+		// spend only after everything else (creditsLast): whatever it
+		// has cached, the conversation goes to one not on its credits,
+		// within a turn too, as that is what the credits would pay for
+		a.Why = "credits"
+	case !a.Within && busyBehind(pl.order, at):
+		// its plugin says the model is busy past the user's BusyLoad,
+		// and one that isn't leads: the next turn goes there rather than
+		// wait in the vendor's queue (axelburks on Discord). Within a
+		// turn it stays, on the reasoning it sealed for the tool loop
+		a.Why = "busy"
 	case !a.Within && backToMain(pl.order, at):
 		// a provider's fallback is its emergency path, not a place a
 		// conversation stays: once one of the provider's own keys or
@@ -593,7 +627,21 @@ func affine(scope, mode string, rotate, spread, inOrder bool, in http.Header, fr
 		// reasoning the later member sealed; Stays: Session or Strict,
 		// the user's own, keep it where it is
 		a.Why = "order"
-	case at > 0 && pl.order[at].Known && pl.order[at].Used >= provider.SpentShareOf(cs[at].p.Routing):
+	case !a.Within && !inOrder && !rotate && mode == "" && st.stoodIn && backFromStandIn(cs, pl.order, at):
+		// a member listed after another, in a group routed Smart or any
+		// way but In order (whose order is the list's: backToFirst) or
+		// In turn (whose next turn goes round), that took the
+		// conversation only as the ones ahead couldn't (a 429, a rest,
+		// an allowance used up: standsInFor) gives it back at its next
+		// turn once routing puts a member ahead of it first again,
+		// whatever it cached: kept by its cache, a Codex session that
+		// fell over to the group's backup in an outage stayed on the
+		// backup after Codex was back (01huadalang on Discord). One
+		// routing put first on its own merits, not standing in, keeps
+		// its cache as before; within a turn it stays, and Stays:
+		// Session or Strict, the user's own, keep it where it is
+		a.Why = "back"
+	case at > 0 && pl.order[at].Known && pl.order[at].Used >= provider.SpentShareOf(cs[at].p.Routing) && !pl.order[at].CreditsFirst:
 		// all but used up, and put behind another: first still — the
 		// one key or account it has (#1016), or every one used up — it
 		// doesn't move
@@ -681,6 +729,48 @@ func backToFirst(cs []candidate, order []Weighed, at int) bool {
 	return member(0) != member(at)
 }
 
+// backFromStandIn says whether, in a group, the one ready first,
+// order[0], is of a member the group lists ahead of the member of the
+// one that answered last, cs[at]: not another key or account of the same
+// member, nor of one listed after it. restLast puts a resting one behind
+// every ready one, so the first is ready only when it isn't resting.
+func backFromStandIn(cs []candidate, order []Weighed, at int) bool {
+	if at <= 0 || at >= len(order) || at >= len(cs) || order[0].Rest != nil || order[0].Aside {
+		return false
+	}
+	return cs[0].place > 0 && cs[0].place < cs[at].place
+}
+
+// standsInFor says whether c, which answered, did so standing in for a
+// member of its group listed ahead of its own: one of the plan's (cs and
+// order, as planned for the request) was resting, or all but used up, as
+// it answered. A failure that has a try go on to the next rests the one
+// that failed (restAfter), so a member ahead that failed this request is
+// resting by then. A member routing put first while the ones ahead of it
+// were ready and had room is no stand-in, whatever the order.
+func standsInFor(c candidate, cs []candidate, order []Weighed) bool {
+	if c.place <= 1 {
+		return false
+	}
+	for _, o := range cs {
+		if o.place <= 0 || o.place >= c.place {
+			continue
+		}
+		if _, resting := restingOf(o); resting {
+			return true
+		}
+		for _, w := range order {
+			if w.ID == o.rest && w.Model == o.model && w.Fixed == o.effort {
+				if w.Rest != nil || w.Known && w.Used >= provider.SpentShareOf(o.p.Routing) && !w.CreditsFirst {
+					return true
+				}
+				break
+			}
+		}
+	}
+	return false
+}
+
 // heldFor is how long after its last answer a conversation still counts as
 // holding the one that answered it: a session whose user is reading or
 // typing is still going.
@@ -739,7 +829,7 @@ func leastHeld(scope, key string, cs []candidate, pl planned, ready bool) ([]can
 	seat := func(c candidate) string { return c.who() + "/" + provider.WithMemberEffort(c.model, c.effort) }
 	best := -1
 	for i, c := range cs {
-		if pl.order[i].Rest != nil || pl.order[i].Aside || standsIn(pl.order, i) || ready && i > 0 && !readyForNew(pl.order, i) {
+		if pl.order[i].Rest != nil || pl.order[i].Aside || standsIn(pl.order, i) || lastBehind(pl.order, i) || busyBehind(pl.order, i) || ready && i > 0 && !readyForNew(pl.order, i) {
 			continue
 		}
 		if best < 0 || held[seat(c)] < held[seat(cs[best])] {
@@ -762,10 +852,10 @@ func leastHeld(scope, key string, cs []candidate, pl planned, ready bool) ([]can
 // readyForNew says whether order[i], behind order[0], is one routing would
 // put a new conversation on: not resting, nor a key for another protocol,
 // nor a fallback while the provider's own model leads, nor used past
-// lowShare.
+// lowShare unless it spends its credits first (Weighed.CreditsFirst).
 func readyForNew(order []Weighed, i int) bool {
 	w := order[i]
-	return w.Rest == nil && !w.Aside && !standsIn(order, i) && !(w.Known && w.Used >= lowShare)
+	return w.Rest == nil && !w.Aside && !standsIn(order, i) && !(w.Known && w.Used >= lowShare && !w.CreditsFirst) && !lastBehind(order, i) && !busyBehind(order, i)
 }
 
 // standsIn says whether order[i] is a provider's fallback while one of the
@@ -778,6 +868,22 @@ func readyForNew(order []Weighed, i int) bool {
 // (01huadalang on Discord, 10-31).
 func standsIn(order []Weighed, i int) bool {
 	return i < len(order) && order[i].Fallback && !order[0].Fallback
+}
+
+// busyBehind says whether order[i] is a model its plugin says is busy
+// (Weighed.Busy) while one that isn't leads: restLast put it behind the
+// ready ones, and spreading conversations or taking turns never brings
+// it forward past them.
+func busyBehind(order []Weighed, i int) bool {
+	return i > 0 && i < len(order) && order[i].Busy > 0 && order[0].Busy == 0
+}
+
+// lastBehind says whether order[i] is a Codex account on its credits set
+// to spend them last (Weighed.CreditsLast) while one that isn't leads:
+// restLast put it behind every such one, and spreading a conversation or
+// taking a turn never brings it forward past them.
+func lastBehind(order []Weighed, i int) bool {
+	return i > 0 && i < len(order) && order[i].CreditsLast && !order[0].CreditsLast
 }
 
 // withLead puts first, for a subagent's conversation nobody has answered
@@ -829,7 +935,7 @@ func spreadsSessions(mode, routing string) bool {
 func after(cs []candidate, pl planned, at int) ([]candidate, planned) {
 	for d := 1; d < len(cs); d++ {
 		i := (at + d) % len(cs)
-		if pl.order[i].Rest != nil || pl.order[i].Aside || standsIn(pl.order, i) {
+		if pl.order[i].Rest != nil || pl.order[i].Aside || standsIn(pl.order, i) || lastBehind(pl.order, i) || busyBehind(pl.order, i) {
 			continue // a turn goes round the keys routed over only
 		}
 		if i > 0 {
@@ -853,6 +959,12 @@ func after(cs []candidate, pl planned, at int) ([]candidate, planned) {
 // building it afresh elsewhere. A reply that reports no usage at all
 // (Input 0) counts as no cache, as it did.
 func answered(key string, c candidate, turn int, u Usage) {
+	answeredStanding(key, c, turn, u, false)
+}
+
+// answeredStanding is answered, with whether c stood in for a member
+// listed ahead of its own (standsInFor).
+func answeredStanding(key string, c candidate, turn int, u Usage, stoodIn bool) {
 	cacheRead, cacheWrite := u.CacheRead, u.CacheWrite
 	if cacheRead == 0 && cacheWrite == 0 {
 		cacheWrite = u.Input
@@ -862,9 +974,13 @@ func answered(key string, c candidate, turn int, u Usage) {
 	var hour hourCache
 	if st, ok := sticks.m[key]; ok && st.who == c.who() && st.model == c.model {
 		hour = st.hour // a cache is the account's, of the model
+		// a stand-in that answers the conversation on is a stand-in
+		// still: the member it stood in for, back and put behind it
+		// meanwhile by routing, is given it once routing puts it first
+		stoodIn = stoodIn || st.stoodIn
 	}
 	hour = hour.after(u, now)
-	sticks.m[key] = stick{rest: c.rest, who: c.who(), model: c.model, effort: c.effort, turn: turn, at: now, cacheRead: cacheRead, cacheWrite: cacheWrite, hour: hour}
+	sticks.m[key] = stick{rest: c.rest, who: c.who(), model: c.model, effort: c.effort, turn: turn, at: now, cacheRead: cacheRead, cacheWrite: cacheWrite, hour: hour, stoodIn: stoodIn}
 	delete(sticks.opening, key)
 	if len(sticks.m) > 4096 {
 		for k, st := range sticks.m {
@@ -911,8 +1027,14 @@ func unanswered(key string, c candidate) {
 // provided encrypted_content. Ensure the value is the unmodified
 // encrypted_content from a previous response."; Azure's (through a relay
 // in front of a deployment, snowshadow) "invalid encrypted summary",
-// which names no item and spells it with spaces.
-var foreignReasoning = regexp.MustCompile(`(?i)invalid_encrypted_content|invalid[ _]encrypted[ _](summary|content)|encrypted[ _]content.{0,80}could not be (verified|decrypted)|could not (decrypt|verify).{0,40}encrypted[ _]content`)
+// which names no item and spells it with spaces; xAI's compaction-blob
+// refusal, as a key relay that proxies Grok hands it back for the
+// reasoning item Codex writes with "content": null beside its
+// encrypted_content (zminds #4412) — "Could not decode the compaction
+// blob", which names no item and says nothing of encrypted content,
+// where the #3392 shaping (xaiBody's) never runs because the relay's
+// host isn't api.x.ai.
+var foreignReasoning = regexp.MustCompile(`(?i)invalid_encrypted_content|invalid[ _]encrypted[ _](summary|content)|encrypted[ _]content.{0,80}could not be (verified|decrypted)|could not (decrypt|verify).{0,40}encrypted[ _]content|could not (decode|decrypt).{0,20}compaction[ _]blob`)
 
 // refusedSeals remembers, per conversation and the key or account that
 // refused it, the sealed reasoning another one wrote. Codex hands every
@@ -1056,6 +1178,110 @@ func withoutCompaction(body []byte) ([]byte, bool) {
 		}
 	}
 	return nil, false
+}
+
+// overflowLearned remembers, per conversation and the provider's model
+// that refused it, how large the request was when the model answered it
+// too long (#3453: a rule sent every request of a conversation to a
+// member whose bridge refused it as too long; another member answered,
+// and the next request tried the first all over again — twice within one
+// turn). An overflow says nothing is wrong with the account — the
+// request was too long for the model — so nobody rests, and the memory
+// is the conversation's, not the member's: another conversation, or a
+// key or account of the model on it, goes to it as before. The next
+// request of the same conversation, grown or unchanged, is refused the
+// same way, the fallback each time spending the member's answer and the
+// agent's wait.
+var overflowLearned = struct {
+	sync.Mutex
+	m map[string]map[string]refusedLong // conversation → provider\x00model → what it refused
+}{m: map[string]map[string]refusedLong{}}
+
+// refusedLong is a request a conversation's member refused as too long:
+// its own bytes as they came, at the time it was refused. A conversation
+// only grows — so what is remembered holds — until its agent compacts
+// it, and one smaller than what was refused may hold now — so what is
+// remembered yields.
+type refusedLong struct {
+	at    time.Time
+	bytes int
+}
+
+// noteOverflow remembers that c's model refused this conversation as too
+// long at size bytes.
+func noteOverflow(key string, c candidate, size int) {
+	now := time.Now()
+	overflowLearned.Lock()
+	defer overflowLearned.Unlock()
+	m := overflowLearned.m[key]
+	if m == nil {
+		m = map[string]refusedLong{}
+		overflowLearned.m[key] = m
+	}
+	m[c.p.ID+"\x00"+c.model] = refusedLong{at: now, bytes: size}
+	if len(overflowLearned.m) > 4096 {
+		for k, m := range overflowLearned.m {
+			old := true
+			for _, r := range m {
+				if now.Sub(r.at) <= stickKeep {
+					old = false
+				}
+			}
+			if old {
+				delete(overflowLearned.m, k)
+			}
+		}
+	}
+}
+
+// forgetOverflow drops what was remembered of c's model refusing this
+// conversation: it has just answered it, whatever its size — the bridge
+// that refused it a moment ago may take it now.
+func forgetOverflow(key string, c candidate) {
+	overflowLearned.Lock()
+	defer overflowLearned.Unlock()
+	m := overflowLearned.m[key]
+	if m == nil {
+		return
+	}
+	delete(m, c.p.ID+"\x00"+c.model)
+	if len(m) == 0 {
+		delete(overflowLearned.m, key)
+	}
+}
+
+// behindOverflow puts, of cs, the members whose models refused this very
+// conversation as too long at no more than size — what it is now, or has
+// grown to since — behind the others, so the member that answered last
+// is asked first instead (#3453). The rule that sends the turn to one of
+// them has been heard (ruleOver has run); the member is still asked when
+// every other member has failed: it is put behind, not out, and when it
+// answers the memory of its refusal is dropped. A request smaller than
+// what was refused — the agent has compacted the conversation — leaves
+// the member where it was.
+func behindOverflow(key string, cs []candidate, pl planned, size int) ([]candidate, planned) {
+	if len(cs) < 2 || len(pl.order) != len(cs) {
+		return cs, pl
+	}
+	// the conversation's map is read under the lock: another request of
+	// the same conversation may be noting or forgetting in it at once
+	overflowLearned.Lock()
+	noted := overflowLearned.m[key]
+	var behind, ready []candidate
+	var behindW, readyW []Weighed
+	for i, c := range cs {
+		if r, ok := noted[c.p.ID+"\x00"+c.model]; ok && size >= r.bytes {
+			behind, behindW = append(behind, c), append(behindW, pl.order[i])
+			continue
+		}
+		ready, readyW = append(ready, c), append(readyW, pl.order[i])
+	}
+	overflowLearned.Unlock()
+	if len(behind) == 0 || len(ready) == 0 {
+		return cs, pl
+	}
+	pl.order = append(readyW, behindW...)
+	return append(ready, behind...), pl
 }
 
 // withoutKinds is a Responses request without its input items of these

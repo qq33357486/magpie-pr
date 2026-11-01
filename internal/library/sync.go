@@ -9,6 +9,7 @@ import (
 
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/mcpauth"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // Result is what a change did to the agents.
@@ -247,7 +248,7 @@ func (l *Library) syncMCP(t *Target, b *backups, res *Result) {
 		hub = nil
 		if l.MCPHub && slices.Contains(a.MCP, HubEntry) && l.server(HubEntry) == nil &&
 			slices.ContainsFunc(l.MCP, func(s *Server) bool { return slices.Contains(s.Agents, id) && inHub(s, id) }) {
-			hub = hubServerFor(t)
+			hub = l.hubServerFor(t)
 		}
 	}
 	hubbed := func(s *Server) bool { return hub != nil && inHub(s, id) }
@@ -500,6 +501,11 @@ type View struct {
 	// the library's (#2679), at HubPath<agent> on the gateway
 	MCPHub  bool   `json:"mcpHub"`
 	HubPath string `json:"hubPath"`
+	// HubNote is what the router says of itself to the agents (settings'
+	// RouterNote), and HubName what it says with none: this computer's
+	// name, to an agent on another computer (gateway.hubWhere)
+	HubNote string `json:"hubNote"`
+	HubName string `json:"hubName"`
 	// CheckDue is set when the skills from GitHub weren't checked for
 	// updates since magpie started, or not for a while: the page checks
 	// them as it shows them (#1449)
@@ -562,7 +568,7 @@ func readView(problems []Problem, glance bool) (*View, error) {
 	// the agents are found once for the whole read: finding them looks
 	// through every agent's folders, in WSL too (#1624)
 	targets, asleep := targetsAsleep(false)
-	v := &View{Agents: []AgentView{}, Servers: []ServerView{}, Skills: []SkillView{}, FoundSkills: []FoundSkill{}, Instructions: l.instructionsView(targets, asleep), Dir: Dir(), Backups: BackupDir(), CopySkills: l.CopySkills, MCPHub: l.MCPHub, HubPath: gateway.HubMCPPath, Partial: glance}
+	v := &View{Agents: []AgentView{}, Servers: []ServerView{}, Skills: []SkillView{}, FoundSkills: []FoundSkill{}, Instructions: l.instructionsView(targets, asleep), Dir: Dir(), Backups: BackupDir(), CopySkills: l.CopySkills, MCPHub: l.MCPHub, HubPath: gateway.HubMCPPath, HubNote: settings.Shared().RouterNote, HubName: gateway.HostName(), Partial: glance}
 	for _, t := range targets {
 		av := AgentView{ID: t.Agent.ID, Name: t.Agent.Name, Icon: t.Agent.Icon, Instructions: t.Instructions, Skills: t.Skills,
 			SkillsAlso: t.SkillsAlso, Note: t.Note, MCPVia: t.MCPVia, ProjectSkills: ProjectSkillsDir(t.Agent.ID), ProjectMCP: ProjectMCPFile(t.Agent.ID),
@@ -678,6 +684,10 @@ func readView(problems []Problem, glance bool) (*View, error) {
 		}
 		if o, ok := ccSwitchOrigin(s); ok {
 			o.Path = ""
+			sv.Origin = o.String()
+		} else if o, ok := lockOrigin(s); ok {
+			// one the skills CLI installed: the row says where its lock
+			// says it came from (#4645)
 			sv.Origin = o.String()
 		}
 		if m, ok := readMeta(skillDir(s.Name)); ok {

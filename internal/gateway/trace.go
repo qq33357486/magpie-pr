@@ -323,8 +323,10 @@ type Weighed struct {
 	// own list of models leaving it out (#474)
 	Barred bool `json:"barred,omitempty"`
 	// Held: left out as the gateway key asking may not use its account or
-	// key (#905)
-	Held bool `json:"held,omitempty"`
+	// key (#905), or a routing group it was reached through is held to
+	// other accounts (Group.Accounts): HeldBy names that group
+	Held   bool   `json:"held,omitempty"`
+	HeldBy string `json:"heldBy,omitempty"`
 	// Capped: left out as held at the usage cap the user set on the
 	// account, this cap in percent; Used is then its fullest window's
 	// share, CapBack when the last window at or past it renews
@@ -341,6 +343,18 @@ type Weighed struct {
 	// credits, and is let spend them: all but used up, it still answers,
 	// and goes before those used up with nothing to go on with
 	Credits bool `json:"credits,omitempty"`
+	// CreditsLast: such an account, on its credits now, that the user set
+	// to spend them only after everything else: tried after every
+	// candidate not on its credits (restLast)
+	CreditsLast bool `json:"creditsLast,omitempty"`
+	// Busy: the load its plugin reported for the model, a percent over
+	// the user's settings.BusyLoad, so it was tried after every ready
+	// candidate that isn't (restLast)
+	Busy float64 `json:"busy,omitempty"`
+	// CreditsFirst: such an account (Credits) the user set to spend its
+	// credits before another account: all but used up, it keeps its
+	// place, new conversations and kept ones included
+	CreditsFirst bool `json:"creditsFirst,omitempty"`
 	// Rank: its place in its provider's own list of accounts or keys, the
 	// order the provider's page shows and a drag sets (#217); routing may
 	// weigh them in another
@@ -348,6 +362,10 @@ type Weighed struct {
 	// Aside: a key made for another protocol than the keys routed over,
 	// tried only after them
 	Aside bool `json:"aside,omitempty"`
+	// Reserve: an account or key held back, its provider's accounts at
+	// once (provider.AtOnce, this many) taken by those before it in the
+	// user's order: tried, aside, only after they all failed
+	Reserve int `json:"reserve,omitempty"`
 	// NoURL: its keys are all set to this protocol, which its provider has
 	// no URL for, so it was tried on the URLs it has (#1702)
 	NoURL provider.Protocol `json:"noURL,omitempty"`
@@ -479,7 +497,7 @@ type planned struct {
 
 func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from provider.Protocol) Weighed {
 	w := Weighed{ID: c.rest, Provider: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Model: c.model, Fixed: c.effort, Fast: c.fast,
-		Routing: p.Routing, Fallback: fallback, Shared: c.rest != p.ID, Rank: c.rank, NoURL: c.noURL}
+		Routing: p.Routing, Fallback: fallback, Shared: c.rest != p.ID, Rank: c.rank, NoURL: c.noURL, Reserve: c.reserve}
 	switch {
 	case c.p.Account != nil:
 		w.Kind, w.Who, w.Agent, w.Plan = "account", c.p.Account.User, c.p.Account.Agent, c.p.Account.Plan
@@ -498,7 +516,7 @@ func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from 
 		w.Kind = "provider"
 	}
 	if l, ok := wg.lefts[c.allowanceKey()]; ok {
-		w.Known, w.Used, w.Renews, w.Pace, w.Credits = true, l.used, l.renews, l.pace, l.credits
+		w.Known, w.Used, w.Renews, w.Pace, w.Credits, w.CreditsFirst = true, l.used, l.renews, l.pace, l.credits, l.first
 		if !l.fullest.IsZero() {
 			ur := l.fullest
 			w.UsedRenews = &ur

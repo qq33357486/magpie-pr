@@ -1,8 +1,10 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // Settings › Models › Replies: Claude Code's interactive mode is On, says
-// what it saves and that Off is -p, and Off saves claudePrintMode with the
-// rest of the settings kept, the page not moved by the click. In English,
-// Chinese, Japanese and German, 1100 and 420 wide.
+// what it saves, that On never runs -p and Off always does; Off saves
+// claudePrintMode with the rest of the settings kept, the page not moved
+// by the click, and On turns -p back off. There is no third choice: the
+// interactive mode on never falls back to -p (the owner, 11-01). In
+// English, Chinese, Japanese and German, 1100 and 420 wide.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -81,11 +83,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert(fit, `${part} fits at ${width}`);
       }
       assert.equal(await page.locator("#replyList").evaluate((l) => l.previousElementSibling.textContent.trim()), w.head);
-      const on = row.locator(".segs button", { hasText: w.on });
-      const off = row.locator(".segs button", { hasText: w.off });
+      const seg = (text) => row.locator(".segs button", { hasText: new RegExp(`^${text}$`) });
+      const on = seg(w.on), off = seg(w.off);
+      assert.equal(await row.locator(".segs button").count(), 2, "On and Off, nothing between");
       assert.equal(await on.getAttribute("aria-pressed"), "true", "On at first");
 
       const before = await page.evaluate(() => [scrollX, scrollY, document.scrollingElement.scrollTop]);
+      await row.evaluate((e) => { e.dataset.drawn = "before"; });
       const b = await off.boundingBox();
       await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
       await page.waitForFunction(() => document.querySelector("#claudeTuiRow"));
@@ -95,7 +99,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(saved[0].claudeLeanPrompt, false, "the row beside it kept");
       assert.equal(saved[0].redact, true, "the rest kept");
       assert.equal(saved[0].lang, lang);
+      assert(!("claudeTUIOnly" in saved[0]), "the retired setting isn't sent");
       assert.deepEqual(await page.evaluate(() => [scrollX, scrollY, document.scrollingElement.scrollTop]), before, "the click moved nothing");
+
+      // the save draws the page again: the buttons are the new row's
+      await page.waitForFunction(() => { const r = document.querySelector("#replyList #claudeTuiRow"); return r && !r.dataset.drawn; });
+      assert.equal(await seg(w.off).getAttribute("aria-pressed"), "true", "Off once saved");
+      await seg(w.on).click();
+      for (let i = 0; i < 50 && saved.length < 2; i++) await page.waitForTimeout(50);
+      assert.equal(saved.length, 2, "saved again");
+      assert.equal(saved[1].claudePrintMode, false, "-p turned back off");
+      assert.equal(await seg(w.on).getAttribute("aria-pressed"), "true", "On once saved");
       assert.deepEqual(errors, []);
     });
   }
