@@ -133,15 +133,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     ]);
     assert.match(said[0], /set it to …\/api\/user\/self/);
     assert.match(said[1], /^Add the header New-Api-User = your user ID/);
-    assert.equal(said[2], "Allowance unavailable");
+    assert.equal(said[2], "Allowance unavailable — hover for why");
     // the card's own words for a ZCode account with nothing to spend, and
     // the action on the card itself (there is none in the error to hover for)
     for (const s of [said[3], said[4]]) {
       assert.match(s, /^ZCode: no GLM Coding Plan, and no free Start Plan/);
       assert.match(s, /subscribe to a GLM Coding Plan to use this account/);
     }
-    assert.equal(said[5], "Allowance unavailable", "a Start Plan that couldn't be read is not a plan that ended");
-    assert.equal(said[6], "Allowance unavailable", "a sign-in error names the address itself and is not the card's")
+    assert.equal(said[5], "Allowance unavailable — hover for why", "a Start Plan that couldn't be read is not a plan that ended");
+    assert.equal(said[6], "Allowance unavailable — hover for why", "a sign-in error names the address itself and is not the card's")
     const missing = await page.evaluate(() => [
       "…/api/usage/token takes the API key, not this token: for the account's balance, new-api uses /api/user/self; sub2api uses /api/v1/user/profile.",
       "The token needs a Balance URL: a new-api relay uses /api/user/self; a sub2api panel uses /api/v1/user/profile to read the account's balance.",
@@ -169,7 +169,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     await page.goto("http://magpie.test/?view=providers");
     await page.locator("#providers .row.provider").first().waitFor();
     await page.evaluate(() => { adding = true; editing = { custom: true }; draft = null; renderProviders(); });
-    const tok = page.locator(".editor input[type=password]").nth(1);
+    // the token's own box: the Proxy field's password comes before it (#4683)
+    const tok = page.getByPlaceholder(await page.evaluate(() => t("optional · the account's system access token")), { exact: true });
     await page.locator(".editor input[type=url]").first().fill("https://relay.example.com/v1");
     const fix = page.locator(".editor .bal-fix");
     assert.equal(await fix.textContent(), "", "no token, no hint");
@@ -250,7 +251,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
               assert.equal(await page.locator(".editor .bal-fix").textContent(), "", "no token, no warning");
               // the account's token is under Advanced
               await page.locator(".editor details.advanced > summary").click();
-              await page.locator(".editor input[type=password]").nth(1).fill("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln");
+              const tokHint = await page.evaluate(() => t("optional · the account's system access token"));
+              await page.getByPlaceholder(tokHint, { exact: true }).fill("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln");
             } else {
               await page.locator(".row.provider", { hasText: "Relay" }).click();
             }

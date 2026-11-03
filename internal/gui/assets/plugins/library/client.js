@@ -510,6 +510,10 @@ magpie.plugin("library", (ctx) => {
       take(v);
       if (glanced && tab !== "skills") return;
       if ((quiet === true || glanced) && seen(lib) === was) return;
+      // opening the page (its nav clicked, while on it too) draws it again
+      // only for a change, or for RTK's tab, which is asked again: a page
+      // drawn over again replaced the row under the reader's pointer (#3099)
+      if (quiet === "open" && seen(lib) === was && tab !== "rtk" && page.querySelector(":scope > .lib-body")) return;
       rtk = null; // asked again when its tab is drawn: an agent may have been installed since
       render();
     } catch (e) {
@@ -2051,9 +2055,51 @@ magpie.plugin("library", (ctx) => {
     row.append(mark(s.icon, s.transport === "stdio" ? GLYPH.cmd : GLYPH.web), who, ...removeAct(() => confirmRemoveServer(s)),
       agentChips(withGone(all, s.agents), s.agents, chipsChange("servers/agents", s.name, "servers", (x) => serverRow(x, all)), { problems: s.problems, blocked: sseBlocked(s), all: true }));
     if (picking) return pickRow(row, s.name);
+    if (s.name === "magpie-browser" && !s.agents?.length) who.append(browserAsk(row));
     row.onclick = () => editServer(s);
     row.title = t("Edit {name}", { name: s.name });
     return row;
+  }
+
+  // Magpie Browser connected and given to no agent: it is added opt-in, so
+  // until an agent is ticked the router offers it to none, and an agent
+  // asked to use the browser reached for something else (AppleScript).
+  // Once the extension connects, its row asks which agents may use it,
+  // each a button that clicks that agent's chip in the row; the first one
+  // taken, it says nothing more. Read again every few seconds while the
+  // row is shown, so connecting the extension shows it without a reload.
+  let browserSeen = null; // { at, link } — the last read of the extension's state, shared by redrawn rows
+  function browserLink() {
+    if (browserSeen && Date.now() - browserSeen.at < 2500) return browserSeen.link;
+    const link = api("library/browser").then((b) => !!b?.connected, () => false);
+    browserSeen = { at: Date.now(), link };
+    return link;
+  }
+  function browserAsk(row) {
+    const ask = el("div", "lib-browserask");
+    ask.hidden = true;
+    ask.onclick = (e) => e.stopPropagation();
+    const draw = () => {
+      const chips = [...row.querySelectorAll(":scope > .lib-agents > .lib-ag[data-agent]")].filter((c) => !cannot(c) && !c.classList.contains("gone"));
+      const picks = el("div", "lib-browserask-picks");
+      for (const c of chips) {
+        const b = button("", "lib-browserask-pick", () => { c.click(); ask.remove(); });
+        b.dataset.agent = c.dataset.agent;
+        b.append(agentIcon(agentOf(c.dataset.agent)?.icon), el("span", "", nameOf(c.dataset.agent)));
+        picks.append(b);
+      }
+      ask.replaceChildren(el("span", "lib-browserask-dot"), el("span", "lib-browserask-q", t("Connected to your browser. Which agents may use it? They act in your tabs, signed in as you are.")), picks);
+    };
+    const look = async () => {
+      if (!ask.isConnected && ask.dataset.drawn) return;
+      ask.dataset.drawn = "1";
+      const on = await browserLink();
+      if (on && ask.hidden) draw();
+      ask.hidden = !on;
+      setTimeout(look, 3000);
+    };
+    requestAnimationFrame(look);
+    return ask;
   }
 
   // A server's or a hook's own Remove on its row, as a skill's has (#2364,
@@ -3360,7 +3406,7 @@ magpie.plugin("library", (ctx) => {
       drawSkills(box, all);
       body.append(box);
       // under the list, so the skills stay where they were above it
-      if (all.length) body.append(skillHowBar());
+      if (all.length) body.append(skillHowBar(), skillWhereBar());
       if (picking) body.append(pickBar(all));
     }
     if (lib.newSkills?.length) renderNewSkills(body);
@@ -3509,6 +3555,10 @@ magpie.plugin("library", (ctx) => {
   // Heights the rows are held to (library.css): a list's room is known
   // without drawing it.
   const ROW_H = 51, ROW_SRC_H = 67, SUB_H = 36;
+  // and a skill off on this computer has its tag on a line of its own
+  // under the name (Tao on Discord: its description and path were cut off)
+  const HERE_H = 23;
+  const skillH = (s) => (s.source ? ROW_SRC_H : ROW_H) + (s.offHere ? HERE_H : 0);
 
   // By source (the groups, as they always were) or one flat list of every
   // skill by name, A→Z or Z→A (#481)
@@ -3743,7 +3793,7 @@ magpie.plugin("library", (ctx) => {
 
   // A group's list: its skills, or its parts, each a heading over its own.
   function groupItems(g, hits, all, filtering, redraw) {
-    const row = (s) => ({ key: "s\n" + s.name, h: s.source ? ROW_SRC_H : ROW_H, make: () => skillRow(skillNamed(s.name) || s, all) });
+    const row = (s) => ({ key: "s\n" + s.name, h: skillH(skillNamed(s.name) || s), make: () => skillRow(skillNamed(s.name) || s, all) });
     if (!g.parts) return hits.map(row);
     const hit = hits.length === g.skills.length ? null : new Set(hits);
     const items = [];
@@ -4691,6 +4741,23 @@ magpie.plugin("library", (ctx) => {
     bar.append(by, el("span", "note", how === "copy"
       ? t("Each agent gets a folder of its own, made again when the library's skill changes; edits made in a copy are replaced.")
       : t("Links follow the library's skill: an update reaches the agents at once.")));
+    return bar;
+  }
+
+  // Where the skills go (usrname1833): to the agents each is ticked for,
+  // in their own folders, or also into ~/.agents/skills, which many agents
+  // and tools read, so each of them has every skill. The files stay in the
+  // library's folder either way; ~/.agents/skills gets links to them.
+  function skillWhereBar() {
+    const bar = el("div", "lib-skillhow lib-skillwhere");
+    bar.id = "lib-skillwhere";
+    const where = lib.sharedSkills ? "shared" : "agents";
+    bar.append(el("span", "label", t("Put skills in")), segs([["agents", t("Each agent's own folder")], ["shared", "~/.agents/skills"]], where, (w) => {
+      if (w !== where) change("skills/where", { how: w }, w === "shared" ? t("Every skill is in ~/.agents/skills now") : t("Skills go to the agents they're ticked for now"));
+    }));
+    bar.append(el("span", "note", where === "shared"
+      ? t("Every skill on here is linked into ~/.agents/skills too: each agent that reads that folder has every skill, whatever is ticked. The files stay in the library.")
+      : t("Each agent gets the skills ticked for it, in its own folder.")));
     return bar;
   }
 
@@ -6197,7 +6264,7 @@ magpie.plugin("library", (ctx) => {
       document.addEventListener("visibilitychange", () => { if (!document.hidden) quietLoad(); });
       window.addEventListener("focus", quietLoad);
     },
-    open: () => (loading = load()),
+    open: () => (loading = load("open")),
     relang: () => load(),
     // one of the market's servers up close, from another page (Settings ›
     // Images' Magpie Image, #2091, Magpie Image Recognition, and Settings ›

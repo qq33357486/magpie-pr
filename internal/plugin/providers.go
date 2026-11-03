@@ -100,6 +100,11 @@ type Model struct {
 	// route, plugins#154), models.dev's own, or the models hook's. Unsaid
 	// is nil, which keeps what the client sent.
 	Temperature *bool `json:"temperature,omitempty"`
+	// InputsSaid is whether capabilities.input is someone's word on what
+	// the model takes (models.dev, the config, the plugin's own models
+	// hook): the host's default for a config model said nothing of, input
+	// {"text": true} alone, is nobody's word (#1595, #4436)
+	InputsSaid bool `json:"inputsSaid,omitempty"`
 	// Fast is set by the plugin on a model it runs in its vendor's fast
 	// mode when the request says service_tier "priority" (m.fast: Cursor's
 	// plugin from 0.2.2, for a model Cursor has a fast variant of)
@@ -286,7 +291,7 @@ func forgetProviders() {
 // need be, and keeps the answer for Cached.
 func Providers(ctx context.Context) ([]Provider, error) {
 	var ps []Provider
-	if err := Call(ctx, "providers", map[string]any{"proxies": listingProxies()}, &ps); err != nil {
+	if err := Call(ctx, "providers", listingArgs(), &ps); err != nil {
 		return nil, err
 	}
 	ps = commitProviders(ps, nil)
@@ -356,7 +361,7 @@ var (
 // under still stood. Tests replace it to stall or fail an ask without Bun.
 var refreshProviders = func(ctx context.Context, epoch uint64) error {
 	var ps []Provider
-	if err := callWithTimeout(ctx, "providers", map[string]any{"proxies": listingProxies()}, &ps, refreshDeadline); err != nil {
+	if err := callWithTimeout(ctx, "providers", listingArgs(), &ps, refreshDeadline); err != nil {
 		return err
 	}
 	commitProviders(ps, &epoch)
@@ -421,6 +426,26 @@ func refreshProvidersInBackground(ctx context.Context, epoch uint64) {
 // account at key, or of the provider for key "": set by the providers
 // magpie keeps, which know them.
 var ProxyFor func(provider, key string) string
+
+// ListingOff is the plugin providers (by the plugin's own id) switched off
+// in magpie: set by the providers magpie keeps, which know them. A
+// listing asks none of them their models (ChangQiu on Discord): Off means no request
+// goes to the provider, and a models hook asks its vendor, renewing the
+// sign-in first.
+var ListingOff func() []string
+
+// listingArgs is what a providers call is given: the proxies each list is
+// asked through, and the providers not to ask (ListingOff), which keep the
+// list they told last.
+func listingArgs() map[string]any {
+	args := map[string]any{"proxies": listingProxies()}
+	if ListingOff != nil {
+		if off := ListingOff(); len(off) > 0 {
+			args["off"] = off
+		}
+	}
+	return args
+}
 
 // listingProxies are the proxies each provider's model list is asked
 // through, by provider and account key ("" the provider's own): a

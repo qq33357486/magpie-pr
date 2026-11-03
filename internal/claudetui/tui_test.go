@@ -2,6 +2,7 @@ package claudetui
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -38,7 +40,9 @@ func TestMain(m *testing.M) {
 // fakeTrust asks whether to trust the folder as Claude Code 2.1.314 does:
 // its words placed by cursor moves, "No, exit" chosen, and drawn again on
 // No once it listens, the keys before that lost. Enter on No exits.
-func fakeTrust(r *bufio.Reader) {
+// With always, it never listens, as a question whose answer never goes
+// through.
+func fakeTrust(r *bufio.Reader, always bool) {
 	var mu sync.Mutex
 	yes, deaf := false, true
 	draw := func() {
@@ -47,6 +51,9 @@ func fakeTrust(r *bufio.Reader) {
 	}
 	draw()
 	time.AfterFunc(150*time.Millisecond, func() {
+		if always {
+			return
+		}
 		mu.Lock()
 		defer mu.Unlock()
 		deaf, yes = false, false
@@ -148,6 +155,12 @@ func fakeClaude(args []string) {
 		fmt.Print("something went wrong\n")
 		os.Exit(3)
 	}
+	if os.Getenv("FAKE_STALL") == "1" {
+		// drawn, but no prompt ever comes
+		fmt.Print("\r\nStarting up…\r\n")
+		time.Sleep(time.Minute)
+		os.Exit(0)
+	}
 	if os.Getenv("FAKE_LOGIN") == "1" {
 		// signed in for -p alone: the interactive mode asks how to sign in
 		fmt.Print("\r\nSelect login method:\r\n\r\n ❯ 1. Claude account with subscription\r\n   2. Anthropic Console account\r\n")
@@ -167,8 +180,8 @@ func fakeClaude(args []string) {
 	if v := os.Getenv("FAKE_ONBOARD"); v != "" {
 		fakeOnboard(r, v)
 	}
-	if os.Getenv("FAKE_TRUST") == "1" {
-		fakeTrust(r)
+	if v := os.Getenv("FAKE_TRUST"); v != "" {
+		fakeTrust(r, v == "deaf")
 	}
 	// what it was started with, for the test to read
 	_ = os.WriteFile(filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "args"), []byte(strings.Join(args, "\n")), 0o600)
@@ -199,6 +212,9 @@ func fakeClaude(args []string) {
 	var mu sync.Mutex
 	var typed, paste strings.Builder
 	pasting, images := false, 0
+	// retry is what an "r" draws while /usage's panel says it couldn't
+	// load the figures, nil when it says nothing of the kind
+	var retry []byte
 	for {
 		c, err := r.ReadByte()
 		if err != nil {
@@ -236,6 +252,10 @@ func fakeClaude(args []string) {
 		case pasting:
 			paste.WriteByte(c)
 			continue
+		case c == 'r' && retry != nil:
+			fakeFrames(retry)
+			retry = nil
+			continue
 		case c != '\r':
 			mu.Lock()
 			typed.WriteByte(c)
@@ -267,9 +287,39 @@ func fakeClaude(args []string) {
 			_, _ = fmt.Fprintf(tapped, `{"s":%d,"end":"done"}`+"\n", n)
 		}
 		if line == "/usage" {
+			// Claude Code drawn again before a slow /usage's panel: its
+			// banner and folder, as ikunbots' read told them (v0.1.2738)
+			if after := os.Getenv("FAKE_USAGE_BANNER"); after != "" {
+				fmt.Print("\x1b[2J\x1b[H ▐▛███▜▌   Claude Code v2.1.316\r\n▝▜█████▛▘  Opus 4.8 · Claude Pro\r\n  ▘▘ ▝▝    /private/var/folders/3d/qhyx6qps/T/magpie-claude-work-501\r\n\r\n" +
+					strings.Repeat("─", 80) + "\r\n❯ \r\n" + strings.Repeat("─", 80) + "\r\n")
+				ms, err := strconv.Atoi(after)
+				if err != nil {
+					continue
+				}
+				time.Sleep(time.Duration(ms) * time.Millisecond)
+			}
 			// its panel, as Claude Code 2.1.316 drew it
 			b, _ := os.ReadFile(os.Getenv("FAKE_USAGE"))
-			_, _ = os.Stdout.Write(b)
+			// FAKE_USAGE_FIRST: drawn before it, as Windows' pseudo
+			// console passed on 2.1.316's panel loading its figures, or
+			// failing to; FAKE_USAGE_THEN says what comes after: the
+			// figures 4s later ("slow"), or on an "r" ("retry"), or the
+			// failure again on an "r" ("retry-fails")
+			if first := os.Getenv("FAKE_USAGE_FIRST"); first != "" {
+				f, _ := os.ReadFile(first)
+				_, _ = os.Stdout.Write(f)
+				switch os.Getenv("FAKE_USAGE_THEN") {
+				case "slow":
+					time.Sleep(4 * time.Second)
+				case "retry":
+					retry = b
+					continue
+				case "retry-fails":
+					retry = f
+					continue
+				}
+			}
+			fakeFrames(b)
 			continue
 		}
 		f, _ := os.OpenFile(filepath.Join(dir, sid+".jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -285,6 +335,25 @@ func fakeClaude(args []string) {
 		}
 		f.Close()
 		fmt.Print("\r\n❯ ")
+	}
+}
+
+// fakeFrames draws b a frame at a time, as Claude Code does: each frame
+// ends parking the cursor at the screen's foot (ESC[24;1H), and the next
+// comes a moment later. A terminal that renders what it is given (Windows'
+// pseudo console) passes on each frame, not only how the last one left
+// the screen.
+func fakeFrames(b []byte) {
+	park := []byte("\x1b[24;1H")
+	for len(b) > 0 {
+		i := bytes.Index(b, park)
+		if i < 0 {
+			_, _ = os.Stdout.Write(b)
+			return
+		}
+		_, _ = os.Stdout.Write(b[:i+len(park)])
+		b = b[i+len(park):]
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -477,6 +546,13 @@ func TestDropLeft(t *testing.T) {
 // exits or answers: what it wrote, its stderr, and how it ended.
 func runEnds(t *testing.T, home string, env []string) (out, stderr string, err error) {
 	t.Helper()
+	b, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": "hello"}})
+	return runEndsTold(t, home, env, string(b))
+}
+
+// runEndsTold is runEnds told line, a stream-json line, for "hello".
+func runEndsTold(t *testing.T, home string, env []string, line string) (out, stderr string, err error) {
+	t.Helper()
 	exe, _ := os.Executable()
 	cfg := filepath.Join(home, "claude")
 	tmp := filepath.Join(home, "tmp")
@@ -496,8 +572,7 @@ func runEnds(t *testing.T, home string, env []string) (out, stderr string, err e
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
-	b, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": "hello"}})
-	_, _ = stdin.Write(append(b, '\n'))
+	_, _ = io.WriteString(stdin, line+"\n")
 	done := make(chan string, 1)
 	go func() {
 		var all strings.Builder
@@ -597,6 +672,46 @@ func TestShimGoesThroughOnboarding(t *testing.T) {
 			}
 			if _, err := os.Stat(filepath.Join(cfg, "terminal-set-up")); err == nil {
 				t.Fatal("the user's terminal was set up")
+			}
+		})
+	}
+}
+
+// A one-off run's caller (a /usage read, a test's "hi") tells the helper
+// when it stops waiting (DeadlineEnv), and the helper ends then on its
+// own, saying what Claude Code hadn't done and what it last drew. Killed
+// at the caller's deadline instead, it said nothing, and the reading's
+// error was "exit status 1" (#4830, mydosu, Windows).
+func TestShimEndsAtItsCallersDeadline(t *testing.T) {
+	wd, _ := os.Getwd()
+	for _, c := range []struct {
+		name, line, why, screen string
+		env                     []string
+	}{
+		{"no prompt", `{"type":"user","message":{"role":"user","content":"hello"}}`, "showed no prompt in the", "Starting up", []string{"FAKE_STALL=1"}},
+		// the question a saved account's reads waited out on (#4830,
+		// mydosu): said, with the folder, never "showed no prompt"
+		{"trust unanswered", `{"type":"user","message":{"role":"user","content":"hello"}}`, "asked whether to trust " + wd + ", not answered in the", "trust this folder", []string{"FAKE_TRUST=deaf", TrustEnv + "=1"}},
+		// FAKE_USAGE names no panel: nothing is drawn for /usage
+		{"no /usage panel", `{"type":"command","command":"/usage"}`, "hadn't drawn /usage's panel in the", "", []string{"FAKE_USAGE=" + filepath.Join(t.TempDir(), "none")}},
+		// the banner drawn again and no panel after it: never told as one
+		{"banner, no /usage panel", `{"type":"command","command":"/usage"}`, "hadn't drawn /usage's panel in the", "magpie-claude-work-501", []string{"FAKE_USAGE_BANNER=never"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			start := time.Now()
+			by := start.Add(3 * time.Second).UnixMilli()
+			out, stderr, err := runEndsTold(t, t.TempDir(), append(c.env, DeadlineEnv+"="+strconv.FormatInt(by, 10)), c.line)
+			d := time.Since(start)
+			if err == nil || strings.Contains(out, `"type":"result"`) {
+				t.Fatalf("ended %v, wrote %q", err, out)
+			}
+			if !strings.Contains(stderr, "claude-tui: Claude Code "+c.why) || !strings.Contains(stderr, c.screen) {
+				t.Fatalf("stderr %q", stderr)
+			}
+			// at the deadline, with room for a slow machine to start it,
+			// and well before the helper's own waits (20s, 45s)
+			if d < 2500*time.Millisecond || d > 15*time.Second {
+				t.Fatalf("ended after %s, the deadline 3s", d)
 			}
 		})
 	}
@@ -727,6 +842,76 @@ func TestShimReadsUsage(t *testing.T) {
 	want := "Current session: 0% used · resets 12am (Asia/Shanghai)\nCurrent week (all models): 81% used · resets Nov 4 at 6am (Asia/Shanghai)"
 	if r := out[1]; r["type"] != "result" || r["is_error"] != false || r["local_command"] != "usage" || r["result"] != want {
 		t.Fatalf("told %v", r)
+	}
+}
+
+// Claude Code draws its banner again before /usage's panel, and a slow
+// /usage leaves it still for seconds. It is waited past, never told as the
+// panel: read as one, the banner was an allowance's error (ikunbots on X,
+// v0.1.2738, "/usage told no allowance: ▘▘ ▝▝ /private/var/folders/…").
+func TestShimWaitsPastTheBanner(t *testing.T) {
+	panel, _ := filepath.Abs(filepath.Join("testdata", "usage-2.1.316.bin"))
+	out := runShim(t, []string{"FAKE_USAGE=" + panel, "FAKE_USAGE_BANNER=4500"}, append([]string{fakePath(t)}, pArgs...), []string{`raw:{"type":"command","command":"/usage"}`}, 2)
+	want := "Current session: 0% used · resets 12am (Asia/Shanghai)\nCurrent week (all models): 81% used · resets Nov 4 at 6am (Asia/Shanghai)"
+	if r := out[1]; r["type"] != "result" || r["is_error"] != false || r["result"] != want {
+		t.Fatalf("told %v", r)
+	}
+}
+
+func TestUsageDrawn(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "usage-2.1.316.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !usageDrawn(ansi.ReplaceAllString(string(b), " ")) {
+		t.Fatal("2.1.316's panel isn't taken as drawn")
+	}
+	for screen, want := range map[string]bool{
+		"▐▛███▜▌ Claude Code v2.1.316 ▘▘ ▝▝ /private/var/folders/3d/x/T/magpie-claude-work-501 ──── ❯ ────": false,
+		"Settings Status Config Usage Stats Loading usage…":               false,
+		"Settings Usage /usage is only available for subscription plans.": true,
+	} {
+		if got := usageDrawn(screen); got != want {
+			t.Errorf("usageDrawn(%q) = %v, want %v", screen, got, want)
+		}
+	}
+}
+
+// Windows' pseudo console (Seagull fries, Claude Code 2.1.316 on Windows
+// 11): /usage's panel is drawn "Loading usage data…" while Claude Code
+// asks for the figures, and an answer slower than 3s had the panel's
+// frame told as the figures ("❯ /usage ─── Settin s Status Config Usage
+// …"), which the card read as an account with no allowance. A panel that
+// failed to load ("Error: Failed to load usage data", "r to retry") was
+// told the same way. The figures are waited for, a failure retried once,
+// and a panel still with no figures told as an error. The first frames
+// are the bytes the pseudo console passed on for a real 2.1.316 in a
+// sandbox (testdata/usage-*-win-2.1.316.bin).
+func TestShimWaitsForUsageFigures(t *testing.T) {
+	panel, _ := filepath.Abs(filepath.Join("testdata", "usage-2.1.316.bin"))
+	loading, _ := filepath.Abs(filepath.Join("testdata", "usage-loading-win-2.1.316.bin"))
+	failed, _ := filepath.Abs(filepath.Join("testdata", "usage-failed-win-2.1.316.bin"))
+	want := "Current session: 0% used · resets 12am (Asia/Shanghai)\nCurrent week (all models): 81% used · resets Nov 4 at 6am (Asia/Shanghai)"
+	for _, c := range []struct{ name, first, then, err string }{
+		{"slow", loading, "slow", ""},
+		{"retried", failed, "retry", ""},
+		{"failed again", failed, "retry-fails", "/usage couldn't load the plan's usage: "},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			out := runShim(t, []string{"FAKE_USAGE=" + panel, "FAKE_USAGE_FIRST=" + c.first, "FAKE_USAGE_THEN=" + c.then},
+				append([]string{fakePath(t)}, pArgs...), []string{`raw:{"type":"command","command":"/usage"}`}, 2)
+			r := out[1]
+			if c.err == "" {
+				if r["type"] != "result" || r["is_error"] != false || r["result"] != want {
+					t.Fatalf("told %v", r)
+				}
+				return
+			}
+			got, _ := r["result"].(string)
+			if r["type"] != "result" || r["is_error"] != true || !strings.HasPrefix(got, c.err) || !strings.Contains(got, "Failed to load usage data") {
+				t.Fatalf("told %v", r)
+			}
+		})
 	}
 }
 

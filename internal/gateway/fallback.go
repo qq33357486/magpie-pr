@@ -23,12 +23,14 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/provider"
@@ -1542,12 +1544,19 @@ var unsaidWords = regexp.MustCompile(`(?i)(^|"|\\"|: )invalid request error trac
 // request's — the words the Codex compaction already reads (#866, #1511) —
 // and another member may answer (#4632: the group's second member never
 // ran, and every turn died on the first seat).
+// GLM's word for a picture it can't read (zhipuImageRefusal, #4732) is
+// one: another vendor takes the webp as it is.
+// A model's demand for an earlier turn's reasoning the history doesn't
+// have (reasoningBackRefused: Beam's "Missing required parameter:
+// 'messages[1].reasoning_content'", EDwinpzy) is one too: the client's
+// request is whole, and a group of Beam then another model stopped at
+// Beam before.
 // One that also says the account is out of quota or credit (quotaWords,
 // creditWords: "请充值") is that, and rests it (#4095).
 func shapeRefused(status int, body []byte) bool {
 	// the words are matched decoded, too (#1669)
 	body = wordsOf(body)
-	return (status == 400 || status == 422) && (shapeWords.Match(body) || unsaidWords.Match(body) || customToolRefusal.Match(body) || wrongEndpoint(status, body) || upstreamFailedWords.Match(body)) &&
+	return (status == 400 || status == 422) && (shapeWords.Match(body) || unsaidWords.Match(body) || customToolRefusal.Match(body) || zhipuImageRefusal.Match(body) || wrongEndpoint(status, body) || upstreamFailedWords.Match(body) || reasoningBackRefused(body)) &&
 		!quotaWords.Match(body) && !creditWords.Match(body) && !unservedWords.Match(body) && !refusedWords.Match(body)
 }
 
@@ -1668,10 +1677,13 @@ func retryable(status int, body []byte) bool {
 		// mycf_711)
 		return true
 	case status == 400, status == 422:
-		return quotaWords.Match(body) || unservedWords.Match(body) || refusedWords.Match(body) || shapeWords.Match(body) || unsaidWords.Match(body) || regionWords.Match(body) || wrongEndpoint(status, body) ||
+		return quotaWords.Match(body) || unservedWords.Match(body) || refusedWords.Match(body) || shapeWords.Match(body) || unsaidWords.Match(body) || regionWords.Match(body) || zhipuImageRefusal.Match(body) || wrongEndpoint(status, body) ||
 			// a relay's own word that the provider behind it turned the
 			// request away (#4632): another member may answer
-			upstreamFailedWords.Match(body)
+			upstreamFailedWords.Match(body) ||
+			// a model's demand for an earlier turn's reasoning (EDwinpzy):
+			// another member's model may not make it
+			reasoningBackRefused(body)
 	}
 	return false
 }
@@ -3984,9 +3996,13 @@ func streamStatus(msg string) int {
 // (its user, or its id in the routing trace), and pl with them. Nothing
 // else is tried in its place: a caller that names one account asks about
 // that one. The error says why none is left: no such account, one that
-// doesn't list the model, or one resting.
-func pinTo(want string, cands []candidate, pl planned) ([]candidate, planned, int, string) {
-	match := func(w Weighed) bool { return strings.EqualFold(want, w.Who) || want == w.ID }
+// doesn't list the model, or one resting. A name that isn't ASCII comes
+// percent-encoded (pinnedName), and matches as written or decoded.
+func pinTo(raw string, cands []candidate, pl planned) ([]candidate, planned, int, string) {
+	want := pinnedName(raw)
+	match := func(w Weighed) bool {
+		return strings.EqualFold(want, w.Who) || want == w.ID || strings.EqualFold(raw, w.Who) || raw == w.ID
+	}
 	var out []candidate
 	var order []Weighed
 	var rests []string
@@ -4033,6 +4049,21 @@ func pinTo(want string, cands []candidate, pl planned) ([]candidate, planned, in
 		msg += "; its accounts are " + strings.Join(have, ", ")
 	}
 	return nil, pl, http.StatusNotFound, msg
+}
+
+// pinnedName is the account AccountHeader names, raw as the request sent
+// it. A header value is ASCII on the wire, and fetch refuses to send one
+// that isn't, so a user named in other letters (北冥, plugins#615) is sent
+// percent-encoded (encodeURIComponent): it is read back decoded. A value
+// that isn't a valid encoding of UTF-8 is the name as written.
+func pinnedName(raw string) string {
+	if !strings.Contains(raw, "%") {
+		return raw
+	}
+	if d, err := url.PathUnescape(raw); err == nil && utf8.ValidString(d) {
+		return strings.TrimSpace(d)
+	}
+	return raw
 }
 
 // unservedTry says c's try failed as the vendor refusing the model as one

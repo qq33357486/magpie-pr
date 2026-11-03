@@ -30,10 +30,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
@@ -74,6 +76,12 @@ type shim struct {
 	screenMu sync.Mutex
 	screen   []byte
 	changed  chan struct{}
+	// grid is the screen as a terminal shows it (screen.go), drawn from
+	// the start; panel is how it looked last while a /usage read was
+	// going (watch) and showed a window, "" once the screen is cleared
+	grid  *grid
+	watch bool
+	panel string
 
 	// rows ticks when a user message (or one queued mid-turn) reaches the
 	// transcript: a pasted message was sent
@@ -105,6 +113,10 @@ type shim struct {
 	// listed is the file magpie's tool server writes once Claude Code has
 	// listed its tools (mcpListed), "" for a run without it
 	listed string
+
+	// doing is what Claude Code is being waited on for, as late says it
+	// once its caller stops waiting (DeadlineEnv)
+	doing atomic.Value
 }
 
 // Run runs Claude Code at path, args being the bridge's `claude -p` ones,
@@ -188,6 +200,18 @@ func Run(args []string) error {
 		s.tap.drop()
 		os.Exit(1)
 	}()
+	if by, ok := deadline(os.Getenv(DeadlineEnv)); ok {
+		started := time.Now()
+		t := time.AfterFunc(time.Until(by), func() {
+			fmt.Fprintf(os.Stderr, "claude-tui: %s\n", s.late(time.Since(started)))
+			s.stop()
+			s.dropImages()
+			s.tap.drop()
+			os.Exit(1)
+		})
+		defer t.Stop()
+	}
+	s.doing.Store("showed no prompt")
 	if err := s.ready(); err != nil {
 		signal.Reset()
 		s.stop()
@@ -270,6 +294,18 @@ func (s *shim) read() {
 			if len(s.screen) > 256<<10 {
 				s.screen = append([]byte(nil), s.screen[len(s.screen)-128<<10:]...)
 			}
+			if s.grid == nil {
+				s.grid = newGrid(screenSize())
+			}
+			s.grid.write(d)
+			if s.watch {
+				// a panel can be drawn only for a moment (Claude Code
+				// 2.1.316 draws /usage's windows, then the panel again
+				// without them), so each look of it is kept
+				if t := s.grid.text(); usageUsed.MatchString(t) {
+					s.panel = t
+				}
+			}
 			s.screenMu.Unlock()
 			select {
 			case s.changed <- struct{}{}:
@@ -296,7 +332,29 @@ func (s *shim) plain() string {
 func (s *shim) clearScreen() {
 	s.screenMu.Lock()
 	s.screen = s.screen[:0]
+	s.panel = ""
 	s.screenMu.Unlock()
+}
+
+// screenSize is the size of Claude Code's terminal: Windows' pseudo
+// console is made 200 by 50 (child_windows.go); a pty here is given no
+// size, and Claude Code draws in 80 by 24.
+func screenSize() (cols, rows int) {
+	if runtime.GOOS == "windows" {
+		return 200, 50
+	}
+	return 80, 24
+}
+
+// looks is the screen as it is now, and the last look of it with a
+// usage window since it was cleared, while watched.
+func (s *shim) looks() (now, panel string) {
+	s.screenMu.Lock()
+	defer s.screenMu.Unlock()
+	if s.grid != nil {
+		now = s.grid.text()
+	}
+	return now, s.panel
 }
 
 // lastScreen is the end of what Claude Code drew, for an error to say.
@@ -322,6 +380,26 @@ func lastAt(re *regexp.Regexp, p string) int {
 		return -1
 	}
 	return m[len(m)-1][0]
+}
+
+// deadline reads DeadlineEnv's value: when the caller stops waiting.
+func deadline(v string) (time.Time, bool) {
+	ms, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	if err != nil || ms <= 0 {
+		return time.Time{}, false
+	}
+	return time.UnixMilli(ms), true
+}
+
+// late is why the run ends at its caller's deadline (DeadlineEnv), d
+// after it started: what Claude Code hadn't done by then, and what it
+// last drew.
+func (s *shim) late(d time.Duration) string {
+	doing, _ := s.doing.Load().(string)
+	if doing == "" {
+		doing = "showed no prompt"
+	}
+	return fmt.Sprintf("Claude Code %s in the %s its caller waits for it: %s", doing, d.Round(100*time.Millisecond), s.lastScreen())
 }
 
 var errUntrusted = errors.New(Untrusted + ", which only its user answers")
@@ -363,6 +441,14 @@ func (s *shim) ready() error {
 	// being drawn again, and nothing then draws it once more
 	shownAt := map[string]time.Time{}
 	pressed := map[string]int{}
+	// the folder the trust question is about, for the reason a run that
+	// ends on it gives: "showed no prompt" said nothing of the question
+	// a saved account's reads waited out on (#4830, mydosu)
+	folder, _ := os.Getwd()
+	if folder == "" {
+		folder = "the folder it runs in"
+	}
+	asking := "asked whether to trust " + folder + ", not answered"
 	onboard := func(screen, key string) error {
 		if shownAt[screen].IsZero() {
 			shownAt[screen] = time.Now()
@@ -382,6 +468,11 @@ func (s *shim) ready() error {
 	for {
 		p := s.plain()
 		words := strings.Join(strings.Fields(p), " ")
+		doing := "showed no prompt"
+		if strings.Contains(p, "trust this folder") {
+			doing = asking
+		}
+		s.doing.Store(doing)
 		switch {
 		case strings.Contains(p, "trust this folder") && os.Getenv(TrustEnv) != "1":
 			return errUntrusted
@@ -452,7 +543,8 @@ func (s *shim) ready() error {
 			if prompted {
 				return fmt.Errorf("Claude Code showed its prompt, but hadn't listed the tools of magpie's tool server in %s", readyWait)
 			}
-			return fmt.Errorf("Claude Code showed no prompt in %s: %s", readyWait, s.lastScreen())
+			doing, _ := s.doing.Load().(string)
+			return fmt.Errorf("Claude Code %s in %s: %s", doing, readyWait, s.lastScreen())
 		}
 	}
 }
@@ -533,6 +625,7 @@ func (s *shim) input(r io.Reader) error {
 				return err
 			}
 		case "user":
+			s.doing.Store("hadn't answered")
 			pieces, err := s.userPieces(m.Message.Content)
 			if err != nil {
 				s.emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "session_id": s.sid,
@@ -566,6 +659,7 @@ var (
 // allowance read in the interactive mode, where -p's /usage tells no
 // window of it (Claude Code 2.1.316).
 func (s *shim) command(name string) error {
+	s.doing.Store("hadn't drawn " + name + "'s panel")
 	if name != "/usage" {
 		s.emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "session_id": s.sid,
 			"result": "the helper types no " + name + " in Claude Code's interactive mode"})
@@ -584,17 +678,56 @@ func (s *shim) command(name string) error {
 	if _, err := io.WriteString(s.pty, "\r"); err != nil {
 		return err
 	}
+	s.screenMu.Lock()
+	s.watch = true
+	s.screenMu.Unlock()
+	defer func() {
+		s.screenMu.Lock()
+		s.watch = false
+		s.screenMu.Unlock()
+	}()
 	by := time.After(commandWait)
-	last, quiet := "", time.Now()
+	last, quiet, drawn, retried := "", time.Now(), false, false
+	var now, panel string
 	for waiting := true; waiting; {
 		p := s.plain()
-		if p != last {
-			last, quiet = p, time.Now()
+		now, panel = s.looks()
+		if p+now != last {
+			last, quiet = p+now, time.Now()
 		}
-		// drawn: its windows, and the panel still a moment; or anything
-		// else (an error, a plan with no allowance) still for longer
 		still := time.Since(quiet)
-		if strings.TrimSpace(p) != "" && (usageUsed.MatchString(p) && still >= commandSettle || still >= 3*commandSettle) {
+		loading, failed := usageLoading.MatchString(now), usageFailed.MatchString(now)
+		figures := panel != "" || usageUsed.MatchString(p)
+		switch {
+		case loading:
+			// the panel is drawn before its figures, which Claude Code
+			// asks Anthropic for: a slow answer kept "Loading usage
+			// data…" on screen past the 3s below, and the panel's
+			// frame was told as the figures (Seagull fries)
+			s.doing.Store("was still loading " + name + "'s figures")
+			if figures && still >= 3*commandSettle {
+				drawn = true
+			}
+		case failed && !figures && !retried && still >= commandSettle:
+			// "Error: Failed to load usage data", "r to retry"
+			s.doing.Store("couldn't load " + name + "'s figures")
+			if _, err := io.WriteString(s.pty, "r"); err != nil {
+				return err
+			}
+			retried, quiet = true, time.Now()
+		// drawn: its windows, and the panel still a moment; or the
+		// panel's words with no window (a failure, a plan with no
+		// allowance) still for longer. Claude Code draws itself again
+		// first (its banner, the folder, the prompt's rules), which
+		// stays still while a slow /usage loads: told as the panel, its
+		// banner was read as an allowance (ikunbots on X, v0.1.2738).
+		// Anything else is waited for only once the panel's tabs are
+		// drawn, and not loading.
+		case figures && still >= commandSettle,
+			(failed || usageDrawn(p) || usageDrawn(now)) && still >= 3*commandSettle:
+			drawn = true
+		}
+		if drawn {
 			break
 		}
 		select {
@@ -607,15 +740,45 @@ func (s *shim) command(name string) error {
 		}
 	}
 	_, _ = io.WriteString(s.pty, "\x1b")
+	p := s.plain()
+	text := usageText(panel)
+	if panel == "" {
+		text = usageText(p)
+	}
+	switch {
+	case !usageUsed.MatchString(panel+p) && (usageLoading.MatchString(now) || usageFailed.MatchString(now)):
+		// no figures, the panel still loading them or saying it
+		// couldn't: unknown, not a plan with no allowance
+		s.emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "session_id": s.sid,
+			"result": name + " couldn't load the plan's usage: " + strings.Join(strings.Fields(now), " ")})
+		return nil
+	case !drawn:
+		s.emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "session_id": s.sid,
+			"result": fmt.Sprintf("Claude Code hadn't drawn /usage's panel in %s: %s", commandWait, s.lastScreen())})
+		return nil
+	}
 	s.emit(map[string]any{"type": "result", "subtype": "success", "is_error": false, "session_id": s.sid,
-		"local_command": "usage", "result": usageText(last)})
+		"local_command": "usage", "result": text})
 	return nil
 }
 
+// usageDrawn is /usage's panel drawn and loaded: the tabs of the Settings
+// it opens in ("Settings  Status  Config  Usage  Stats", Claude Code
+// 2.1.316), with nothing still loading.
+func usageDrawn(screen string) bool {
+	t := strings.Join(strings.Fields(screen), " ")
+	return usagePanel.MatchString(t) && !usageLoading.MatchString(t)
+}
+
+// /usage's panel once its figures failed to load (Claude Code 2.1.316)
+var usageFailed = regexp.MustCompile(`Failed to load usage data`)
+
 var (
-	usageName  = regexp.MustCompile(`^(session|week(?: \([^)]*\))?)`)
-	usageUsed  = regexp.MustCompile(`([0-9.]+)%\s+used`)
-	usageReset = regexp.MustCompile(`Resets (.*?\))`)
+	usageName    = regexp.MustCompile(`^(session|week(?: \([^)]*\))?)`)
+	usageUsed    = regexp.MustCompile(`([0-9.]+)%\s+used`)
+	usageReset   = regexp.MustCompile(`Resets (.*?\))`)
+	usagePanel   = regexp.MustCompile(`\bSettings\b.*\bUsage\b`)
+	usageLoading = regexp.MustCompile(`(?i)\bloading\b`)
 )
 
 // usageText is the plan's allowance as /usage's panel shows it, each

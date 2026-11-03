@@ -99,6 +99,10 @@ type Provider struct {
 	// under it, with the key in x-goog-api-key, and models under it lists
 	// them (#1346).
 	Gemini string `json:"gemini,omitempty"`
+	// GeminiFilled is that magpie filled Gemini in once, for a provider
+	// at AI Studio's OpenAI-compatible URL (aiStudioNative): a Gemini URL
+	// the user cleared after that stays empty.
+	GeminiFilled bool `json:"geminiFilled,omitempty"`
 	// Decide is the base of a decision API (TypeSafe's System One, which
 	// Jev answers), for routing groups' choices of model and effort. The
 	// provider may also serve conversations on the other endpoints.
@@ -1140,17 +1144,24 @@ func delistedWith(p Provider, was *Provider) []string {
 // left unpicked isn't new when the list that left it out for a while has it
 // again (an Our Free Model channel not read yet when the picks were saved).
 // A list short of no pick is taken as it is: what it left out and lists
-// again later is new (TestClaudePicksOfEveryModelTakeOnesListedSince).
+// again later is new (TestClaudePicksOfEveryModelTakeOnesListedSince). A
+// provider of keys saved before PickedFrom was kept is given it at its next
+// Save, the same picks too, as withNewlyListed serves those picks as they
+// are until it has one (TestLegacyPicksOfEveryModelGetPickedFromAtSave).
 func listedWith(p Provider, was *Provider) []string {
 	if len(p.Models) == 0 {
 		return nil
 	}
-	if was != nil && slices.Equal(normalModels(was.Models), normalModels(p.Models)) {
+	same := was != nil && slices.Equal(normalModels(was.Models), normalModels(p.Models))
+	if same && was.PickedFrom != nil {
 		return was.PickedFrom
 	}
 	from := p
 	if q, err := Find(p.ID); err == nil {
 		from = *q // with its account, whose list it is
+	}
+	if same && (from.Account != nil || p.Account != nil) {
+		return was.PickedFrom // a subscription keeps the date rule
 	}
 	var ids []string
 	for _, m := range from.Available() {
@@ -1185,11 +1196,15 @@ func add(p Provider, once bool) (string, error) {
 		// nothing: the id is the site's instead
 		p.ID = hostID(p)
 	}
-	// the same key on the same host with the same headers is the one
-	// already here, not another: adding it twice would only split its usage.
-	// A copy the user asked for is taken (AddCopy).
+	// the same key on the same host with the same headers, at the same
+	// addresses, is the one already here, not another: adding it twice
+	// would only split its usage. One key a relay takes in both formats,
+	// added once for its OpenAI API and once for its Anthropic API, is two
+	// providers the user asked for (energetic_wolf_99424 on Discord: the
+	// second was refused as the key already used). A copy the user asked
+	// for is taken (AddCopy).
 	for _, h := range All() {
-		if once && h.Account == nil && sameProvider(h, normalize(p)) {
+		if once && h.Account == nil && sameProvider(h, normalize(p)) && servesAll(h, normalize(p)) {
 			return "", fmt.Errorf("%s is already added with that key (%s); magpie provider key %s <key> changes its key", h.Name, h.ID, h.ID)
 		}
 	}
@@ -1202,6 +1217,17 @@ func add(p Provider, once bool) (string, error) {
 		CountPartner(PartnerAdded, p.Preset)
 	}
 	return p.ID, nil
+}
+
+// servesAll says h is asked at every address p is added with, each for the
+// same API: p brings no API, and no address of one, that h lacks.
+func servesAll(h, p Provider) bool {
+	for _, u := range [][2]string{{h.Chat, p.Chat}, {h.Responses, p.Responses}, {h.Anthropic, p.Anthropic}, {h.Gemini, p.Gemini}} {
+		if u[1] != "" && u[0] != u[1] {
+			return false
+		}
+	}
+	return true
 }
 
 // AddCopy adds p, a copy the user made of the provider from (#268), beside
@@ -1523,6 +1549,7 @@ func normalize(p Provider) Provider {
 		}
 	}
 	p.Gemini = GeminiBase(p.Gemini)
+	p.aiStudioNative()
 	// a pick whose URL is gone (cleared from the CLI) is no pick
 	if p.BaseAPI != "" && p.baseOf(p.BaseAPI) == "" {
 		p.BaseAPI = ""
@@ -1537,6 +1564,9 @@ func normalize(p Provider) Provider {
 	if a, ok := presetAliases[p.Preset]; ok {
 		p.Preset = a.preset
 	}
+	// a preset's endpoints its vendor has moved since (Tencent Cloud's
+	// Token Plan 个人版, ysm119) are where they are now
+	p.moveEndpoints()
 	// OpenCode Zen serves its free models (-free) signed out, to the key
 	// OpenCode itself sends then: a Zen provider saved with no key of its
 	// own asks with that one

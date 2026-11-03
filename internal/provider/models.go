@@ -220,6 +220,36 @@ func (p Provider) liveAll() ([]catalog.Model, bool) {
 	return l.ms, l.ok
 }
 
+// Listed is a provider RefreshLists asked, and how many models it listed.
+type Listed struct {
+	ID     string
+	Models int
+}
+
+// refreshEach is how long RefreshLists waits for each provider's list.
+var refreshEach = 8 * time.Second
+
+// RefreshLists asks every provider that is ready, and not switched off,
+// for its model list, each for at most refreshEach, and answers those that
+// answered, in order: the Refresh of every list (the GUI's, `magpie
+// sync`). One switched off is asked nothing and keeps the list it had
+// (ChangQiu on Discord: Off means no request goes to it).
+func RefreshLists(ctx context.Context) []Listed {
+	var out []Listed
+	for _, p := range All() {
+		if !p.Ready() || p.Off {
+			continue
+		}
+		c, cancel := context.WithTimeout(ctx, refreshEach)
+		ms, err := p.Fetch(c)
+		cancel()
+		if err == nil {
+			out = append(out, Listed{p.ID, len(ms)})
+		}
+	}
+	return out
+}
+
 // Fetch asks the vendor which models it serves and remembers the answer.
 func (p Provider) Fetch(ctx context.Context) ([]catalog.Model, error) {
 	ms, _, err := p.Refetch(ctx)
@@ -743,6 +773,11 @@ func (p Provider) fetchOne(ctx context.Context) (fetched, error) {
 		if proto == Gemini {
 			if p.Gemini == "" {
 				continue // Factory's, whose list is its sign-in's
+			}
+			if p.AIStudioPair() {
+				// AI Studio's OpenAI-compatible list is its Gemini API's
+				// list, asked once
+				continue
 			}
 			if p.IsOpenCode() {
 				// OpenCode's Gemini models are in the list its other
@@ -1702,9 +1737,12 @@ func (p Provider) PicksOf(avail []catalog.Model) []string {
 // toggles) was served the list as it was then, and never Haiku 5.5 when
 // models.dev listed it (wakaka on Discord, after 9b51428e). A model that
 // was listed and left unpicked stays left out, and so do new ones beside
-// picks that left any out. Picks saved before PickedFrom was kept are taken
-// to have held every model when they hold every one released up to the
-// newest of them, and a model released after it is the new one.
+// picks that left any out. A subscription's picks saved before PickedFrom
+// was kept are taken to have held every model when they hold every one
+// released up to the newest of them, and a model released after it is the
+// new one. A provider of keys has no such rule: its picks without
+// PickedFrom are served as they are (yuancjun: one old model picked of a
+// relay's ten served all ten).
 func (p Provider) withNewlyListed(picks []string, avail []catalog.Model) []string {
 	if len(avail) == 0 {
 		return picks
@@ -1720,6 +1758,14 @@ func (p Provider) withNewlyListed(picks []string, avail []catalog.Model) []strin
 			listed[id] = true
 		}
 		isNew = func(m catalog.Model) bool { return !listed[m.ID] }
+	} else if p.Account == nil {
+		// a provider of keys: which models were listed when the picks were
+		// saved wasn't kept, and "released after the newest pick" read a
+		// pick of one old model as "every model listed since". It served
+		// the whole list, and the next Save wrote it down as the picks.
+		// A subscription keeps the rule: its list is the catalog's, and
+		// Select all is a state its editor offers.
+		return picks
 	} else {
 		newest := ""
 		for _, m := range avail {
