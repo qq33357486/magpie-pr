@@ -38,6 +38,11 @@ type Model struct {
 	// Keys, for a vendor whose keys each see models of their own, are the
 	// keys (by fingerprint) whose list has this one; empty is every key.
 	Keys []string `json:",omitempty"`
+	// EffortsBorrowed is set when Efforts are not the source's word but
+	// borrowed for its id (a plugin's model that thinks with no variants):
+	// a model listed by another id (provider's localIDs) borrows them for
+	// that id again.
+	EffortsBorrowed bool `json:"-"`
 	// APIs, when the vendor says, are the APIs the model is served on
 	// ("chat", "responses", "anthropic"); empty is not known.
 	APIs []string `json:",omitempty"`
@@ -79,6 +84,9 @@ type Model struct {
 	// provider after it (magpie_label): the name Provider in model names
 	// Off has here (ARNO on Discord).
 	Plain string `json:",omitempty"`
+	// Via, on a model of another magpie's list, is the magpies it passes
+	// through to its vendor, that one last (magpie_via.go)
+	Via []string `json:",omitempty"`
 	// Apart, in a list magpie hands Codex, is what tells the model from
 	// another entry Codex's picker would call the same (two providers
 	// named Codex each serving GPT-6.1-Sol, nb5p on Discord): its
@@ -118,6 +126,12 @@ type Model struct {
 	// with (a Remote magpie's Grok Imagine Video): kept with the list for
 	// its videos API, never offered as a model to talk to or draw with.
 	Films bool `json:",omitempty"`
+	// Serves is set on a vendor-listed model made for an API other than
+	// chat, images or video (ServesEmbedding, ServesRerank, ServesSpeech,
+	// ServesTranscription): kept with the list for that API's routes and
+	// their groups of one kind (provider.KindGroup), never offered to
+	// agents as a model to talk to (#5339, XYenon on Discord).
+	Serves string `json:",omitempty"`
 	// Decides marks a decision model another magpie explicitly lists,
 	// including models whose ids don't name Jev.
 	Decides bool `json:",omitempty"`
@@ -1918,6 +1932,37 @@ func unprofiled(b string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// The APIs a model Serves is made for.
+const (
+	ServesEmbedding     = "embedding"
+	ServesRerank        = "rerank"
+	ServesSpeech        = "speech"
+	ServesTranscription = "transcription"
+)
+
+// ServesOf is the API a model's id says it is made for, other than chat,
+// images or video: "" for any other model. Read from the id alone, as
+// vendors' OpenAI-style lists say no more (text-embedding-3-small,
+// bge-reranker-v2-m3, tts-1, gpt-4o-mini-tts, whisper-1,
+// gpt-4o-transcribe).
+func ServesOf(id string) string {
+	id = strings.ToLower(id)
+	if i := strings.LastIndex(id, "/"); i >= 0 {
+		id = id[i+1:]
+	}
+	switch {
+	case strings.Contains(id, "rerank"):
+		return ServesRerank
+	case strings.Contains(id, "embed") || strings.HasPrefix(id, "bge-"):
+		return ServesEmbedding
+	case strings.Contains(id, "whisper") || strings.Contains(id, "transcribe"):
+		return ServesTranscription
+	case strings.HasPrefix(id, "tts-") || strings.Contains(id, "-tts"):
+		return ServesSpeech
+	}
+	return ""
 }
 
 func textModel(m mdModel) bool {

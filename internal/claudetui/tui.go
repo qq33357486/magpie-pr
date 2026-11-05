@@ -30,7 +30,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -93,6 +92,9 @@ type shim struct {
 
 	exited chan struct{}
 	exit   error
+	// readDone closes as read ends; nread counts the bytes it has read
+	readDone chan struct{}
+	nread    atomic.Int64
 
 	// images is where a message's images are written for their paths to
 	// be pasted, made with the first; images counts them
@@ -144,7 +146,7 @@ func Run(args []string) error {
 		return fmt.Errorf("Claude Code's interactive mode didn't run: %s", why)
 	}
 	args = interactiveArgs(pargs[len(wslArgs(wsl)):])
-	s := &shim{out: os.Stdout, changed: make(chan struct{}, 1), rowsCh: make(chan struct{}, 1), exited: make(chan struct{}), wsl: wsl, listed: mcpListed(args)}
+	s := &shim{out: os.Stdout, changed: make(chan struct{}, 1), rowsCh: make(chan struct{}, 1), exited: make(chan struct{}), readDone: make(chan struct{}), wsl: wsl, listed: mcpListed(args)}
 	resume := ""
 	for i, a := range args {
 		if a == "--resume" && i+1 < len(args) {
@@ -254,7 +256,7 @@ func childEnv(extra ...string) []string {
 		case k == "CLAUDECODE", k == "CLAUDE_CODE_ENTRYPOINT", k == "CLAUDE_CODE_CHILD_SESSION",
 			k == "CLAUDE_CODE_SESSION_ID", k == "CLAUDE_CODE_SESSION_ATTENDED", k == "CLAUDE_CODE_EXECPATH",
 			k == "CLAUDE_PID", k == "CLAUDE_EFFORT", k == "TERM", k == "COLUMNS", k == "LINES",
-			strings.HasPrefix(k, "CLAUDE_CODE_MESSAGING_"), k == WSLEnv:
+			strings.HasPrefix(k, "CLAUDE_CODE_MESSAGING_"), k == WSLEnv, k == GuardEnv:
 			continue
 		case slices.ContainsFunc(extra, func(x string) bool { return strings.HasPrefix(x, k+"=") }):
 			continue
@@ -275,13 +277,47 @@ func childEnv(extra ...string) []string {
 	return append(append(env, extra...), "TERM=xterm-256color")
 }
 
+// ended records how Claude Code ended, err, once read has what it drew
+// before it ended: its exit can be seen before the bytes it wrote just
+// before are read, and the error said then carried an empty screen, not
+// the reason it gave (#5283, a loaded Linux CI runner). A terminal that
+// ends with its last writer (Unix) is read to its end; a pseudo console
+// that stays open (Windows, open) is read until it has gone quiet after
+// its first bytes. Two seconds at most, for a terminal a child of Claude
+// Code keeps open.
+func (s *shim) ended(err error, open bool) {
+	if s.readDone != nil {
+		limit := time.After(2 * time.Second)
+		for last := int64(0); ; {
+			var tick <-chan time.Time
+			if open {
+				tick = time.After(250 * time.Millisecond)
+			}
+			select {
+			case <-s.readDone:
+			case <-limit:
+			case <-tick:
+				if n := s.nread.Load(); n == 0 || n != last {
+					last = n
+					continue
+				}
+			}
+			break
+		}
+	}
+	s.exit = err
+	close(s.exited)
+}
+
 // read keeps the tail of what Claude Code draws, and answers what it asks
 // of the terminal: where the cursor is, and what terminal it is.
 func (s *shim) read() {
+	defer close(s.readDone)
 	buf := make([]byte, 64<<10)
 	for {
 		n, err := s.pty.Read(buf)
 		if n > 0 {
+			s.nread.Add(int64(n))
 			d := buf[:n]
 			if bytes.Contains(d, []byte("\x1b[6n")) {
 				_, _ = io.WriteString(s.pty, "\x1b[1;1R")
@@ -336,15 +372,20 @@ func (s *shim) clearScreen() {
 	s.screenMu.Unlock()
 }
 
-// screenSize is the size of Claude Code's terminal: Windows' pseudo
-// console is made 200 by 50 (child_windows.go); a pty here is given no
-// size, and Claude Code draws in 80 by 24.
-func screenSize() (cols, rows int) {
-	if runtime.GOOS == "windows" {
-		return 200, 50
-	}
-	return 80, 24
-}
+// screenCols and screenRows are the size of Claude Code's terminal, the
+// pseudo-terminal (child_unix.go) and Windows' pseudo console
+// (child_windows.go) made alike, and the grid the helper reads it on. A
+// grid of another size misreads the screen: an 80 by 24 one, on macOS and
+// Linux while their pseudo-terminal was 200 by 50, drew every row under
+// the 24th over the 24th, and /usage's panel, at the foot of the screen,
+// was told as one window or as a figure since drawn again (#4988, shinnqy
+// on X).
+const (
+	screenCols = 200
+	screenRows = 50
+)
+
+func screenSize() (cols, rows int) { return screenCols, screenRows }
 
 // looks is the screen as it is now, and the last look of it with a
 // usage window since it was cleared, while watched.
@@ -699,6 +740,16 @@ func (s *shim) command(name string) error {
 		loading, failed := usageLoading.MatchString(now), usageFailed.MatchString(now)
 		figures := panel != "" || usageUsed.MatchString(p)
 		switch {
+		case usageStale.MatchString(now) && still >= commandSettle:
+			// the figures drawn are the last ones Claude Code saved,
+			// which it couldn't refresh: told as unknown below
+			drawn = true
+		case usageRefreshing.MatchString(now):
+			// "Refreshing…": the figures drawn are the last ones Claude
+			// Code saved (up to an hour old) while it asks for today's.
+			// Taken once they stood still a second, every read told the
+			// one before it, its time now (jsc9495)
+			s.doing.Store("was still refreshing " + name + "'s figures")
 		case loading:
 			// the panel is drawn before its figures, which Claude Code
 			// asks Anthropic for: a slow answer kept "Loading usage
@@ -745,7 +796,17 @@ func (s *shim) command(name string) error {
 	if panel == "" {
 		text = usageText(p)
 	}
+	stale := usageStale.FindString(now)
+	if stale == "" && usageRefreshing.MatchString(now) {
+		stale = "still refreshing its figures after " + commandWait.String()
+	}
 	switch {
+	case stale != "":
+		// figures Claude Code saved before, not refreshed: unknown, the
+		// card keeping its own last reading and that reading's time
+		s.emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "session_id": s.sid,
+			"result": name + " couldn't load the plan's usage: " + stale})
+		return nil
 	case !usageUsed.MatchString(panel+p) && (usageLoading.MatchString(now) || usageFailed.MatchString(now)):
 		// no figures, the panel still loading them or saying it
 		// couldn't: unknown, not a plan with no allowance
@@ -772,6 +833,18 @@ func usageDrawn(screen string) bool {
 
 // /usage's panel once its figures failed to load (Claude Code 2.1.316)
 var usageFailed = regexp.MustCompile(`Failed to load usage data`)
+
+// /usage's panel drawing the figures Claude Code saved on an earlier read
+// (cachedUsageUtilization, up to an hour old) while it asks for today's
+// ("Refreshing…"), and once it couldn't ("Showing last-known usage as of
+// 20m ago (rate limited until 12:11am)", "… (could not refresh)"), as
+// Claude Code 2.1.316 draws them. Figures it seeded from this session's
+// own replies ("Partial usage data", "Could not refresh usage data") are
+// today's, and are told.
+var (
+	usageRefreshing = regexp.MustCompile(`\bRefreshing(?:…|\.\.\.)`)
+	usageStale      = regexp.MustCompile(`Showing last-known usage[^\n]*?\)|Showing last-known usage`)
+)
 
 var (
 	usageName    = regexp.MustCompile(`^(session|week(?: \([^)]*\))?)`)

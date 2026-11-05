@@ -239,6 +239,14 @@ type agentJSON struct {
 	// signed in to is used up (agent.Agent.AppOut), which turns the Codex
 	// app's ChatGPT side off until the reset
 	AppOut *appOutJSON `json:"appOut,omitempty"`
+	// AppBack: magpie gave Codex back its ChatGPT account at the reset
+	// and left the Codex app on the app-server it started while magpie
+	// was its provider, which shows no account or usage till it restarts
+	// (provider.CodexAppBack), for the row's Restart
+	AppBack bool `json:"appBack,omitempty"`
+	// AppSnag: the Codex app showed its error page after magpie restarted
+	// its app-server and magpie couldn't reopen it (provider.CodexAppSnagged)
+	AppSnag bool `json:"appSnag,omitempty"`
 	// Failover: not connected, yet its requests go through magpie for
 	// account failover alone (agent.Agent.FailingOver, #1385)
 	Failover bool `json:"failover,omitempty"`
@@ -447,7 +455,7 @@ type settingsJSON struct {
 	VisionMissing string `json:"visionMissing,omitempty"`
 	// VisionNotMarked are the custom providers (AddedByAddress) with a model left
 	// out of VisionModels only because nothing says it takes images: the
-	// user can say so in the provider's Names & levels (nexnull on Discord)
+	// user can say so in the provider's Names, prices & levels (nexnull on Discord)
 	VisionNotMarked []string `json:"visionNotMarked,omitempty"`
 	// the reasoning levels of the model that describes images now, and the
 	// one it is asked at when one is picked (VisionEffort fitted to them)
@@ -511,6 +519,9 @@ type settingsJSON struct {
 	// LANURLs are a container's own addresses, not the host's: the page
 	// offers the one it was opened at instead, or says how to set it
 	LANContainer bool `json:"lanContainer,omitempty"`
+	// where other containers on this host reach the gateway while magpie
+	// runs in one (gateway.ContainerHostURL)
+	LANContainerHost string `json:"lanContainerHost,omitempty"`
 	// those of LANURLs at an internet address, which anyone online can
 	// reach, not only this network
 	LANPublic []string `json:"lanPublic,omitempty"`
@@ -591,8 +602,12 @@ type searchChoiceJSON struct {
 	// Service is a Kimi Code plan, which searches by its search service:
 	// named by itself, with no model
 	Service bool `json:"service,omitempty"`
-	// Own is a Google sign-in, which searches for its own models first
+	// Own is a Google sign-in or an AI Studio key, which searches for its
+	// own models first
 	Own bool `json:"own,omitempty"`
+	// Search is a ChatGPT account, which searches by the ChatGPT backend's
+	// search ("<id>/@search") besides its models
+	Search bool `json:"search,omitempty"`
 }
 
 type searchVendorJSON struct {
@@ -604,6 +619,17 @@ type searchVendorJSON struct {
 	KeyOptional bool `json:"keyOptional,omitempty"`
 	// its own address, the one used while no base URL is set (#1580)
 	Base string `json:"base,omitempty"`
+	// Auth: a plugin's API that signs in as the plugin's provider, taking
+	// no key (provider.SearchVendor.Auth)
+	Auth *searchAuthJSON `json:"auth,omitempty"`
+}
+
+// searchAuthJSON is the provider a search API signs in as: its name, and
+// how many of its accounts are on (0 with none signed in).
+type searchAuthJSON struct {
+	Name     string `json:"name"`
+	SignedIn bool   `json:"signedIn"`
+	On       int    `json:"on"`
 }
 
 func searchState(s *settingsJSON) {
@@ -619,8 +645,17 @@ func searchState(s *settingsJSON) {
 		}
 		s.SearchAPIs = append(s.SearchAPIs, j)
 	}
-	for _, v := range provider.SearchVendors {
-		s.SearchVendors = append(s.SearchVendors, searchVendorJSON{ID: v.ID, Name: v.Name, KeysURL: v.KeysURL, NeedURL: v.Base == "", KeyOptional: v.KeyOptional, Base: v.Base})
+	for _, v := range provider.AllSearchVendors() {
+		j := searchVendorJSON{ID: v.ID, Name: v.Name, KeysURL: v.KeysURL, NeedURL: v.WantsURL(), KeyOptional: v.KeyOptional, Base: v.Base}
+		if v.Auth != "" {
+			name, p := provider.SearchSignIn(v)
+			j.Auth = &searchAuthJSON{Name: name}
+			if p != nil {
+				j.Auth.SignedIn = true
+				j.Auth.On = gateway.SearchAccountsOn(*p)
+			}
+		}
+		s.SearchVendors = append(s.SearchVendors, j)
 	}
 	s.SearchProvider = gateway.Searcher()
 	s.SearchAuto, s.SearchUnused = gateway.AutoSearcher(), gateway.SearcherUnused()
@@ -631,7 +666,7 @@ func searchState(s *settingsJSON) {
 	s.SearchChoices = []searchChoiceJSON{}
 	for _, c := range gateway.Searchers() {
 		p := c.Provider
-		j := searchChoiceJSON{ID: p.ID, Name: p.Name, Icon: p.Icon, Small: c.Small, SmallName: names[p.ID+"/"+c.Small], Models: []modelRef{}, Service: c.Service, Own: c.Own}
+		j := searchChoiceJSON{ID: p.ID, Name: p.Name, Icon: p.Icon, Small: c.Small, SmallName: names[p.ID+"/"+c.Small], Models: []modelRef{}, Service: c.Service, Own: c.Own, Search: c.Search}
 		for _, m := range c.Models {
 			id := p.ID + "/" + m.ID
 			j.Models = append(j.Models, modelRef{ID: id, Name: cmp.Or(names[id], m.Name, m.ID), Provider: p.ID, PName: p.Name, Icon: p.Icon})
@@ -767,13 +802,14 @@ func settingsState() settingsJSON {
 	s.Login, s.LoginAllow = login != autostart.Off, login == autostart.NeedsAllowing
 	if s.LAN {
 		s.LANURLs, s.LANContainer = gateway.LANURLs(), gateway.ContainerAddrs()
+		s.LANContainerHost = gateway.ContainerHostURL()
 		s.LANPublic = gateway.PublicURLs(s.LANURLs)
 	}
 	s.CodexWarmed, s.ClaudeWarmed = latest(provider.CodexWarmed()), latest(provider.ClaudeWarmed())
 	s.CodexUsers, s.ClaudeUsers = loginUsers("codex"), loginUsers("claude")
 	s.CodexAsyncHeld = agent.CodexAsyncHeld()
 	s.CodexCompactKeys = codexKeysText(agent.CodexCompactHeld(""))
-	s.CodexWindow = codexWindowUnder(s.Settings, agent.CodexModel(""))
+	s.CodexWindow = codexWindowUnder(s.Settings.ForAgent("codex"), agent.CodexModel(""))
 	s.WorkBuddy, s.WorkBuddyCheckins = provider.HasWorkBuddy(), provider.WorkBuddyCheckins()
 	s.Trae, s.TraeCheckins = provider.HasTrae(), provider.TraeCheckins()
 	s.MiniMax, s.MiniMaxCheckins = provider.HasMiniMax(), provider.MiniMaxCheckins()
@@ -837,10 +873,19 @@ func settingsState() settingsJSON {
 		}
 	}
 	// the routing groups with a member that draws (7up6666 on X): a
-	// group picked here draws on its members in its routing's order
+	// group picked here draws on its members in its routing's order. One
+	// of image models only isn't served to agents (jzw690 on X), so it is
+	// listed from the groups themselves
+	listed := map[string]bool{}
 	for _, e := range provider.Served() {
 		if e.Group != "" && gateway.GroupDraws(e.ID) {
+			listed[e.ID] = true
 			s.ImageGenModels = append(s.ImageGenModels, modelRef{ID: e.ID, Name: e.Name, PName: e.Group})
+		}
+	}
+	for _, g := range provider.Groups() {
+		if ref := g.Ref(); !g.Hidden && !g.Disabled && !listed[ref] && gateway.GroupDraws(ref) {
+			s.ImageGenModels = append(s.ImageGenModels, modelRef{ID: ref, Name: cmp.Or(g.Name, g.ID), PName: g.ID})
 		}
 	}
 	if v := gateway.ListedDrawer(s.ImageGen); v != s.ImageGen {
@@ -975,6 +1020,10 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		// and the text size, which the Mac's header measures against the
 		// traffic lights
 		boot := map[string]any{"lang": s.Lang, "theme": s.Theme, "textSize": s.TextSize, "web": isWeb(w)}
+		// and the version that served the page: a browser's page reloads
+		// once another answers in its place (visamzh on X), as after its
+		// own restart to update (backAsNew)
+		boot["version"] = Version
 		if s.Colorblind {
 			boot["colorblind"] = true
 		}
@@ -1018,6 +1067,13 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			// window's line names from the first paint (coeo91 on Discord)
 			if s.LAN || gateway.OnNetwork() {
 				side["lan"], side["lanURLs"] = true, gateway.LANURLs()
+				// in a container they are its own: the line names the host's
+				if gateway.ContainerAddrs() {
+					side["container"] = true
+				}
+				if u := gateway.ContainerHostURL(); u != "" {
+					side["containerHost"] = u
+				}
 				if u := gateway.PublicURL(); u != "" {
 					side["publicURL"] = u
 				}
@@ -1379,11 +1435,12 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		// the cards the menu bar shows, any of them (TrayUsage is only the first),
 		// how often, with their logos or not, beside the bird or not, as
 		// Windows' icon or not, and
-		// with their Pace numbers or not, with magpie's totals' cost or not, and
-		// which of each subscription's windows
+		// with their Pace numbers or not, with magpie's totals' cost or not,
+		// which of each subscription's windows, and the language the tooltip
+		// is in (yi_time)
 		if (!slices.Equal(settings.Load().TrayUsages, cur.TrayUsages) || in.TrayUsageEvery != cur.TrayUsageEvery ||
 			in.TrayNoLogos != cur.TrayNoLogos || in.TrayNoBird != cur.TrayNoBird || in.TrayNoNumber != cur.TrayNoNumber || in.TrayPace != cur.TrayPace ||
-			in.TrayNoCost != cur.TrayNoCost || !maps.EqualFunc(in.TrayWindows, cur.TrayWindows, slices.Equal)) && onTrayUsage != nil {
+			in.TrayNoCost != cur.TrayNoCost || !maps.EqualFunc(in.TrayWindows, cur.TrayWindows, slices.Equal) || in.Lang != cur.Lang) && onTrayUsage != nil {
 			onTrayUsage()
 		}
 		// an alert turned on or moved is looked at now, the Mac asked for its
@@ -1629,6 +1686,28 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			err = provider.SetCompactAt(*in.At)
 		}
 		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
+	// an agent's own Long conversations (settings.AgentCompacts): Own
+	// false follows the one for every agent again
+	mux.HandleFunc("POST /api/settings/agent-compact", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Agent     string
+			Own, Full bool
+			At        int
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		var c *settings.AgentCompact
+		if in.Own {
+			c = &settings.AgentCompact{At: in.At, Full: in.Full}
+		}
+		if err := provider.SetAgentCompact(in.Agent, c); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -2689,10 +2768,15 @@ func state() stateJSON {
 			aj.Joined = a.Joined != nil && a.Joined()
 			if a.AppOut != nil && a.AppOut() {
 				aj.AppOut = codexAppOut()
+			} else if a.ID == "codex" && a.WSL == "" {
+				aj.AppBack = provider.CodexAppBack()
 			}
 		} else {
 			aj.Source = a.Source()
 			aj.Failover = a.FailingOver != nil && a.FailingOver()
+		}
+		if a.ID == "codex" && a.WSL == "" {
+			aj.AppSnag = provider.CodexAppSnagged()
 		}
 		aj.AppRestart = a.AppBehind()
 		if a.Import != nil {
