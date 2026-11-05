@@ -8456,7 +8456,8 @@ function iconPicker(ed) {
         for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
         const data = await api("icons", { data: btoa(bin) });
         draft.icon = data.icon;
-        draft.iconFrom = "";
+        draft.iconFrom = typed = "";
+        asking = false;
         editorError("");
         draw();
         syncHead();
@@ -8466,8 +8467,7 @@ function iconPicker(ed) {
     };
     const choose = el("button", "text", t("Choose a picture…"));
     choose.onclick = () => file.click();
-    // the site's own icon (as before), a picture's address, or the name's
-    // letters on a tile: many sites have no /favicon.ico (usrname1833)
+    // the site's icon, a picture's address or the name's letters (usrname1833)
     const base = () => draft[apiField[draft.api]] || draft.chat || draft.responses || draft.anthropic || "";
     const site = el("button", "text", t("Get icon"));
     site.setAttribute("aria-haspopup", "menu");
@@ -8481,9 +8481,11 @@ function iconPicker(ed) {
       try {
         const data = await api(path, { name: draft.name || "", ...body });
         draft.icon = data.icon;
-        draft.iconFrom = body.url && !data.failed ? body.url : "";
+        // a typed address only, not the base URL (Refeccd)
+        const u = path === "icons/url" && body.url;
+        draft.iconFrom = u && !data.failed ? u : "";
         if (data.failed) note = t("That picture couldn't be used, so the icon is the name's letters: {why}", { why: data.failed });
-        asking = !!body.url;
+        if (!(asking = !!u)) typed = "";
         ok = !data.failed;
       } catch (e) {
         note = e.message;
@@ -8549,7 +8551,7 @@ function iconPicker(ed) {
         const b = el("button", n === draft.icon ? "on" : "");
         b.title = n.replace(/-color$/, "");
         b.append(icon(n));
-        b.onclick = () => { draft.icon = n; draft.iconFrom = ""; open = false; draw(); syncHead(); };
+        b.onclick = () => { draft.icon = n; draft.iconFrom = typed = ""; asking = open = false; draw(); syncHead(); };
         grid.append(b);
       }
       box.append(find, grid);
@@ -10837,9 +10839,8 @@ function showRest(n, open) {
 // DETECT_MAX: the most models one detection asks (provider.DetectMax)
 const DETECT_MAX = 30;
 // addFormModels: the add form's models, typed in (ex) or picked from the
-// vendor's list, asked with the form as it stands before anything is saved
-// (#578). A chip
-// ticked or unticked is in draft.extra, which the Save sends as the models.
+// vendor's list before anything is saved (#578); a chip ticked is in
+// draft.extra, which the Save sends as the models.
 function addFormModels(ex) {
   const box = el("div", "stack add-models");
   const row = el("div", "detect-row");
@@ -10866,7 +10867,7 @@ function addFormModels(ex) {
     const tells = modelTells(listed);
     for (const m of match) {
       const on = draft.extra.includes(m.id);
-      // past the first 120 only the picked are drawn, till the rest are asked for
+      // past 120 only the picked are drawn, till the rest are asked for
       if (shown >= 120 && !f && !showAll && !on) { hidden++; continue; }
       const c = el("button", "mchip pick" + (on ? " on" : ""));
       c.append(el("span", "", m.name || m.id));
@@ -10900,10 +10901,9 @@ function addFormModels(ex) {
       const r = await api("provider/list", body);
       listed = r?.models || [];
       out.replaceChildren();
-      if (!listed.length) { out.append(el("span", "hint", t("The vendor's list is empty. Type the model ids instead."))); return; }
+      if (!listed.length) { out.append(el("span", "hint", t(r?.retrieval ? emptyModelsHint(r) : "The vendor's list is empty. Type the model ids instead."))); return; }
       q.placeholder = t("filter {n} models…", { n: listed.length });
-      // the picks' count and Pick all / none above the chips, which a pick
-      // can make a line longer or shorter, so they stay where they are
+      // the picks' count and Pick all / none above the chips: they stay put
       if (listed.length > 24) out.append(q);
       out.append(acts, chips);
       draw();
@@ -11149,6 +11149,7 @@ let picksLeft = null;
 const MCHIPS_MAX = 240;
 // emptyModelsHint: an empty list's words; Azure's is its deployments (#1995)
 function emptyModelsHint(p) {
+  if (p.retrieval) return "Only embedding and rerank models are listed. They need no pick: ask them on /v1/embeddings and /v1/rerank.";
   if (p.preset !== "azure") return "The vendor's list is empty. Fetch models again, or type a model id.";
   if (providers?.fetching && !p.fetched && !p.listError) return "Asking your resource for its deployments with this key…";
   return "No deployments came back for this key. Fetch models again, or type a deployment's name as a model id.";
@@ -11991,9 +11992,8 @@ function renderModels(p) {
   return box;
 }
 
-// renderDrawers: its image models, ticked for Settings → Images (321sssrt on X)
 function renderDrawers(p) {
-  return field(t("Image models"), mediaChips("mchips drawers", p.drawIds, "hiddenDrawers", p), t("Settings → Images lists the ticked ones. Agents don't chat with these, so they aren't among its models."));
+  return field(t("Image models"), mediaChips("mchips drawers", p.drawIds, "hiddenDrawers", p, p.drawNames), p.drawPicks ? t("ChatGPT's image backend picks the model itself, whichever is named, so one GPT Image is listed") : t("Settings → Images lists the ticked ones. Agents don't chat with these, so they aren't among its models."));
 }
 
 // renderVideomakers: its video models, ticked to be offered (axelburks on Discord)
@@ -12001,13 +12001,15 @@ function renderVideomakers(p) {
   return field(t("Video models"), mediaChips("mchips videomakers", p.filmIds, "hiddenVideomakers", p), t("Only the ticked ones are offered when making a video. Agents don't chat with these, so they aren't among its models."));
 }
 
-function mediaChips(cls, ids, key, p) {
+function mediaChips(cls, ids, key, p, names) {
   const chips = el("div", cls);
   draft[key] ||= [...(p[key] || [])];
   for (const id of ids) {
     const c = el("button", "mchip pick");
     c.type = "button";
-    c.append(el("span", "", id));
+    const n = names?.[id];
+    c.append(el("span", "", n || id));
+    if (n) c.title = id;
     const show = () => { const on = !draft[key].includes(id); c.classList.toggle("on", on); c.setAttribute("aria-pressed", on); };
     c.onclick = () => {
       draft[key] = draft[key].includes(id) ? draft[key].filter((x) => x !== id) : [...draft[key], id];
@@ -12021,11 +12023,8 @@ function mediaChips(cls, ids, key, p) {
 
 // renderRouting: how the gateway spreads requests over the keys or
 // accounts a provider has on, and how long a conversation stays with the
-// one that answered it. Both are staged in the editor's draft (routing,
-// affinity) and made with its Save, as the rest of the editor is: a click
-// shows the option and what it does, nothing is sent or redrawn, and
-// Cancel drops it (01huadalang on Discord: each click saved and redrew,
-// so looking through what each says lagged).
+// one that answered it. Both are staged in the draft and made with Save
+// (01huadalang on Discord: each click saved and redrew).
 const ROUTINGS = [
   ["", "Smart", "The first takes requests while it has quota to spare; when it runs low, the one with the most left takes over. One out of credit sits out half an hour, one out of quota until it resets, one rate limited as long as the vendor asks, and one that fails a minute, longer each time it fails again."],
   ["order", "In order", "Requests go to the first; the next takes over when the one before runs out of quota, hits a rate limit or fails."],
@@ -14019,7 +14018,7 @@ function windowCapsOf(p, user) { return Object.keys(p?.accountWindowCaps?.[Strin
 function windowCapOf(p, user, w) {
   const own = windowOwnCapOf(p, user, w);
   if (own) return own >= 100 ? 0 : own;
-  return accountCapOf(p, user);
+  return w?.ownCap ? 0 : accountCapOf(p, user);
 }
 // capHeldOf: how the account is held at cap, as the gateway reads it —
 // a window at or past its cap (capFor: its own, else the account's), not
@@ -14112,7 +14111,7 @@ function pillNumber(at, val, ph, cls, label, parse, bad, own, set) {
 // sets the window's own cap, a family's its models' (tiers); not on-demand's.
 function windowCapMeter(m, p, user, w) {
   const ids = (w.tiers || [w]).map((x) => x.capId), owns = ids.map((capId) => windowOwnCapOf(p, user, { capId }));
-  if (!ids.every(Boolean)) return m;
+  if (!ids.every(Boolean) || w.ownCap && !(owns[0] % 100)) return m;
   const own = new Set(owns).size > 1 ? 0 : owns[0], cap = accountCapOf(p, user);
   const name = t(w.name);
   const b = spanBtn(el("span", m.className + " aq-set" + (own ? " own" : "")));
@@ -14862,7 +14861,7 @@ function keyMatches(k, q) {
   if (!words.length) return true;
   const resting = k.rest && new Date(k.rest.until) > Date.now();
   const text = [k.name, k.masked, k.on ? "" : "off " + t("turned off"),
-    resting ? "resting " + t("resting") + " " + (KEY_FAIL[k.rest.why] || "failed") + " " + t(KEY_FAIL[k.rest.why] || "failed") + " " + (k.rest.status || "") : ""].join(" ").toLowerCase();
+    resting ? "resting " + t("resting") + " " + keyFail(k.rest) + " " + t(keyFail(k.rest)) + " " + (k.rest.status || "") : ""].join(" ").toLowerCase();
   return words.every((w) => text.includes(w));
 }
 // keyDead: a key the gateway is passing over for good reason, not a rate
@@ -14950,7 +14949,7 @@ function splitKeys(text) {
 }
 // a rest's line: why, till when, the vendor's words, Try now (#1869)
 function restLineOf(r, model, title, name, lifted) {
-  const why = (r.status ? r.status + " " : "") + t(KEY_FAIL[r.why] || "failed"), time = restBack(r.until);
+  const why = (r.status ? r.status + " " : "") + t(keyFail(r)), time = restBack(r.until);
   const s = el("span", "key-rest", (model ? t("{model} resting · {why} · back at {time}", { model, why, time }) : t("Resting · {why} · back at {time}", { why, time })) + (r.probed ? " · " + t("checked in the background, back as soon as it answers") : ""));
   s.title = title;
   const go = el("button", "text key-unrest", t("Try now"));
@@ -14979,6 +14978,8 @@ const accountRestLines = (p, user) => {
 
 // a key's rest, worded as the Routing page words a failure
 const KEY_FAIL = { rate: "rate limited", credit: "out of credit", quota: "quota used up", other: "failed", auth: "sign-in required", verify: "needs verification", refused: "refused (safety filter)", proxy: "proxy not reachable", slow: "slow to start" };
+// Rest.Rate: the vendor called it a rate limit
+const keyFail = (r) => r.why === "quota" && r.rate ? KEY_FAIL.rate : KEY_FAIL[r.why] || "failed";
 
 // protoPicker: which protocol a key works with. Some relays hand out one
 // key for Anthropic and another for OpenAI; a key set to one is used on
@@ -15737,21 +15738,18 @@ if (mode === "panel") { const none = [], k = kept("panelQuotas", none); if (k !=
 let quotaHist = []; // each account's windows over time, for the curves (#651)
 // quotasOpened: the reader opened what shows the allowances (the Usage
 // page's Overview, the tray panel's Allowances tab, a menu bar cell, either
-// brought back to the front), which is asking to see them now (#1588,
-// qq666666qq), as Refresh now is: an asked read, the one that goes out
-// with allowances read only when asked (#1518). Each one asked makes the
-// backend read every account again, so opening within QUOTAS_OPEN_GAP of
-// the last asked read (switching tabs and back, the window's focus and
-// visibility both firing, focus-follows-mouse) asks nothing: it takes what
-// is kept, or the read on its way. Refresh now asks every time.
+// brought back to the front): an asked read (#1588, #1518), which reads
+// every account again, so opening within QUOTAS_OPEN_GAP of the last one
+// (tabs, focus and visibility both firing) asks nothing. Refresh always
+// asks, saved Claude accounts too ("all", #5380).
 const QUOTAS_OPEN_GAP = 30e3;
 let quotasAskedAt = -Infinity;
 function quotasOpened() {
   return loadQuotas(performance.now() - quotasAskedAt >= QUOTAS_OPEN_GAP);
 }
 
-// An asked load is never swallowed by one already on its way that wasn't:
-// it goes after it.
+// A load is never swallowed by a lesser one on its way (asked over none,
+// "all" over both): it goes after it.
 // An answer said to be read while the accounts' usage is being read again
 // (X-Magpie-Reading) can be the stale copy that read replaces: it is asked
 // for again, every 1.5s for half a minute at most, until the new one has
@@ -15761,7 +15759,8 @@ let quotasLoading = null, quotasLater = 0, quotasTries = 0;
 let quotaRefreshVersion = 0;
 const quotaRefreshVersions = new Map();
 function loadQuotas(asked, again) {
-  if (quotasLoading && (!asked || quotasLoading.asked)) return quotasLoading;
+  const r = (a) => (a === "all" ? 2 : +!!a);
+  if (quotasLoading && r(asked) <= r(quotasLoading.asked)) return quotasLoading;
   if (asked) { quotasAskedAt = performance.now(); quotaCycleHolds.clear(); }
   if (!again) quotasTries = 0;
   let reading = false, same = false, began;
@@ -15771,7 +15770,7 @@ function loadQuotas(asked, again) {
       // the curves come on their own: the allowances now never wait for
       // them (a remote magpie's history can take seconds; #3192)
       loadQuotaHist();
-      return api("usage/quotas" + (asked ? "?asked=1" : ""), undefined, (h) => { reading = h.get("X-Magpie-Reading") === "1"; });
+      return api("usage/quotas" + (asked ? "?asked=1" + (asked === "all" ? "&all=1" : "") : ""), undefined, (h) => { reading = h.get("X-Magpie-Reading") === "1"; });
     })
     .then((q) => {
       // an answer that isn't a list of cards is a read that failed: what
@@ -15791,7 +15790,7 @@ function loadQuotas(asked, again) {
       if (view === "usage") loadUpstream();
       if (reading && !quotasLater && ++quotasTries <= 20) quotasLater = setTimeout(() => { quotasLater = 0; loadQuotas(false, true); }, 1500);
     });
-  p.asked = !!asked;
+  p.asked = asked;
   quotasLoading = p;
   return p;
 }
@@ -21681,10 +21680,10 @@ function renderReplies(s, keep) {
   const c = segRow("claudeLeanRow", t("Short Claude system prompt"),
     t("A Claude subscription answers with the agent's own instructions as its system prompt, in place of Claude Code's, about 1K fewer tokens each request. Still the real Claude Code, but its requests look less like Claude Code's own, which can put the account more at risk"),
     onOff, s.claudeLeanPrompt ? "on" : "off", (v) => savePrefs({ ...keep, claudeLeanPrompt: v === "on" }));
-  // a Claude run as Claude Code's interactive mode, -p when off (the plan
-  // counts a -p request at about twice); on, nothing is ever -p
+  // Claude Code's interactive mode, -p when off (2x the plan's count);
+  // on, -p only for a prompt Anthropic refused there (#4503)
   const u = segRow("claudeTuiRow", t("Claude Code's interactive mode"),
-    t("A Claude subscription runs Claude Code as a person does, in its interactive mode, where the plan counts a request at about half of what -p uses. On, no request ever runs as -p. Off runs every request as claude -p"),
+    t("A Claude subscription runs Claude Code as a person does, in its interactive mode, where the plan counts a request at about half of what -p uses. On, a request runs as -p only when Anthropic refuses its agent's prompt there. Off runs every request as claude -p"),
     onOff, s.claudePrintMode ? "off" : "on", (v) => { claudeMode = null; savePrefs({ ...keep, claudePrintMode: v === "off" }); });
   box.append(r, l, f, k, c, u);
 }
@@ -23389,7 +23388,7 @@ async function refreshPage(kind) {
       await magpie.call("usage", "reload");
       return t("Usage refreshed");
     case "allowances":
-      await loadQuotas(true);
+      await loadQuotas("all");
       return t("Allowances refreshed");
     case "requests":
       await loadPanelUse();
