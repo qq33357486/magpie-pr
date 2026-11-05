@@ -427,7 +427,7 @@ func TestCodexAccountDraws(t *testing.T) {
 	}
 	// the tiers beside it: the backend's images API takes each by name
 	// (this fork's listing; gpt-image-2 was the vendor's pick alone, #1865)
-	if ds := Drawers(*p); len(ds) != 4 || ds[0].ID != "gpt-image-2" || ds[3].ID != "gpt-image-2.5-sunburst" || ds[0].Name != "GPT Image" {
+	if ds := Drawers(*p); len(ds) != 7 || ds[0].ID != "gpt-image-2" || ds[3].ID != "gpt-image-2.5-sunburst" || ds[6].ID != "gpt-image-2.6-sunburst" || ds[0].Name != "GPT Image" {
 		t.Fatalf("drawers %v", ds)
 	}
 	// Automatic asks for what Codex CLI asks for

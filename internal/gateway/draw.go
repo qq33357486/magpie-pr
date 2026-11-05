@@ -255,6 +255,9 @@ var codexDrawers = []catalog.Model{
 	{ID: "gpt-image-2.5", Name: "GPT Image 2.5", Released: "2026-10-01"},
 	{ID: "gpt-image-2.5-flare", Name: "GPT Image 2.5 Flare", Released: "2026-10-01"},
 	{ID: "gpt-image-2.5-sunburst", Name: "GPT Image 2.5 Sunburst", Released: "2026-10-01"},
+	{ID: "gpt-image-2.6", Name: "GPT Image 2.6", Released: "2026-11-05"},
+	{ID: "gpt-image-2.6-flare", Name: "GPT Image 2.6 Flare", Released: "2026-11-05"},
+	{ID: "gpt-image-2.6-sunburst", Name: "GPT Image 2.6 Sunburst", Released: "2026-11-05"},
 }
 
 // VendorPicksDrawer is whether p's vendor picks the image model itself,
