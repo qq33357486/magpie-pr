@@ -626,6 +626,11 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 			fail(404, fmt.Sprintf("magpie knows no model %q to draw with", d.Model))
 			return
 		}
+		if drawsCodex(p) { // fork: 2.5→2.6 tier routing (new-api mapping is dead under passthrough); relay/grok keep their names
+			if a := forkAliasImageModel(model); a != model {
+				model, d.Model, call.Model = a, a, a
+			}
+		}
 		g, ms, isGroup := drawingGroup(d.Model, p, model)
 		if isGroup {
 			r = heldByGroup(r, g) // held to the group's accounts, if it is
