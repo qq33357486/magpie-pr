@@ -49,17 +49,19 @@ func forkChainGate(w http.ResponseWriter, r *http.Request, from provider.Protoco
 	if p == nil || p.ID != "codex" || strings.HasPrefix(model, "gpt-image-") {
 		return false
 	}
-	if cands == nil || len(*cands) == 0 || !streamOf(body) {
-		return false // a whole-body client keeps upstream's plain 429
+	if cands == nil || len(*cands) == 0 {
+		return false
 	}
 	key := chainOf(r.Header, body)
 	e := chainTouch(key)
+	log.Printf("fork chain gate: key=%s why=%s kept=%v last=%s entry=%+v cands=%d",
+		firstWord(key), affWhyOf(aff), affKeptOf(aff), affLastOf(aff), entryFmt(e), len(*cands))
 
 	// a conversation pinned to an account keeps that account first: the
 	// minted key must never be sent anywhere else (a resting account the
 	// router would move to, included)
 	if e != nil && e.Phase == chainPinned {
-		if aff != nil && aff.Why == "spent" {
+		if aff != nil && chainLeaving(aff) {
 			// the pinned account itself is spent: the chain moves on —
 			// tell the client to compact, a fresh key is minted after
 			e.Phase, e.Key, e.Tells = chainTold, "", 0
@@ -81,7 +83,7 @@ func forkChainGate(w http.ResponseWriter, r *http.Request, from provider.Protoco
 		}
 	}
 
-	if aff == nil || aff.Why != "spent" {
+	if !chainLeaving(aff) {
 		return false
 	}
 
@@ -153,7 +155,7 @@ func forkChainCompact(w http.ResponseWriter, r *http.Request, body []byte) bool 
 // stops and compacts on (gateway.go streamError's comment carries the
 // codex-rs citation); a chat-tool client gets a plain reply it can read.
 func chainTellBack(w http.ResponseWriter, from provider.Protocol, model string, in http.Header, body []byte) {
-	if chainIsAgent(in, body) {
+	if chainIsAgent(in, body) && streamOf(body) {
 		sw := newSSEWriter(w)
 		sw.begun = true
 		makeEncoder(from, sw, &Request{Model: model}).event(Event{
@@ -162,6 +164,11 @@ func chainTellBack(w http.ResponseWriter, from provider.Protocol, model string, 
 			Code:   "context_length_exceeded",
 			Text:   "This conversation's context is full; compacting it to continue.",
 		})
+		return
+	}
+	if !streamOf(body) {
+		// a whole-body client can't read a stream: the text as its error
+		writeError(w, from, 429, chainChatText)
 		return
 	}
 	sw := newSSEWriter(w)
@@ -236,4 +243,45 @@ func firstWord(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// affWhyOf and friends keep the gate's debug log line short.
+func affWhyOf(a *Affinity) string {
+	if a == nil {
+		return "<nil>"
+	}
+	return a.Why
+}
+
+func affKeptOf(a *Affinity) bool { return a != nil && a.Kept }
+
+func affLastOf(a *Affinity) string {
+	if a == nil {
+		return ""
+	}
+	return a.Last
+}
+
+func entryFmt(e *chainEntry) string {
+	if e == nil {
+		return "<none>"
+	}
+	return fmt.Sprintf("phase=%s key=%s acct=%s tells=%d", e.Phase, e.Key, e.Account, e.Tells)
+}
+
+// lenOf is the gate's debug helper.
+func lenOf(cs *[]candidate) int {
+	if cs == nil {
+		return -1
+	}
+	return len(*cs)
+}
+
+// chainLeaving says the conversation's account can't take it anymore: the
+// router's own word for it is spent (used past its share) or gone (held
+// out of the candidates entirely — a window cap, or past its share at
+// plan time). Either way, upstream routing is about to hand the
+// conversation to another account, which is what the chain exists to stop.
+func chainLeaving(a *Affinity) bool {
+	return a != nil && a.Last != "" && (a.Why == "spent" || a.Why == "gone")
 }

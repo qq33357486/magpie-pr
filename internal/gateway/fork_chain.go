@@ -26,6 +26,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -240,7 +241,12 @@ func forkChainIdentity(in http.Header, body []byte, account string) []byte {
 	if e == nil || e.Phase != chainPinned || e.Key == "" || e.Account != account {
 		return body
 	}
-	return forkSwapIdentity(body, e.Key)
+	out := forkSwapIdentity(body, e.Key)
+	if string(out) != string(body) {
+		log.Printf("fork chain identity: conv=%s on %s pck %s -> %s",
+			firstWord(key), firstWord(account), forkPCK(body), e.Key)
+	}
+	return out
 }
 
 // forkSwapIdentity is the byte-level swap itself, kept apart for its test.
