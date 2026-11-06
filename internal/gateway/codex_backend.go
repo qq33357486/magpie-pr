@@ -221,6 +221,9 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 			// array too long", and Codex shows it as the turn's error
 			// (jue on Discord). A summary magpie made goes as its text.
 			body, _ = codexInput(body, false)
+			if forkChainCompact(w, r, body) { // fork(2026-11-06): 链上told会话的压缩截给glm代答,见fork_compress.go
+				return
+			}
 			// a key held to some accounts (#905) may not spend the sign-in
 			// compaction still relays on: refused as its turns are (#967),
 			// with nothing asked of OpenAI — and refused when the sign-in
@@ -1188,6 +1191,10 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 			s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1].Reset = &AutoReset{Who: who, Text: out.Text()} })
 			resetNote = "openai (" + who + "): used one of its resets by itself before its credits (" + out.Text() + ")"
 		}
+	}
+	if on != nil && on.Account != nil {
+		// fork(2026-11-06): codex身份链——池账号出站的pck/thread_id换成链上minted键(头由Sign从body重建),见fork_chain.go
+		body = forkChainIdentity(r.Header, body, on.Account.User)
 	}
 	for {
 		// the try's own, which a stream that failed before its reply ends

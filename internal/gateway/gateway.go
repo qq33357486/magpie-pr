@@ -2884,6 +2884,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	before := len(cands)
 	inOrder := isGroup && routingOf(g.Routing) == provider.Ordered
 	cands, pl, aff, stuck := affine(scope, mode, rotate, spread, inOrder, r.Header, from, body, plain, cands, pl)
+	if forkChainGate(w, r, from, aff, &cands, &pl, body, model, &p) { // fork(2026-11-06): codex身份链,号满打回+glm压缩+指纹链,见fork_gate.go
+		return
+	}
 	// a strict conversation left with its own account of several: its
 	// failure rests the account as it would with the others still there,
 	// for new conversations to go elsewhere meanwhile (#1797)
@@ -5560,6 +5563,10 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 		// (mantle.go)
 		m := gjson.GetBytes(body, "model").String()
 		base = provider.MantleBase(base, m, !s.fits(p.ID, mantleRouteKey(m), to))
+	}
+	if to == provider.Responses && p.Account != nil && p.Account.Agent == "codex" {
+		// fork(2026-11-06): codex身份链——pinned会话的出站指纹换成链上minted键(头由Sign从body重建),见fork_chain.go
+		body = forkChainIdentity(in, body, p.Account.User)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, nil)
 	if err != nil {

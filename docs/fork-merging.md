@@ -30,6 +30,7 @@ fork 把"客户文案中文化 + 脱敏 + 断流 504"整层**退役归还上游*
 | 订阅桥 | claude_subscription.go（rewriteImageNotes + textCallSee 接线）+ claude_image_notes.go（专属） | 功能 |
 | textcalls（模型把工具调用打成文本） | textcalls.go（"[tool call " 标记）+ textcalls_magpie.go（专属） | 功能，上游 issue #2485/2486 未修 |
 | 响应 model 归一（Anthropic 出口回写为客户请求名，vendor 马甲不露真身；透传路径不经过此处——别名 vendor 须走翻译路径，即 BaseAPI≠客户端协议） | anthropic.go 两处：anthropicEncoder.start（model 优先 e.model，2026-10-31）+ renderAnthropic（删 res.Model 覆盖） | 功能 |
+| codex 身份链（号满不切号：打回 context_length_exceeded→客户端自压→glm 代答→pinned 会话出站换 minted 指纹） | 专属四文件：fork_chain.go（状态机+fork_chain.json 持久化+forkSwapIdentity 字节级替换）+ fork_gate.go（forkChainGate/forkChainCompact/chainTellBack）+ fork_compress.go（glm-5.3-flash 经 gw-cc anthropic 端点直压）+ fork_chain_test.go；共享钩子 **4 处单行**：gateway.go affine 后（forkChainGate）+ gateway.go forwardOnce NewRequest 前（forkChainIdentity，判 Agent=="codex"）+ codex_backend.go compact 入口 codexInput 后（forkChainCompact）+ codex_backend.go codexUpstreamOn try 循环前（forkChainIdentity）；testing.Testing() 全直通；FORK_CHAIN=off 一键停 | 功能 |
 | 少量修上游红 | agentenv_test.go（CARGO_HOME）、tui/models_test.go（add927e6 picker） | 测试 |
 
 共享文件里的钩子合计约 10 处、多为单行——这就是合并冲突的全部期望来源。
