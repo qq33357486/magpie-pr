@@ -108,27 +108,27 @@ func TestForkChainMessages(t *testing.T) {
 		{"type":"function_call_output","output":"all tests passed"},
 		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"main.go fixed"}]}
 	]}`)
-	system, msgs, err := forkChainMessages(body)
+	msgs, err := forkChainMessages(body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(system, "be brief") || !strings.Contains(system, "原系统提示") {
-		t.Fatalf("system note wrong: %q", system)
+	if len(msgs) != 5 {
+		t.Fatalf("messages = %d, want 5 (system note + 4 turns, reasoning dropped)", len(msgs))
 	}
-	if len(msgs) != 4 {
-		t.Fatalf("messages = %d, want 4 (reasoning dropped)", len(msgs))
+	if msgs[0]["role"] != "system" || !strings.Contains(msgs[0]["content"].(string), "be brief") {
+		t.Fatalf("system note wrong: %v", msgs[0])
 	}
-	if msgs[0]["role"] != "user" || !strings.Contains(msgs[0]["content"].(string), "main.go") {
-		t.Fatalf("first message wrong: %v", msgs[0])
+	if msgs[1]["role"] != "user" || !strings.Contains(msgs[1]["content"].(string), "main.go") {
+		t.Fatalf("first message wrong: %v", msgs[1])
 	}
-	if msgs[1]["role"] != "assistant" || !strings.Contains(msgs[1]["content"].(string), "shell") {
-		t.Fatalf("tool call not bracketed: %v", msgs[1])
+	if msgs[2]["role"] != "assistant" || !strings.Contains(msgs[2]["content"].(string), "shell") {
+		t.Fatalf("tool call not bracketed: %v", msgs[2])
 	}
-	if msgs[2]["role"] != "user" || !strings.Contains(msgs[2]["content"].(string), "all tests passed") {
-		t.Fatalf("tool output not carried: %v", msgs[2])
+	if msgs[3]["role"] != "user" || !strings.Contains(msgs[3]["content"].(string), "all tests passed") {
+		t.Fatalf("tool output not carried: %v", msgs[3])
 	}
-	if msgs[3]["role"] != "assistant" || !strings.Contains(msgs[3]["content"].(string), "fixed") {
-		t.Fatalf("reply dropped: %v", msgs[3])
+	if msgs[4]["role"] != "assistant" || !strings.Contains(msgs[4]["content"].(string), "fixed") {
+		t.Fatalf("reply dropped: %v", msgs[4])
 	}
 }
 

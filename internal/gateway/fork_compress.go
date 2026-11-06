@@ -4,14 +4,12 @@ package gateway
 //
 // 客户端收到 context_length_exceeded 后发出的 /responses/compact 由这里
 // 截住: 全量历史(含工具调用轮, 仅丢 tools 的 schema 定义——压缩用不上)
-// 转成 Anthropic messages 直发 glm-5.3-flash(1M 窗口直吞长会话), 摘要按
-// fork_gate 的合成样板回给客户端。glm 走 gw-cc provider 的 key, 不经
-// new-api 不计费; 失败时 forkChainCompact 返回 false, 压缩请求退回
-// magpie 自己的中继路由(不硬塞)。
-//
-// 直连样板 = zhipu_coding.go / warmCodex(provider 包内读 Provider 配置+
-// 手拼请求的先例); 鉴权照 AuthHeaders 对第三方 anthropic 兼容端点的默认
-// 双头(x-api-key + Bearer)。压缩指令要求结构化摘要, 技术名词原样保留。
+// 转成 chat messages 直发 glm-5.3-flash, 摘要按 fork_gate 的合成样板回给
+// 客户端。glm 走 gw-cc provider 的 coding plan 端点(p.Chat 的
+// /chat/completions, plan 配额), 绝不走 API/anthropic 计费端点(红线:
+// 不烧智谱余额), 不经 new-api 不计费; 失败时 forkChainCompact 返回
+// false, 压缩请求退回 magpie 自己的中继路由(不硬塞)。压缩指令要求结构
+// 化摘要, 技术名词原样保留。
 
 import (
 	"bytes"
@@ -54,6 +52,8 @@ const chainSummaryInstruction = `你是会话压缩器。把下面这份 codex �
 用中文输出，技术名词保留英文。直接输出摘要正文，不要开场白。`
 
 // forkGLMSummarize runs the compaction summary on glm and returns its text.
+// The GLM provider here is a coding-plan endpoint (chat completions at
+// p.Chat, its plan's own quota — never an API endpoint that would bill).
 func forkGLMSummarize(ctx context.Context, body []byte) (string, error) {
 	p, err := provider.Find(forkChainGLM)
 	if err != nil {
@@ -63,11 +63,14 @@ func forkGLMSummarize(ctx context.Context, body []byte) (string, error) {
 	if len(keys) == 0 || strings.TrimSpace(keys[0].Key) == "" {
 		return "", fmt.Errorf("provider %s has no key on", forkChainGLM)
 	}
-	base := p.Base(provider.Anthropic)
+	base := p.Chat
 	if base == "" {
-		return "", fmt.Errorf("provider %s has no anthropic base", forkChainGLM)
+		base = p.Base(provider.Chat)
 	}
-	system, msgs, err := forkChainMessages(body)
+	if base == "" {
+		return "", fmt.Errorf("provider %s has no chat base", forkChainGLM)
+	}
+	msgs, err := forkChainMessages(body)
 	if err != nil {
 		return "", err
 	}
@@ -76,22 +79,21 @@ func forkGLMSummarize(ctx context.Context, body []byte) (string, error) {
 	payload, err := json.Marshal(map[string]any{
 		"model":      forkGLMModel,
 		"max_tokens": chainSummaryBudget(),
-		"system":     chainSummaryInstruction + system,
-		"messages":   msgs,
+		"messages": append([]map[string]any{{
+			"role": "system", "content": chainSummaryInstruction,
+		}}, msgs...),
 	})
 	if err != nil {
 		return "", err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(base, "/")+"/v1/messages", bytes.NewReader(payload))
+		strings.TrimRight(base, "/")+"/chat/completions", bytes.NewReader(payload))
 	if err != nil {
 		return "", err
 	}
 	key := keys[0].Key
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("x-api-key", key)
 	req.Header.Set("Authorization", "Bearer "+key)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -106,32 +108,30 @@ func forkGLMSummarize(ctx context.Context, body []byte) (string, error) {
 		return "", fmt.Errorf("glm %s: %s", res.Status, truncateFork(string(b), 200))
 	}
 	var reply struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
 	}
 	if err := json.Unmarshal(b, &reply); err != nil {
 		return "", err
 	}
-	var sb strings.Builder
-	for _, c := range reply.Content {
-		if c.Type == "text" {
-			sb.WriteString(c.Text)
-		}
+	sum := ""
+	if len(reply.Choices) > 0 {
+		sum = strings.TrimSpace(reply.Choices[0].Message.Content)
 	}
-	sum := strings.TrimSpace(sb.String())
 	if sum == "" {
 		return "", fmt.Errorf("glm wrote no summary text")
 	}
 	return sum, nil
 }
 
-// forkChainMessages turns a codex Responses body into anthropic messages:
-// every turn's text survives — tool calls and their outputs as bracketed
-// text, the model's private reasoning left out. The instructions go back
-// as a system note for context, not as a role to answer.
-func forkChainMessages(body []byte) (string, []map[string]any, error) {
+// forkChainMessages turns a codex Responses body into chat messages: every
+// turn's text survives — tool calls and their outputs as bracketed text,
+// the model's private reasoning left out. The instructions go back as a
+// context note, not as a role to answer.
+func forkChainMessages(body []byte) ([]map[string]any, error) {
 	var req struct {
 		Instructions string `json:"instructions"`
 		Input        []struct {
@@ -144,13 +144,13 @@ func forkChainMessages(body []byte) (string, []map[string]any, error) {
 		} `json:"input"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
-		return "", nil, fmt.Errorf("compaction body: %w", err)
-	}
-	system := ""
-	if s := strings.TrimSpace(req.Instructions); s != "" {
-		system = "\n\n[原系统提示，仅供理解上下文]\n" + s
+		return nil, fmt.Errorf("compaction body: %w", err)
 	}
 	msgs := []map[string]any{}
+	if s := strings.TrimSpace(req.Instructions); s != "" {
+		msgs = append(msgs, map[string]any{"role": "system",
+			"content": "[原系统提示，仅供理解上下文]\n" + s})
+	}
 	for _, it := range req.Input {
 		switch {
 		case it.Type == "message" || it.Role == "user" || it.Role == "assistant":
@@ -171,10 +171,14 @@ func forkChainMessages(body []byte) (string, []map[string]any, error) {
 				"content": "[工具返回] " + truncateFork(it.Output, 6000)})
 		}
 	}
-	if len(msgs) == 0 {
-		return "", nil, fmt.Errorf("compaction body carried no turns")
+	// drop the leading system note if it ended up alone
+	if len(msgs) == 1 && msgs[0]["role"] == "system" {
+		return nil, fmt.Errorf("compaction body carried no turns")
 	}
-	return system, msgs, nil
+	if len(msgs) == 0 {
+		return nil, fmt.Errorf("compaction body carried no turns")
+	}
+	return msgs, nil
 }
 
 // forkContentText reads a Responses message's content: a plain string or
