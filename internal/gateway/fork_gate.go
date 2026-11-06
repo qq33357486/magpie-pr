@@ -132,21 +132,20 @@ func forkChainGate(w http.ResponseWriter, r *http.Request, from provider.Protoco
 // glm, moving the chain to ready. False lets magpie's own compaction
 // routing take the request (the fallback when glm is down).
 func forkChainCompact(w http.ResponseWriter, r *http.Request, body []byte) bool {
+	log.Printf("fork chain compact: request arrived key=%s", firstWord(chainOf(r.Header, body)))
 	if forkChainOff || testing.Testing() {
 		return false
 	}
 	key := chainOf(r.Header, body)
-	e := chainTouch(key)
-	if e == nil || e.Phase != chainTold {
-		return false
-	}
 	sum, err := forkGLMSummarize(r.Context(), body)
 	if err != nil {
 		log.Printf("fork chain: glm summary for %s failed: %s; compaction goes on as magpie routes it", firstWord(key), err)
 		return false
 	}
-	e.Phase, e.Key, e.Tells = chainReady, "", 0
-	chainPut(key, e)
+	// 无论链此刻在哪个相位: 压缩被 glm 代答了, 客户端历史已变薄——
+	// 置 ready, 它的下一个 turn 在 gate 里直接分娩到有额度的号。
+	// 压缩一律走 glm 也省下了真号的摘要额度。
+	chainPut(key, &chainEntry{Phase: chainReady})
 	chainCompactReply(w, sum)
 	return true
 }
@@ -156,14 +155,11 @@ func forkChainCompact(w http.ResponseWriter, r *http.Request, body []byte) bool 
 // codex-rs citation); a chat-tool client gets a plain reply it can read.
 func chainTellBack(w http.ResponseWriter, from provider.Protocol, model string, in http.Header, body []byte) {
 	if chainIsAgent(in, body) && streamOf(body) {
-		sw := newSSEWriter(w)
-		sw.begun = true
-		makeEncoder(from, sw, &Request{Model: model}).event(Event{
-			Kind:   KError,
-			Status: 413,
-			Code:   "context_length_exceeded",
-			Text:   "This conversation's context is full; compacting it to continue.",
-		})
+		// codex 0.167 对 context_length_exceeded 的错误直接放弃(实测),
+		// 不再压缩;让它走原生 auto-compact 的路是虚报 usage: 一个正常
+		// 的短回复, usage 报到窗口的九成——它下一轮开始前自己压缩,
+		// 压缩请求被 forkChainCompact(挂在 codexCompact 入口)截给 glm
+		chainAgentTellBack(w, model)
 		return
 	}
 	if !streamOf(body) {
@@ -284,4 +280,43 @@ func lenOf(cs *[]candidate) int {
 // conversation to another account, which is what the chain exists to stop.
 func chainLeaving(a *Affinity) bool {
 	return a != nil && a.Last != "" && (a.Why == "spent" || a.Why == "gone")
+}
+
+// chainAgentText is what an agent client is told in the turn that carries
+// the inflated usage.
+const chainAgentText = "【实验功能】上游账号额度已用尽，为避免降智正在整理上下文，整理完成后请重发上一条消息继续任务。"
+
+// chainAgentTellBack answers an agent's turn as a normal short reply whose
+// reported usage sits at 92% of the model's window: Codex's own auto-compact
+// (which fires as a turn nears the window) then compacts the conversation
+// before its next turn, and that compaction is the chain's to answer.
+func chainAgentTellBack(w http.ResponseWriter, model string) {
+	window := provider.CodexWindow("", model)
+	if window <= 0 {
+		window = 272_000
+	}
+	total := window * 92 / 100
+	id := fmt.Sprintf("resp_chain_%d", time.Now().UnixNano())
+	text := chainAgentText
+	item := map[string]any{"type": "message", "id": "msg_" + strings.TrimPrefix(id, "resp_"), "role": "assistant",
+		"content": []any{map[string]any{"type": "output_text", "text": text}}}
+	done := map[string]any{"id": id, "object": "response", "status": "completed", "output": []any{item},
+		"usage": map[string]any{"input_tokens": total - 64, "output_tokens": 64, "total_tokens": total}}
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	w.WriteHeader(200)
+	for _, ev := range []map[string]any{
+		{"type": "response.created", "response": map[string]any{"id": id, "object": "response", "status": "in_progress", "output": []any{}}},
+		{"type": "response.output_item.added", "output_index": 0, "item": item},
+		{"type": "response.output_text.delta", "item_id": item["id"], "output_index": 0, "content_index": 0, "delta": text},
+		{"type": "response.output_item.done", "output_index": 0, "item": item},
+		{"type": "response.completed", "response": done},
+	} {
+		b, _ := json.Marshal(ev)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev["type"], b)
+	}
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }

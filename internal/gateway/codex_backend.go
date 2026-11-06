@@ -3566,6 +3566,9 @@ var compactWithin = 4 * time.Minute
 // compaction that keeps failing stops being asked for a while
 // (compactFails, #2274).
 func (s *Server) codexCompact(w http.ResponseWriter, r *http.Request, body []byte) {
+	if forkChainCompact(w, r, body) { // fork(2026-11-06): 链上told会话的压缩截给glm,见fork_compress.go
+		return
+	}
 	key, model := compactKey(body), modelOf(body)
 	// Codex's compaction on the model a thread is leaving, under magpie's
 	// provider: one that fails is compacted locally, as Codex would have
