@@ -152,3 +152,22 @@ func TestForkChatTextAndGLMNames(t *testing.T) {
 		t.Fatalf("glm names unset")
 	}
 }
+
+func TestForkChainCompactShapes(t *testing.T) {
+	// 0.166-: a compaction_trigger input item on a plain /responses turn.
+	trigger := []byte(`{"model":"gpt-6.1-sol","input":[{"type":"compaction_trigger"}],"stream":true}`)
+	if !chainIsCompact(trigger) {
+		t.Fatalf("trigger-style compact not caught")
+	}
+	// 0.167: no trigger, no instructions — the checkpoint prompt rides in
+	// the last input message (read off the wire, 2026-11-09).
+	checkpoint := []byte(`{"model":"gpt-6.1-sol","instructions":"","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task."}]}],"stream":true}`)
+	if !chainIsCompact(checkpoint) {
+		t.Fatalf("checkpoint-prompt compact not caught")
+	}
+	// an ordinary turn that merely talks about compaction stays a turn
+	plain := []byte(`{"model":"gpt-6.1-sol","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"what does context checkpoint compaction mean?"}]}],"stream":true}`)
+	if chainIsCompact(plain) {
+		t.Fatalf("ordinary turn mistaken for a compact")
+	}
+}

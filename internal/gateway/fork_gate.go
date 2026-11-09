@@ -18,6 +18,7 @@ package gateway
 // 返回——客户端把摘要落为本地历史, 会话钥匙(session 头)不变。
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -51,6 +52,14 @@ func forkChainGate(w http.ResponseWriter, r *http.Request, from provider.Protoco
 	}
 	if cands == nil || len(*cands) == 0 {
 		return false
+	}
+	if chainIsCompact(body) {
+		// fork(2026-11-09): 压缩请求不许 gate 弹——客户端会把弹回文案
+		// 当压缩摘要收下(实测, 会话历史被换成一句弹回文案)。两种形状:
+		// 0.166- 是 /responses 带 compaction_trigger 项; 0.167 的自动
+		// 压缩是末条 input 消息带 CHECKPOINT 提示词, 无 trigger 无
+		// instructions。都直接截给 glm, 失败才落回上游压缩。
+		return forkChainCompact(w, r, body)
 	}
 	key := chainOf(r.Header, body)
 	e := chainTouch(key)
@@ -284,18 +293,33 @@ func chainLeaving(a *Affinity) bool {
 
 // chainAgentText is what an agent client is told in the turn that carries
 // the inflated usage.
-const chainAgentText = "【实验功能】上游账号额度已用尽，为避免降智正在整理上下文，整理完成后请重发上一条消息继续任务。"
+// chainIsCompact says the request is a client's compaction, in either wire
+// shape: 0.166- carries a compaction_trigger input item, 0.167's own auto
+// compaction is a plain turn whose last input message is Codex's checkpoint
+// prompt (no trigger, no instructions — read off the wire, 2026-11-09).
+func chainIsCompact(body []byte) bool {
+	return compactionTriggerIn(body) || bytes.Contains(body, chainCheckpointMark)
+}
+
+// chainCheckpointMark is Codex's own compaction prompt's opening phrase
+// (openai/codex prompts/templates/compact): 0.167 的压缩请求靠它认出。
+var chainCheckpointMark = []byte("CONTEXT CHECKPOINT COMPACTION")
+
+const chainAgentText = "【实验功能】上游账号额度已用尽，正在自动整理上下文，请稍候，整理完成后直接继续即可。"
 
 // chainAgentTellBack answers an agent's turn as a normal short reply whose
-// reported usage sits at 92% of the model's window: Codex's own auto-compact
-// (which fires as a turn nears the window) then compacts the conversation
-// before its next turn, and that compaction is the chain's to answer.
+// reported usage sits at 99% of the model's window: Codex auto-compacts when
+// its count (last server-reported usage plus its local estimate of items
+// since) reaches the model's window at its effective percent — 95% on every
+// slug the catalog serves — so 92% sat under the line and nothing ever
+// fired (fork(2026-11-09): 99% clears it; the client compacts on its own,
+// no resend asked for).
 func chainAgentTellBack(w http.ResponseWriter, model string) {
 	window := provider.CodexWindow("", model)
 	if window <= 0 {
 		window = 272_000
 	}
-	total := window * 92 / 100
+	total := window * 99 / 100
 	id := fmt.Sprintf("resp_chain_%d", time.Now().UnixNano())
 	text := chainAgentText
 	item := map[string]any{"type": "message", "id": "msg_" + strings.TrimPrefix(id, "resp_"), "role": "assistant",
