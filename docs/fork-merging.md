@@ -26,7 +26,7 @@ fork 把"客户文案中文化 + 脱敏 + 断流 504"整层**退役归还上游*
 | 改动 | 落点 | 性质 |
 |---|---|---|
 | 生图档位/独立冷却/白名单/计价豁免/流式 | draw.go（块状）+ draw_lane.go + draw_stream.go + fork_draw_whitelist.go（fork 专属）+ usage/window_holds.go（11 行守卫） | 功能 |
-| gw1: 压缩标记（防 magpie1: 落进客户 rollout） | codexsummary/fork_marks.go（专属）+ codex_backend.go 四个点（ForkMessage 读/ForkMark 双查/ForkEncrypted 写）+ native_compaction.go（ForkWritten×2）+ sessions/codex_portable.go（portLine 三标记）+ sessions/carry_convert.go（ForkMessage） | 功能 |
+| gw1: 压缩标记（防 magpie1: 落进客户 rollout） | codexsummary/fork_marks.go（专属）+ codex_backend.go 四个点（ForkMessage 读/ForkMark 双查/ForkEncrypted 写）+ native_compaction.go（ForkWritten×2）+ sessions/codex_portable.go（portLine 三标记）+ sessions/carry_convert.go（ForkMessage）。**2026-11-09 起上游挪包：`internal/gateway/codexsummary/`→`internal/codexsummary/`、`internal/gateway/sessions/`→`internal/sessions/`（git rename 自动带走 fork 专属文件，import 随上游提交更新）** | 功能 |
 | 订阅桥 | claude_subscription.go（rewriteImageNotes + textCallSee 接线）+ claude_image_notes.go（专属） | 功能 |
 | textcalls（模型把工具调用打成文本） | textcalls.go（"[tool call " 标记）+ textcalls_magpie.go（专属） | 功能，上游 issue #2485/2486 未修 |
 | 响应 model 归一（Anthropic 出口回写为客户请求名，vendor 马甲不露真身；透传路径不经过此处——别名 vendor 须走翻译路径，即 BaseAPI≠客户端协议） | anthropic.go 两处：anthropicEncoder.start（model 优先 e.model，2026-10-31）+ renderAnthropic（删 res.Model 覆盖） | 功能 |
