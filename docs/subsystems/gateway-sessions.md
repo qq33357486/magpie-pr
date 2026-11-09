@@ -371,6 +371,15 @@ requests name one in a header (`sessionOf`: `X-Magpie-Session`, or the
 agent's own, `sessionHeaders`), under the agent its User-Agent names
 (`usage.AgentOf`, magpie's agents and plugins' agents; another client by
 its product name).
+The stats' `keys` name these sessions too (`MergeExternalStats`), since
+Usage › Sessions lists only the keys it is given (linkaww on Discord: a
+Docker magpie in gateway mode listed almost none;
+`TestGatewayStatsNameTheGatewaySessions`,
+`TestGatewayModeStatsNameTheGatewaySessions`). Usage › Context's Tuned for
+you is left out (`/api/tune` says `gateway: true`, and Use and Undo are
+refused): it replays this computer's agent files, so it said Claude Code
+made 0 requests (`TestTuneInGatewayModeIsLeftOut`,
+`context-tune-gateway.test.cjs`).
 The app's windows are never in gateway mode. Tests:
 `TestGatewayModeListsNoOwnSessions`, `gateway-mode-sessions.test.cjs`.
 
@@ -418,7 +427,9 @@ affinity see the request as the client sent it. The existing protocol
 readers handle Chat, Anthropic, Responses and Gemini; streaming replies use the
 existing decoders, with completed Responses items retaining custom tool calls.
 Only content actually sent through the gateway is available. Images are shown
-as placeholders; hidden reasoning, client-only operations and unsupported wire
+as placeholders, their base64 taken out before the 8 MiB input cap
+(`leanImages`), so a turn of pictures keeps its text (matrix0487 on Discord;
+`TestFileIDConversationStillShows`); hidden reasoning, client-only operations and unsupported wire
 items cannot be reconstructed. This is not a raw request archive or remote
 session synchronization, and existing S3 archives are not imported.
 
@@ -730,6 +741,24 @@ Verification: `TestAgySessions`, `TestAgyTitleLater`, `TestAgyGrows`,
 `TestAgyTranscript`, `TestAgyFolder`, `TestAgyRowOnly`, on conversations agy 1.3.5 and 1.4.7
 wrote in a sandbox.
 
+The Antigravity desktop app's stable and Insiders stores are read by
+[`antigravity_app.go`](../../internal/sessions/antigravity_app.go):
+`~/.gemini/antigravity/conversations/*.db` and
+`~/.gemini/antigravity-insiders/conversations/*.db`. Both use the existing
+`antigravity` session-reading choice and agent on Sessions and Usage;
+`Found` detects an Insiders-only install, and `Dirs` lists each existing
+store. Each conversation takes its title and workspace from the
+`conversation_summaries.db` beside its own store, including later title
+updates. Model calls reuse the app's read-only SQLite/protobuf reader,
+including response folding and gateway matching. Insiders session ids
+have an `insiders-` prefix in magpie, leaving stable ids unchanged and
+keeping equal UUIDs in the two stores from sharing a session or call id.
+The files themselves are not renamed. Sessions stay read-only with no
+terminal resume command; encrypted conversation text is not read.
+Verification: `TestAntigravityInsidersSessions` covers Insiders alone,
+both stores with the same UUID, per-model tokens, call ids, summary refresh
+and turning the existing reading choice off, using #2190's real step bytes.
+
 A read of every call decodes each file's cached shard, and over a long
 history that is tens of thousands of files (#2278: 68k shards, 415 MB).
 Asks for the same calls while one read is under way wait for it and get
@@ -895,7 +924,8 @@ for: `provider_test`, `api_detect` or `model_list`
   all leaves them out.
 - **A model list answered is no row:** magpie fetches lists by itself
   (start-up's `FetchNew`, the panel's and the Providers page's, and
-  `KeepListsFresh`, which asks a Remote magpie every 10 minutes), so a
+  `KeepListsFresh`, which asks a Remote magpie every 10 minutes, and
+  `KeepRemoteListsFollowed`, as soon as its list changes there), so a
   `model_list` row with a 2xx/3xx status and no error is neither written
   (`usage`'s `probelog.Sink`) nor read back from an older log
   (`quietProbe`, in the index's parse): ferock on Discord, a Requests page

@@ -353,6 +353,28 @@ let config = { provider: {} } // what the plugins' config hooks made of it
 let loadWait = 20 * 1000
 let listWait = 20 * 1000
 
+// watchHeavy says once when this host holds more than heavy.mb MiB, a
+// full collection run first so garbage not yet collected doesn't count:
+// magpie then starts a new host for the calls to come and stops this one
+// once its own are answered (host.go's heavyMB and recycle). It checks
+// every heavy.everyMillis, from heavy.afterMillis after the host started.
+function watchHeavy(heavy) {
+  const mb = Number(heavy?.mb)
+  if (!(mb > 0)) return
+  const every = Math.max(Number(heavy.everyMillis) || 60_000, 10)
+  const after = Math.max(Number(heavy.afterMillis) || 0, 0)
+  const rss = () => process.memoryUsage().rss / 1048576
+  const timer = setInterval(() => {
+    if (process.uptime() * 1000 < after || rss() <= mb) return
+    Bun.gc(true)
+    const held = rss()
+    if (held <= mb) return
+    clearInterval(timer)
+    send({ event: "heavy", count: Math.round(held) })
+  }, every)
+  timer.unref?.()
+}
+
 // late is what a step that took longer than ms gives instead of its own
 // result: an error saying so. The step goes on by itself; what it gives
 // later is dropped. A step handed a signal of its own (a model hook's) has
@@ -502,7 +524,96 @@ async function proxyFor(input) {
 // the first that got none
 const reach = new AsyncLocalStorage()
 
-async function sent(input, init) {
+// sent is a fetch as the plugin asked it, through each redirect it may
+// follow (followed); hop is one request of it, through its proxy.
+function sent(input, init) {
+  const redirect = init?.redirect ?? (input instanceof Request ? input.redirect : undefined) ?? "follow"
+  if (redirect !== "follow") return hop(input, init)
+  return followed(input, init)
+}
+
+// A plugin's request is followed through a redirect with its headers only
+// to its own origin (the scheme, host and port it was sent to), or from
+// http to https on the same host: provider.KeepsCredentials' rule, which
+// magpie's own requests take (redirect.go, #5508). Bun follows any
+// redirect anywhere and drops only Authorization and Cookie on a hop to
+// another origin, so x-api-key, x-goog-api-key and a vendor's own headers
+// went to wherever the vendor's Location named. A redirect elsewhere is
+// given back to the plugin as it came, Location and all, unless the
+// request carries nothing of its own (bare: no body, and only the headers
+// any client sends), as a download handed on to a CDN is. A fetch the
+// plugin asked with redirect "manual" or "error" is left as it asked.
+const REDIRECTS = new Set([301, 302, 303, 307, 308])
+const BARE_HEADERS = new Set(["accept", "accept-encoding", "accept-language", "user-agent", "cache-control", "pragma", "range", "if-range", "if-none-match", "if-modified-since"])
+const BODY_HEADERS = ["content-type", "content-length", "content-encoding", "content-language", "content-location"]
+
+// sameOrigin is provider.SameOrigin, for URLs: a URL leaves out its
+// scheme's own port.
+function sameOrigin(from, to) {
+  const port = (u) => u.port || (u.protocol === "http:" ? "80" : u.protocol === "https:" ? "443" : "")
+  if (!from.hostname || from.hostname.toLowerCase() !== to.hostname.toLowerCase()) return false
+  if (from.protocol === to.protocol) return port(from) === port(to)
+  // an upgrade: the request went over http already, to this same host
+  return from.protocol === "http:" && to.protocol === "https:" && port(from) === "80" && port(to) === "443"
+}
+
+async function followed(input, init) {
+  let url, opts
+  if (input instanceof Request) {
+    const body = init && "body" in init ? init.body : input.body ? await input.arrayBuffer() : undefined
+    opts = { method: input.method, headers: input.headers, signal: input.signal, ...init, body }
+    url = input.url
+  } else {
+    url = String(input instanceof URL ? input.href : input)
+    opts = { ...init }
+  }
+  const first = new URL(url)
+  let method = (opts.method ?? "GET").toUpperCase()
+  let headers = new Headers(opts.headers)
+  let body = opts.body
+  // a stream can be sent once: a redirect that would send it again is the answer
+  const replayable = body == null || !(body instanceof ReadableStream)
+  const bare = () => body == null && [...headers.keys()].every((k) => BARE_HEADERS.has(k))
+  for (let n = 0; ; n++) {
+    const res = await hop(url, { ...opts, method, headers, body, redirect: "manual" })
+    const at = res.headers.get("location")
+    if (!REDIRECTS.has(res.status) || at == null) return n ? said(res, url) : res
+    let next
+    try {
+      next = new URL(at, url)
+    } catch {
+      return n ? said(res, url) : res
+    }
+    if (next.protocol !== "http:" && next.protocol !== "https:") return n ? said(res, url) : res
+    if (!sameOrigin(first, next) && !bare()) return n ? said(res, url) : res
+    const drops = res.status === 303 ? method !== "HEAD" : (res.status === 301 || res.status === 302) && method === "POST"
+    if (!drops && body != null && !replayable) return n ? said(res, url) : res
+    if (n + 1 >= 10) {
+      res.body?.cancel().catch(() => {})
+      throw new TypeError("stopped after 10 redirects")
+    }
+    res.body?.cancel().catch(() => {})
+    if (drops) {
+      if (method !== "HEAD") method = "GET"
+      body = undefined
+      headers = new Headers(headers)
+      for (const k of BODY_HEADERS) headers.delete(k)
+    }
+    url = next.href
+  }
+}
+
+// said is a reply reached through a redirect as fetch says one: where it
+// came from, and that it was redirected.
+function said(res, url) {
+  try {
+    Object.defineProperty(res, "redirected", { value: true })
+    Object.defineProperty(res, "url", { value: url })
+  } catch {}
+  return res
+}
+
+async function hop(input, init) {
   if (init && "proxy" in init) return bunFetch(input, init).catch((e) => throwTLS(e, input))
   const p = await proxyFor(input)
   if (!p) return bunFetch(input, init).catch((e) => throwTLS(e, input))
@@ -3190,6 +3301,8 @@ const handlers = {
     if (p.loadMillis > 0) loadWait = p.loadMillis
     if (p.listMillis > 0) listWait = p.listMillis
     await loadPlugins(p.plugins ?? [])
+    // from here on, when magpie holds this host as the one calls go to
+    watchHeavy(p.heavy)
     return { plugins: loaded.map(withProviders) }
   },
   providers: (p, signal) => providers(p ?? {}, signal),

@@ -374,7 +374,7 @@ func targetOf(a *agent.Agent) *Target {
 		// type stdio, http or sse as Claude Code's (docs.factory.ai/cli/
 		// configuration/mcp); its personal instructions are ~/.factory/
 		// AGENTS.md, which project files override (cli/configuration/agents-md)
-		t.MCP = &mcpFile{Path: filepath.Join(a.Dir, "mcp.json"), Format: fmtClaude}
+		t.MCP = &mcpFile{Path: filepath.Join(a.Dir, "mcp.json"), Format: fmtClaude, NoCmdRefs: true}
 		t.Instructions = filepath.Join(a.Dir, "AGENTS.md")
 		t.Skills = filepath.Join(a.Dir, "skills")
 	case "qoder", "qoder-cn":
@@ -937,7 +937,7 @@ func (l *Library) held(have []*Target) []*Target {
 		in[t.Agent.ID] = true
 	}
 	has := func(id string) bool {
-		if a := l.Applied[id]; a != nil && (len(a.Skills) > 0 || len(a.MCP) > 0 || len(a.Hooks) > 0) {
+		if a := l.Applied[id]; a != nil && (len(a.Skills) > 0 || len(a.MCP) > 0 || len(a.Hooks) > 0 || a.Router || len(a.RouterRules) > 0) {
 			return true
 		}
 		return slices.ContainsFunc(l.Skills, func(s *Skill) bool { return s.gives(id) }) ||

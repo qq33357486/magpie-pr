@@ -55,6 +55,10 @@
     <a class="toc-only" href="/docs/masking">Privacy masking</a>
     <a class="toc-only" href="/docs/mcp-router">MCP router</a>
     <a class="toc-only" href="/docs/library">Library</a>
+    <a class="toc-only" href="/docs/claude-code-models">Models in Claude Code</a>
+    <a class="toc-only" href="/docs/codex-models">Models in Codex</a>
+    <a class="toc-only" href="/docs/gemini-cli-models">Models in Gemini CLI</a>
+    <a class="toc-only" href="/docs/subscriptions">Subscriptions in any agent</a>
     <a href="/docs/import">Add to magpie</a>
     <a href="/docs/integrate">Integrate</a>
     <a href="https://github.com/yetone/magpie-releases/releases">Releases</a>
@@ -161,6 +165,7 @@
     </table></div>
     <p><b>A running session keeps the model it started with.</b> Agents read their config when they start, so the change applies to the next session. Codex builds its model list at start-up too: restart the Codex app and open <code>codex</code> sessions after a switch.</p>
     <div class="callout"><b>Paseo, editor extensions and other front-ends</b> that run Claude Code or Codex for you start the same CLI, which reads the same <code>~/.claude</code> or <code>~/.codex</code> config. Set the model once in magpie and they get it too, from their next session.</div>
+    <div class="callout"><b><code>claude-magpie</code>: Claude Code through magpie, <code>claude</code> left as it is.</b> To keep a plain <code>claude</code> on your own Claude account and start magpie's Claude Code only when you ask for it, leave Claude Code unconnected and run <code>claude-magpie</code> instead. It starts the same <code>claude</code> with magpie's settings over yours for that session (the gateway, the model and its tiers), so <code>~/.claude/settings.json</code> is never rewritten. Every argument goes to Claude Code: <code>claude-magpie --resume</code>, <code>claude-magpie -p "…"</code>. magpie puts it beside the <code>magpie</code> command when you add that in <span class="ui">Settings › Command line</span>; with the command there already, run <code>magpie claude launcher add</code> once. <code>magpie claude run</code> does the same. A model you pick with <code>/model</code> in it is kept for the next <code>claude-magpie</code>, and your own <code>claude</code> keeps its model. magpie has to be running.</div>
 
     <h2 id="routing"><a class="anchor" href="#routing">3 · Optional: routing groups</a></h2>
     <p>With one account per provider you can skip this. It matters once you have several: two ChatGPT accounts, or the same model from a subscription and from a key.</p>
@@ -270,6 +275,7 @@ magpie claude group/opus-anywhere    <span class="c"># use it</span></pre>
       <tr><td><code>magpie providers</code></td><td>Your providers: host, key, models, who uses them</td></tr>
       <tr><td><code>magpie models</code></td><td>Every model agents can pick, as <code>provider/model</code></td></tr>
       <tr><td><code>magpie claude codex/gpt-5.5</code></td><td>Set an agent’s model</td></tr>
+      <tr><td><code>claude-magpie</code></td><td>Claude Code through magpie for one session, a plain <code>claude</code> left on your account (<code>magpie claude run</code>; <code>magpie claude launcher add</code> puts it on PATH)</td></tr>
       <tr><td><code>magpie codex effort high</code></td><td>Set another field</td></tr>
       <tr><td><code>magpie codex default</code></td><td>Back to the agent’s own default, magpie’s wiring removed</td></tr>
       <tr><td><code>magpie save work</code> · <code>use work</code></td><td>Save and apply a profile</td></tr>
@@ -291,7 +297,7 @@ magpie claude group/opus-anywhere    <span class="c"># use it</span></pre>
     <h3>Does editing the agent’s config by hand break anything?</h3>
     <p>No. magpie reads the files each time and touches only the keys it sets, so your other settings and comments stay. Providers brought over with <span class="ui">Import…</span> are copies: later changes in the agent’s settings aren’t copied again.</p>
     <h3>Installing or updating behind a firewall, or without access to GitHub?</h3>
-    <p>Give the installer and <code>magpie update</code> a proxy: <code>curl -fsSL https://usemagpie.ai/install.sh | sh -s -- --proxy http://127.0.0.1:7890</code>, or <code>magpie update --proxy socks5://127.0.0.1:1080</code> (http, https, socks5 and socks5h; <code>HTTPS_PROXY</code> and <code>ALL_PROXY</code> are honoured too). <code>--mirror &lt;prefix&gt;</code> fetches the release file from a GitHub download mirror you choose, as <code>&lt;prefix&gt;https://github.com/…</code>; <code>magpie update mirror &lt;prefix&gt;</code> keeps it for every update, the app’s too, and <code>magpie update mirror off</code> removes it. No mirror is used unless you give one, and the file’s SHA-256 still comes from usemagpie.ai, never from the mirror: a file the mirror changed is refused. The app’s own updates go through <span class="ui">Settings</span> → <span class="ui">Proxy</span>.</p>
+    <p>Give the installer and <code>magpie update</code> a proxy: <code>curl -fsSL https://usemagpie.ai/install.sh | sh -s -- --proxy http://127.0.0.1:7890</code>, or <code>magpie update --proxy socks5://127.0.0.1:1080</code> (http, https, socks5 and socks5h; <code>HTTPS_PROXY</code> and <code>ALL_PROXY</code> are honoured too). Release files come from usemagpie.ai (Cloudflare R2), and from github.com when that fails. <code>--mirror &lt;prefix&gt;</code> fetches the release file from a GitHub download mirror you choose, as <code>&lt;prefix&gt;https://github.com/…</code>, when the site’s copy fails; <code>magpie update mirror &lt;prefix&gt;</code> keeps it for every update, the app’s too, and <code>magpie update mirror off</code> removes it. No mirror is used unless you give one, and the file’s SHA-256 still comes from usemagpie.ai, never from the mirror: a file the mirror changed is refused. The app’s own updates go through <span class="ui">Settings</span> → <span class="ui">Proxy</span>.</p>
 
     <h3 id="linux-build"><a class="anchor" href="#linux-build">Which build does the installer put on Linux?</a></h3>
     <p>The desktop app (window, tray icon and a menu entry) when GTK 3 and WebKitGTK 4.1 are installed. On a computer with a desktop but without them, the installer installs WebKitGTK 4.1 with your package manager (apt, dnf, pacman or zypper), through <code>sudo</code>, which asks for your password, and then the app; it says what it installs before it asks. Run without a terminal (CI, a Dockerfile), without <code>sudo</code>, on another distribution or when that install fails, it installs the terminal build (<code>magpie tui</code>, <code>magpie web</code> and the CLI) and ends with the command that installs them, such as <code>sudo apt install libwebkit2gtk-4.1-0</code> on Debian and Ubuntu or <code>sudo dnf install webkit2gtk4.1</code> on Fedora; run the installer again afterwards for the app. A desktop counts whether you run it there or over ssh: a graphical session, your graphical login, or a desktop installed to log in to. A server without one gets the terminal build. To choose yourself, add <code>--gui</code> (the app even when its libraries can't be installed now) or <code>--tui</code> (the terminal build, and no package installed): <code>curl -fsSL https://usemagpie.ai/install.sh | sh -s -- --tui</code>.</p>
@@ -366,6 +372,10 @@ IP-CIDR6,::1/128,DIRECT,no-resolve</pre>
     <a href="/docs/masking">Privacy masking</a>
     <a href="/docs/mcp-router">MCP router</a>
     <a href="/docs/library">Library</a>
+    <a href="/docs/claude-code-models">Models in Claude Code</a>
+    <a href="/docs/codex-models">Models in Codex</a>
+    <a href="/docs/gemini-cli-models">Models in Gemini CLI</a>
+    <a href="/docs/subscriptions">Subscriptions in any agent</a>
     <a href="/docs/import">Add to magpie</a>
     <a href="/docs/integrate">Integrate</a>
     <a href="https://github.com/yetone/magpie">GitHub</a>
