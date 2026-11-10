@@ -232,6 +232,9 @@ type agentJSON struct {
 	// what it read before magpie's last change, for the row's Restart
 	// (agent.AppBehind)
 	AppRestart *agent.AppRun `json:"appRestart,omitempty"`
+	// Isolated: Claude Desktop's Claude Magpie app (#5671), only where it
+	// can be (macOS): whether it is on, and the app
+	Isolated *agent.DesktopIsolated `json:"isolated,omitempty"`
 	// Joined: connected with its own models still in its list (Codex
 	// signed in with ChatGPT, agent.Agent.Join)
 	Joined bool `json:"joined,omitempty"`
@@ -488,6 +491,14 @@ type settingsJSON struct {
 	// editor since (provider.HiddenDrawers): it still draws, and is
 	// listed, as picked, with the row saying it is hidden
 	ImageGenHidden bool `json:"imageGenHidden,omitempty"`
+	// the model a video request that names none is made with when
+	// VideoGen names none (gateway.AutoVideomaker), the VideoGen picked
+	// when magpie can't find it any more, and those that can be picked:
+	// each provider's video models, a custom provider's the user marked
+	// (#1399) among them, less those unticked in its editor
+	VideoGenAuto    string     `json:"videoGenAuto,omitempty"`
+	VideoGenMissing string     `json:"videoGenMissing,omitempty"`
+	VideoGenModels  []modelRef `json:"videoGenModels"`
 	// the web search APIs a model's search goes to when no provider can
 	// search (#419), their keys masked; the ones that can be added; and
 	// the provider that searches first, if one does
@@ -527,6 +538,11 @@ type settingsJSON struct {
 	// where other containers on this host reach the gateway while magpie
 	// runs in one (gateway.ContainerHostURL)
 	LANContainerHost string `json:"lanContainerHost,omitempty"`
+	// a LazyCat app's domain, which only devices with LazyCat's client
+	// reach (gateway.LazyCatURL), and whether the box's LAN addresses are
+	// listed too: when not, the page says how the port gets there
+	LANLazyCat    string `json:"lanLazyCat,omitempty"`
+	LANLazyCatBox bool   `json:"lanLazyCatBox,omitempty"`
 	// those of LANURLs at an internet address, which anyone online can
 	// reach, not only this network
 	LANPublic []string `json:"lanPublic,omitempty"`
@@ -835,6 +851,7 @@ func settingsState() settingsJSON {
 	if s.LAN {
 		s.LANURLs, s.LANContainer = gateway.LANURLs(), gateway.ContainerAddrs()
 		s.LANContainerHost = gateway.ContainerHostURL()
+		s.LANLazyCat, s.LANLazyCatBox = gateway.LazyCatURL(), gateway.LazyCatBox()
 		s.LANPublic = gateway.PublicURLs(s.LANURLs)
 	}
 	s.CodexWarmed, s.ClaudeWarmed = latest(provider.CodexWarmed()), latest(provider.ClaudeWarmed())
@@ -925,6 +942,19 @@ func settingsState() settingsJSON {
 		s.ImageGenShown = v
 	}
 	s.ImageGenHidden = gateway.DrawerHidden(s.ImageGen)
+	s.VideoGenAuto, s.VideoGenModels, s.VideoGenMissing = gateway.AutoVideomaker(), []modelRef{}, gateway.VideomakerMissing()
+	for _, p := range provider.All() {
+		if !p.On() || p.DecideOnly() {
+			continue
+		}
+		// one unticked in its editor is left out, but the one picked here
+		for _, m := range gateway.Videomakers(p) {
+			if p.VideomakerHidden(m.ID) && s.VideoGen != p.ID+"/"+m.ID {
+				continue
+			}
+			s.VideoGenModels = append(s.VideoGenModels, modelRef{ID: p.ID + "/" + m.ID, Name: cmp.Or(m.Name, m.ID), Provider: p.ID, PName: p.Name, Icon: p.Icon})
+		}
+	}
 	// the Codex subagents row's warning: magpie's multi-agent V1 doesn't reach
 	// Codex where its own multi_agent_v2 is on in the config magpie routes, and
 	// magpie writes nothing there — the setting is the user's to turn off
@@ -1107,6 +1137,9 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 				if u := gateway.ContainerHostURL(); u != "" {
 					side["containerHost"] = u
 				}
+				if u := gateway.LazyCatURL(); u != "" {
+					side["lazyCat"], side["lazyCatBox"] = u, gateway.LazyCatBox()
+				}
 				if u := gateway.PublicURL(); u != "" {
 					side["publicURL"] = u
 				}
@@ -1188,7 +1221,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	// so a config rewritten elsewhere shows without a reload
 	mux.HandleFunc("GET /api/drift", func(rw http.ResponseWriter, r *http.Request) {
 		out := map[string]*agent.Drift{}
-		for _, a := range agent.Detected() {
+		for _, a := range agent.DetectedIn(heldAgents()) {
 			if d := a.Drift(); d != nil {
 				out[a.ID] = d
 			}
@@ -1257,6 +1290,21 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	})
 	// quits the agent's desktop app and opens it again, so it reads what
 	// magpie wrote: the row's Restart, after the user said yes to it
+	// Claude Desktop's Claude Magpie app on or off (#5671): the app made or
+	// taken away, and a Desktop on magpie moved into its folder or back
+	mux.HandleFunc("POST /api/settings/desktop-isolated", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ On bool }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		home, _ := os.UserHomeDir()
+		if _, err := agent.SetDesktopIsolated(home, in.On); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, state())
+	})
 	mux.HandleFunc("POST /api/agents/restart/{id}", func(rw http.ResponseWriter, r *http.Request) {
 		a, err := agent.Find(r.PathValue("id"))
 		if err != nil {
@@ -2829,7 +2877,7 @@ func held(h http.Handler) http.Handler {
 }
 
 func state() stateJSON {
-	s := stateJSON{Agents: []agentJSON{}, Profiles: []profileJSON{}, Catalog: catalog.Source(), Settings: settings.Load()}
+	s := stateJSON{Agents: []agentJSON{}, Profiles: []profileJSON{}, Catalog: catalog.Source(), Settings: settings.Shared()} // only encoded, never changed
 	// state() is asked for after nearly every click, so the rate — a
 	// network fetch once every TTL — is only worth its rare latency when
 	// cny is actually chosen; usd never looks at it
@@ -2847,10 +2895,11 @@ func state() stateJSON {
 			s.Served++
 		}
 	}
-	for _, a := range agent.Clients() {
+	all := heldAgents()
+	for _, a := range agent.ClientsIn(all) {
 		s.Clients = append(s.Clients, clientJSON{ID: a.ID, Name: a.Name, Icon: a.Icon})
 	}
-	detected := agent.Detected()
+	detected := agent.DetectedIn(all)
 	now := make(map[string]map[string]string, len(detected))
 	for _, a := range detected {
 		if a.Follow != nil {
@@ -2881,6 +2930,11 @@ func state() stateJSON {
 			aj.AppSnag = provider.CodexAppSnagged()
 		}
 		aj.AppRestart = a.AppBehind()
+		if a.ID == "claude-desktop" && a.WSL == "" {
+			if iso, ok := agent.DesktopIsolatedHere(); ok {
+				aj.Isolated = &iso
+			}
+		}
 		if a.Import != nil {
 			aj.Import = a.Import()
 			if a.Added != nil {
@@ -2907,7 +2961,7 @@ func state() stateJSON {
 	}
 	if ps, err := profile.Load(); err == nil {
 		for _, n := range profile.Names(ps) {
-			pj := profileJSON{Name: n, Summary: profile.Summary(ps[n]), Agents: profile.Details(ps[n]), InUse: profile.InUse(ps[n], detected, now)}
+			pj := profileJSON{Name: n, Summary: profile.Summary(ps[n]), Agents: profile.DetailsIn(ps[n], all), InUse: profile.InUse(ps[n], detected, now)}
 			if l := ps[n].Library; l != nil {
 				servers, skills := l.On()
 				pj.Library = &profileLibraryJSON{Servers: servers, Skills: skills, Instructions: l.GivesInstructions()}

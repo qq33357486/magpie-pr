@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/capre"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/filememo"
@@ -500,6 +501,11 @@ type Settings struct {
 	// "off" turns the video a request that names no model gets off too
 	// (gateway.videomaker).
 	ImageGen string `json:"imageGen,omitempty"`
+	// VideoGen is the model a video request that names none is made with
+	// (generate_video, the gateway's /v1/videos): a model's id, or empty
+	// for one magpie picks (gateway.videomaker). ImageGen's "off" turns it
+	// off too.
+	VideoGen string `json:"videoGen,omitempty"`
 	// ImageTimeout is how long, in minutes, a vendor is given to draw an
 	// image and send it (neighbads on X: a slow image endpoint needs more
 	// than 5): from 1 to ImageTimeoutMost, 0 for ImageTimeoutDefault.
@@ -755,6 +761,13 @@ type Settings struct {
 	// "[1m]", and adds none to one whose id has it. Off, as before, it shows
 	// both, the plain one compacting at Claude Code's 200K.
 	DesktopLongest bool `json:"desktopLongest,omitempty"`
+	// DesktopIsolated runs Claude Desktop on magpie in a folder of its own
+	// (#5671): magpie's 3p mode goes into
+	// ~/Library/Application Support/Claude-Magpie-3p instead of Claude and
+	// Claude-3p, and ~/Applications/Claude Magpie.app starts Desktop with
+	// --user-data-dir set to it, beside the user's own signed-in Desktop,
+	// which is left as it is. macOS only (desktopdir.Isolated).
+	DesktopIsolated bool `json:"desktopIsolated,omitempty"`
 	// GuideHidden: the user put away the Agents page's Get started card
 	// (wangye1644294 on X) before finishing it. Kept here, not in the
 	// page's storage, so the panel, the window and a reload agree.
@@ -997,6 +1010,12 @@ type Settings struct {
 	// provider has too, in any case, is the model's (axelburks on
 	// Discord). Absent is the provider's alone (provider.SetModelHeaders).
 	ModelHeaders map[string]map[string]string `json:"modelHeaders,omitempty"`
+	// ModelSystemPrompts are the system prompts the user gave one model,
+	// by "<provider id>/<model id>": the gateway adds the text after the
+	// agent's own system prompt on every request for that model, whatever
+	// agent sends it (liucl on X). Absent is the agent's prompt as sent
+	// (provider.ModelSystemPrompt).
+	ModelSystemPrompts map[string]string `json:"modelSystemPrompts,omitempty"`
 	// ModelKinds is what the user said a model makes, by "<provider
 	// id>/<model id>": "image" or "video", for a provider set up with a
 	// base URL whose own model list doesn't say so (shen-joe, #1399).
@@ -1303,7 +1322,7 @@ var DefaultTextSize = func() int {
 	return 100
 }
 
-var validTerminalBundleID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]{0,254}$`)
+var validTerminalBundleID = capre.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]*$`, 255)
 
 // providerID is how a provider's id is spelled: lower-case letters, digits
 // and dashes, as provider.Slug derives it (a custom provider's id is the
@@ -1642,6 +1661,24 @@ func Shared() Settings {
 		return s
 	}
 	return s
+}
+
+// SharedChecked is Shared with LoadChecked's error: the settings without
+// a copy of their own while settings.json parses whole, and LoadChecked's
+// copy (or its error) otherwise. Read only, as Shared is: the gateway's
+// allow list asks on every request the GUI and gateway serve, and a copy
+// each time was most of what a state poll's Settings cost.
+func SharedChecked() (Settings, error) {
+	fileMu.RLock()
+	defer fileMu.RUnlock()
+	if !writing {
+		if b, err := filememo.Read("settings", pathNow(), func(b []byte) ([]byte, error) { return b, nil }); err == nil {
+			if s, ok := sharedFor(b); ok {
+				return s, nil
+			}
+		}
+	}
+	return loadChecked()
 }
 
 // SharedModelIDs is Shared().ModelIDs, read for each model a list is
@@ -2298,6 +2335,10 @@ func saveOwn(s Settings, recording, reads bool) error {
 	s.ImageGen = strings.TrimSpace(s.ImageGen)
 	if s.ImageGen != "" && s.ImageGen != "off" && !strings.Contains(s.ImageGen, "/") {
 		return fmt.Errorf("the image generation model must be a model's id such as openai/gpt-image-2, or off, not %q", s.ImageGen)
+	}
+	s.VideoGen = strings.TrimSpace(s.VideoGen)
+	if s.VideoGen != "" && !strings.Contains(s.VideoGen, "/") {
+		return fmt.Errorf("the video generation model must be a model's id such as grok/grok-imagine-video, not %q", s.VideoGen)
 	}
 	rules, err := redact.CheckRules(s.RedactRules)
 	if err != nil {

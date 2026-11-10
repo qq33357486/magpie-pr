@@ -95,8 +95,12 @@ func (s *Server) serveDecisionGroup(w http.ResponseWriter, r *http.Request, body
 	accWho, accHeld := accountHolds(r)
 	// a gateway key held to some models (#882) names the group, or the
 	// models of it it may use
-	if keyHeld && !groupAllowed(keyWho, g, ms) {
-		writeError(w, provider.Chat, http.StatusForbidden, keyModelError(keyWho, asked))
+	if !groupGiven(r, keyWho, keyHeld, g, ms) {
+		msg := keyModelError(keyWho, asked)
+		if groupBarred(keyWho, g) { // bound to other keys
+			msg = groupKeysError(keyWho, g)
+		}
+		writeError(w, provider.Chat, http.StatusForbidden, msg)
 		return
 	}
 	// a model a pause rule holds for now is out, as for a chat
@@ -149,7 +153,12 @@ func (s *Server) serveDecisionGroup(w http.ResponseWriter, r *http.Request, body
 // out of quota was asked on every turn, the next never).
 func (s *Server) decideKeys(p provider.Provider, model string) ([]candidate, planned) {
 	p.Fallback = nil
-	return s.plan(p, model, provider.Chat)
+	cs, pl := s.plan(p, model, provider.Chat)
+	// a key on another of its preset's plans is asked at that plan's
+	// endpoints, where there may be no System One (Volcengine's Coding
+	// Plan beside its pay as you go): never there
+	cs = slices.DeleteFunc(cs, func(c candidate) bool { return !c.p.Decides() })
+	return cs, pl
 }
 
 // serveDecideTries answers a System One request with cs, a decision

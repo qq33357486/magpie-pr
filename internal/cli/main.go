@@ -34,6 +34,7 @@ import (
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/sessions"
 	"github.com/yetone/magpie/internal/settings"
+	"github.com/yetone/magpie/internal/shortcut"
 	"github.com/yetone/magpie/internal/tui"
 	"github.com/yetone/magpie/internal/update"
 )
@@ -104,6 +105,8 @@ const usage = `magpie — one place to pick every agent's model
   magpie accounts add copilot [--host <name>.ghe.com]   one more Copilot account, on github.com or an enterprise's GHE.com
   magpie accounts discovery [on|off]   read agents' sign-ins (default on; MAGPIE_NO_ACCOUNTS=1 disables too)
   magpie accounts import <codex|claude|antigravity|factory> <file>... [--yes]   bring in accounts from other tools' files (Codex's auth.json, Cockpit Tools, CLIProxyAPI, Sub2API, claude-swap); the tool a ChatGPT or Claude file came from is signed out of it
+  magpie accounts import codex <file>... --access-only   keep each ChatGPT account with its access token only: never renewed, so the tool it came from stays signed in
+  magpie accounts access-only codex <email> [on|off]   keep a ChatGPT account access token only, or let magpie renew its sign-in again
   magpie accounts switch <agent> <email|name>   sign the agent in to another of them, by its email or the name you gave it
   magpie accounts switch <claude|codex> next   to the next account in order with room, or the one with the most left
   magpie accounts refresh         renew the saved ChatGPT and Claude sign-ins now (the gateway does it every 8 days)
@@ -324,6 +327,10 @@ func run(args []string) error {
 	if ok, err := claudeLaunchCmd(args); ok {
 		return err
 	}
+	// Claude Magpie.app (claude_desktop_launch_cli.go), --help too
+	if ok, err := claudeDesktopLaunchCmd(args); ok {
+		return err
+	}
 	// before anything is read, moved or started: --help on any command
 	// prints its usage and does nothing else
 	if helpAsked(args) {
@@ -376,6 +383,9 @@ func run(args []string) error {
 			if len(args) > 1 && args[1] == "vision" {
 				return browsermcp.RunVision(args[2:])
 			}
+			if len(args) > 1 && args[1] == "memory" {
+				return browsermcp.RunMemory(args[2:])
+			}
 			return imagemcp.Run(args[1:])
 		case "claude-mcp-helper": // internal: stdio MCP subprocess spawned by Claude Code
 			return claudebridge.RunMCP(args[1:])
@@ -418,6 +428,9 @@ func run(args []string) error {
 	// a model Claude Code names that magpie doesn't serve goes to the one
 	// it is set to use for that tier
 	gateway.StandIn = agent.StandIn
+	// a bare name an agent asks for goes to its own subscription, unless
+	// magpie set the agent to the group magpie found by that name
+	gateway.SetToGroup = agent.SetToGroup
 	// and its auto mode classifier, on a sonnet tier that follows a main
 	// model /model has moved, to the model it moved to
 	gateway.ClassifierStandIn = agent.ClassifierStandIn
@@ -580,6 +593,11 @@ func run(args []string) error {
 	case "restore":
 		return restoreCmd(args[1:])
 	case "uninstall":
+		// Windows' Installed apps: the app's window asks (shortcut.UninstallArgs)
+		if hasGUI && slices.Equal(args, shortcut.UninstallArgs) {
+			gateway.Serves = "app"
+			return runUninstallWindow()
+		}
 		return uninstallCmd(args[1:])
 	case "webdav", "dav":
 		return webdavCmd(args[1:])

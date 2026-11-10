@@ -128,7 +128,7 @@ func drawerMissing(v string) string {
 
 // GroupDraws is whether the routing group ref ("group/<id>") has a member
 // that draws: a model among its provider's Drawers. Such a group may be
-// picked in Settings › Images, and draws on those members in its routing's
+// picked in Settings › Models › Images, and draws on those members in its routing's
 // order, moving on while one fails (drawingGroup, #2005).
 func GroupDraws(ref string) bool {
 	_, ms, ok := drawingMembers(ref)
@@ -383,7 +383,9 @@ func DrawersOf(p provider.Provider, avail func() []catalog.Model) []catalog.Mode
 			if p.ModelKind(m.ID) == provider.KindVideo {
 				continue
 			}
-			if catalog.DrawsID(m.ID) && catalog.ImagesAPI(m.ID) && p.PluginOpenAICompatible(m.ID) ||
+			// or one the plugin says gives images alone, whatever its name
+			// (maonekone on Discord)
+			if (catalog.DrawsID(m.ID) && catalog.ImagesAPI(m.ID) || imagesOnly(m.OutputModalities)) && p.PluginOpenAICompatible(m.ID) ||
 				pluginDrawsGemini(p, m.ID) && (catalog.DrawsID(m.ID) || slices.Contains(m.OutputModalities, "image")) {
 				m.Provider = p.ID
 				out = append(out, m)
@@ -439,7 +441,7 @@ func DrawersOf(p provider.Provider, avail func() []catalog.Model) []catalog.Mode
 // (provider.HiddenDrawers, 321sssrt on X): the image models a list offers
 // to pick from and Automatic picks among. A request that names a hidden
 // one still draws with it (resolveDrawing reads Drawers), as does a
-// Settings › Images pick of one made before it was hidden.
+// Settings › Models › Images pick of one made before it was hidden.
 func OfferedDrawers(p provider.Provider) []catalog.Model {
 	ms := Drawers(p)
 	if len(p.HiddenDrawers) == 0 {
@@ -448,7 +450,7 @@ func OfferedDrawers(p provider.Provider) []catalog.Model {
 	return slices.DeleteFunc(slices.Clone(ms), func(m catalog.Model) bool { return p.DrawerHidden(m.ID) })
 }
 
-// DrawerHidden is whether ref (provider/model), a model Settings › Images
+// DrawerHidden is whether ref (provider/model), a model Settings › Models › Images
 // names, is one the user unticked in its provider's editor: it still draws,
 // and the Settings row says it is hidden. A ChatGPT account's other GPT
 // Image names stand for its one (ListedDrawer).
@@ -691,7 +693,7 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 					fail(400, fmt.Sprintf("no model to draw with: the Image generation model picked in magpie's Settings, %q, isn't set up any more: pick another in Settings → Models → Image generation, or name one", v))
 					return
 				}
-				fail(400, "no model to draw with: pick one in magpie's Settings → Images → Image generation, or name one")
+				fail(400, "no model to draw with: pick one in magpie's Settings → Models → Images → Image generation, or name one")
 				return
 			}
 			d.Model, call.Model = m, m
@@ -699,7 +701,7 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 		p, model, ok := s.drawingModel(r, d.Model)
 		if !ok {
 			if agentOf(r) == "codex" && !strings.Contains(d.Model, "/") {
-				fail(400, "no model to draw with: Codex's provider has no matching image model and magpie's Settings → Images → Image generation has none enabled")
+				fail(400, "no model to draw with: Codex's provider has no matching image model and magpie's Settings → Models → Images → Image generation has none enabled")
 				return
 			}
 			if off, isOff := provider.SwitchedOff(d.Model); isOff {
@@ -719,7 +721,7 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 			r = heldByGroup(r, g) // held to the group's accounts, if it is
 		}
 		keyWho, keyHeld := keyHolds(r)
-		if keyHeld && named && (isGroup && !groupAllowed(keyWho, g, ms) || !isGroup && !modelAllowed(keyWho, p, model)) {
+		if named && (isGroup && !groupGiven(r, keyWho, keyHeld, g, ms) || keyHeld && !isGroup && !modelAllowed(keyWho, p, model)) {
 			fail(keyModelRefusal(w, keyWho, d.Model))
 			return
 		}
@@ -785,7 +787,7 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 		)
 		for i, m := range tries {
 			call.Provider, model = m.Provider.ID, m.Model
-			drew, out, code, capBack, err = s.drawOnAccounts(ctx, r, m.Provider, m.Model, d)
+			drew, out, code, capBack, err = s.drawOnAccounts(ctx, memberOn(r, g, m), m.Provider, m.Model, d)
 			// a group's next member is asked as a chat's would be: while
 			// this one's vendor fails, is out of quota or doesn't serve the
 			// model; a refusal of the request itself is the request's
@@ -906,28 +908,30 @@ func (s *Server) drawingTries(g provider.Group, ms []provider.Member, keeps map[
 	if slices.ContainsFunc(ms, func(m provider.Member) bool { return makes(m.Provider, m.Model) }) {
 		ms = slices.DeleteFunc(slices.Clone(ms), func(m provider.Member) bool { return !makes(m.Provider, m.Model) })
 	}
-	byRef := map[string]provider.Member{}
-	for _, m := range ms {
-		if ref := m.Provider.ID + "/" + m.Model; byRef[ref].Model == "" {
-			byRef[ref] = m
-		}
-	}
+	// a member on an account of its own (EastonXvii on X) is one of its
+	// own beside the same model on another, or on any: each is asked once
 	var out []provider.Member
 	seen := map[string]bool{}
-	add := func(ref string) {
-		m, ok := byRef[ref]
-		if !ok || seen[ref] || keeps != nil && !keeps[ref] {
-			return
+	add := func(m provider.Member) bool {
+		ref := m.Provider.ID + "/" + m.Model
+		k := ref + provider.AccountMark + m.Account
+		if seen[k] || keeps != nil && !keeps[ref] {
+			return false
 		}
-		seen[ref] = true
+		seen[k] = true
 		out = append(out, m)
+		return true
 	}
 	cs, _ := s.planGroup(g.Live(), ms, provider.Chat)
 	for _, c := range cs {
-		add(c.p.ID + "/" + c.model)
+		for _, m := range ms {
+			if m.Provider.ID == c.p.ID && m.Model == c.model && memberHeld(c, m, g) == "" && add(m) {
+				break
+			}
+		}
 	}
 	for _, m := range ms {
-		add(m.Provider.ID + "/" + m.Model)
+		add(m)
 	}
 	return out
 }
@@ -1166,15 +1170,32 @@ func viaFor(p provider.Provider, model string) drawVia {
 		return viaImages
 	case isGoogle(p) && strings.Contains(strings.ToLower(model), "gemini"):
 		return viaGemini
+	case p.ModelKind(model) == provider.KindImage:
+		// one the user said is an image model is asked at the images API
+		// first, as the editor's Makes: Image model says (a relay's
+		// jimeng-4.0 isn't named for one); a provider without that API
+		// (404, 405) has it drawn on chat completions, as draw falls back
+		return viaImages
 	case isOpenRouter(p):
 		if catalog.ImagesAPI(model) || answersInImages(p, model) {
 			return viaImages
 		}
 		return viaChat
-	case catalog.ImagesAPI(model):
+	case catalog.ImagesAPI(model), p.IsPlugin() && pluginImagesOnly(p, model):
 		return viaImages
 	}
 	return viaChat
+}
+
+// imagesOnly is whether a model's output modalities are images and no text.
+func imagesOnly(out []string) bool {
+	return slices.Contains(out, "image") && !slices.Contains(out, "text")
+}
+
+// pluginImagesOnly is whether p, a plugin, lists model as giving images
+// alone: it draws at the images API, as one named for it does.
+func pluginImagesOnly(p provider.Provider, model string) bool {
+	return slices.ContainsFunc(p.Available(), func(m catalog.Model) bool { return m.ID == model && imagesOnly(m.OutputModalities) })
 }
 
 // answersInImages is whether p's fetched list says model answers with images
