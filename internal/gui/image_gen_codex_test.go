@@ -51,7 +51,7 @@ func TestImageGenCodexTiers(t *testing.T) {
 			codex = append(codex, m)
 		}
 	}
-	if len(codex) != 4 || codex[0].ID != "codex/gpt-image-2" || codex[0].Name != "GPT Image" || !codex[0].VendorPicks || codex[3].ID != "codex/gpt-image-2.5-sunburst" {
+	if len(codex) != 7 || codex[0].ID != "codex/gpt-image-2" || codex[0].Name != "GPT Image" || !codex[0].VendorPicks || codex[3].ID != "codex/gpt-image-2.5-sunburst" || codex[6].ID != "codex/gpt-image-2.6-sunburst" {
 		t.Fatalf("codex image models %+v", codex)
 	}
 	if s.ImageGen != "codex/gpt-image-2.5" || s.ImageGenShown != "codex/gpt-image-2" || s.ImageGenMissing != "" {
@@ -64,13 +64,13 @@ func TestImageGenCodexTiers(t *testing.T) {
 	if s := settingsState(); s.ImageGenShown != "" {
 		t.Fatalf("a listed pick is shown as %q", s.ImageGenShown)
 	}
-	// its editor's Image models says why it lists one (ChangQiu on
+	// its editor's Image models says why it lists the catalog (ChangQiu on
 	// Discord looked there for gpt-image-2.5)
 	p, err := provider.Find("codex")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if j := providerInfo(*p, nil); !j.DrawPicks || len(j.DrawIDs) != 1 {
+	if j := providerInfo(*p, nil); !j.DrawPicks || len(j.DrawIDs) != 7 {
 		t.Fatalf("editor's drawIds %v, drawPicks %v", j.DrawIDs, j.DrawPicks)
 	} else if j.DrawNames[j.DrawIDs[0]] != "GPT Image" {
 		// StarBits on X read the chip's gpt-image-2 as an old model

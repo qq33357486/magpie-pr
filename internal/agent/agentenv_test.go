@@ -42,6 +42,8 @@ var notAnAgent = map[string]string{
 	"TZ":                  "the machine's time zone, which a routing rule's hours fall back to (c888ef272), not a folder",
 	"CARGO_HOME":          "cargo's own bin folder, where an RTK upgrade looks for it; not an agent's folder",
 	"LAZYCAT_APP_DOMAIN":  "the domain LazyCat serves magpie at, which sharing offers (ac4af5823), not a folder",
+	"FORK_CHAIN":          "the fork's own switch for the codex identity chain (off turns it off), not an agent's folder",
+	"FORK_SUMMARY_BUDGET": "the fork's own budget for glm-pressed compaction summaries, not an agent's folder",
 }
 
 // TestFolderVarsAreListed says every variable the packages that find an
