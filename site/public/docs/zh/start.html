@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>快速上手 · magpie 文档</title>
+<title>快速上手：给 Claude Code、Codex 等每个 Agent 选模型 · magpie 文档</title>
 <meta name="description" content="magpie 的整体思路和配置方法：添加你已有的供应商，给每个 Agent 选模型，需要时再把多个账号组成路由组。">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#fafafa">
@@ -39,6 +39,54 @@
 <meta property="og:image" content="https://usemagpie.ai/img/og.png">
 <meta property="og:url" content="https://usemagpie.ai/docs/zh/start">
 <meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@graph": [
+  {
+   "@type": "TechArticle",
+   "headline": "快速上手",
+   "description": "magpie 的整体思路和配置方法：添加你已有的供应商，给每个 Agent 选模型，需要时再把多个账号组成路由组。",
+   "inLanguage": "zh-CN",
+   "url": "https://usemagpie.ai/docs/zh/start",
+   "about": {
+    "@type": "SoftwareApplication",
+    "name": "magpie",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "macOS, Windows, Linux"
+   },
+   "publisher": {
+    "@type": "Organization",
+    "name": "magpie",
+    "url": "https://usemagpie.ai/"
+   }
+  },
+  {
+   "@type": "BreadcrumbList",
+   "itemListElement": [
+    {
+     "@type": "ListItem",
+     "position": 1,
+     "name": "magpie",
+     "item": "https://usemagpie.ai/zh/"
+    },
+    {
+     "@type": "ListItem",
+     "position": 2,
+     "name": "文档",
+     "item": "https://usemagpie.ai/docs/zh/start"
+    },
+    {
+     "@type": "ListItem",
+     "position": 3,
+     "name": "快速上手",
+     "item": "https://usemagpie.ai/docs/zh/start"
+    }
+   ]
+  }
+ ]
+}
+</script>
 </head>
 <body>
 
@@ -247,6 +295,8 @@ magpie group rule add opus-anywhere use=deepseek/deepseek-v4-flash compact  <spa
 magpie group rule add opus-anywhere use=kimi/kimi-k2.6 folders=~/oss,<span class="s">"~/My Project"</span>  <span class="c"># 这些项目里的对话先发给它</span>
 magpie group rule add opus-anywhere pause=copilot/claude-opus-5.5 time=14:00-18:00 days=mon-fri  <span class="c"># 这段时间不用它</span>
 magpie group rule add opus-anywhere pause=claude/claude-opus-5-5 except-folders=~/big-task  <span class="c"># 只留给 ~/big-task 里的任务：其他文件夹不用它</span>
+magpie group rule add opus-anywhere use=deepseek/deepseek-v4-flash when=<span class="s">"effort is off"</span> when=<span class="s">"not subagent"</span>  <span class="c"># 关了推理、又不是子代理的请求</span>
+magpie group rule add opus-anywhere use=deepseek/deepseek-v4-flash when=<span class="s">"system matches ^你是对话标题命名"</span>  <span class="c"># 按系统提示词认出标题命名请求，不用模型判断</span>
 magpie group set coder models+=group/opus-anywhere  <span class="c"># 路由组里放路由组</span>
 magpie group rule opus-anywhere      <span class="c"># 查看规则；rule rm|mv &lt;n&gt;，rule classifier &lt;组&gt; &lt;模型&gt; 换判断模型</span>
 magpie group copy opus-anywhere <span class="s">"Opus test"</span>  <span class="c"># 复制一份：模型、路由方式和规则都一样，可单独修改</span>
@@ -311,13 +361,14 @@ magpie claude group/opus-anywhere    <span class="c"># 使用它</span></pre>
 
     <h3 id="data-folder"><a class="anchor" href="#data-folder">magpie 的文件能放到另一块磁盘上，重装系统也不丢吗？</a></h3>
     <p>安装版的 magpie 把设置、provider、用量和库放在 <code>~/.config/magpie</code>（Windows 上是 <code>C:\Users\&lt;你&gt;\.config\magpie</code>）。它每天自动备份一次，备份放在同一个文件夹的 <code>auto-backups</code> 里，所以重装系统时备份也会一起丢；<span class="ui">设置</span> → <span class="ui">同步与备份</span> 的 <span class="ui">备份文件夹</span> 下面会提示这一点。在那里点 <span class="ui">更改…</span>，选另一块磁盘上的文件夹（如 <code>D:\magpie-backups</code>）或网盘同步的文件夹。重装后装好 magpie，在同一处选回这个文件夹，再对最新的版本点 <span class="ui">恢复…</span>。备份里没有 API Key；打开 <span class="ui">备份登录信息</span> 会把订阅账号和插件登录也放进去，用口令加密。要连 Key 一起带走，在同一处设置同步到 WebDAV 文件夹、S3 存储桶或 GitHub 仓库，用口令加密。</p>
+    <p>想把 magpie 自己的文件放到那块磁盘（比如移动固态硬盘）上，就在同一处 <span class="ui">数据文件夹</span> 旁点 <span class="ui">移动…</span>，选那块盘上的一个文件夹。magpie 会重启，把文件和缓存移到其中名为 <code>magpie</code> 的文件夹里，并在原处留一个链接，其他都不用改。请保持那块盘连着：拔掉后 magpie 打不开，插回即可。点 <span class="ui">移回</span> 可移回本机。在终端里用 <code>magpie data move &lt;文件夹&gt;</code> 也一样。</p>
     <p>想把所有东西都放在那块磁盘上，就用便携模式：把 <code>magpie.exe</code> 放进那里的一个文件夹，旁边建一个名为 <code>data</code> 的空文件夹（<code>D:\magpie\magpie.exe</code> 和 <code>D:\magpie\data</code>）。这样 magpie 的一切，包括缓存和日志，都放在 <code>data</code> 里，不在你的用户文件夹里写任何自己的文件；<span class="ui">设置</span> → <span class="ui">关于</span> → <span class="ui">配置目录</span> 会显示便携模式。打开它，按上面的方法恢复一个备份。重装系统后，再打开 <code>D:\magpie\magpie.exe</code> 即可。各 Agent 自己的配置（<code>~/.claude</code>、<code>~/.codex</code>…）仍留在各自读取的位置。</p>
 
     <h3 id="log">magpie 的日志在哪里？</h3>
     <p>应用（窗口、菜单栏或托盘图标、快捷面板，不论怎样打开）写入 <code>app.log</code>：macOS 上是 <code>~/Library/Logs/magpie/app.log</code>，Windows 上是 <code>%LOCALAPPDATA%\magpie\logs\app.log</code>，Linux 上是 <code>~/.local/state/magpie/app.log</code>（设置了 <code>$XDG_STATE_HOME</code> 时是 <code>$XDG_STATE_HOME/magpie</code>），便携版则在数据文件夹的 <code>logs</code> 里。<span class="ui">设置</span> → <span class="ui">关于</span> → <span class="ui">日志</span>里有它的路径，<span class="ui">打开</span>会显示它所在的文件夹；<code>magpie log</code> 打印路径，<code>magpie log -f</code> 持续跟随。满 5 MiB 后它变成旁边的 <code>app.old.log</code>，最多保留两个文件。它记的是 magpie 做了什么、遇到了哪些错误（服务商拒绝请求、重试、插件没能启动），不含你的密钥、提示词或回复；看起来像密钥或令牌的内容也会被遮掉。作为服务运行的 <code>magpie serve</code> 日志在别处：macOS 上是 <code>~/Library/Logs/magpie/serve.log</code>，Linux 上是 <code>journalctl --user -u magpie</code>；<code>magpie log</code> 也会列出它。</p>
 
     <h3 id="privacy">magpie 会发送我的哪些信息？</h3>
-    <p>你的提示词、回复、密钥和账号只发给你用的供应商，中间没有 magpie 自己的服务器。正式发布的 magpie 每天告诉我们一次它在用，好让我们知道有多少人在用、该先照顾哪些：本机随机生成的 ID、magpie 版本和系统，以及用了哪些 agent、供应商和模型，只用 magpie 自己的 ID（<code>claude</code>、<code>deepseek</code>、<code>deepseek/deepseek-v4</code>）和各自的数量。你自己添加的供应商及其上的模型只记作 <code>custom</code>。添加供应商页里排在最前的合作伙伴，每天被展示、打开和添加的次数也一并发送，只有次数。不发送名称、Base URL、账号、密钥、提示词和用量。<span class="ui">设置</span> → <span class="ui">隐私</span> → <span class="ui">分享我用的 agent、provider 和模型</span> 可以去掉 agent、供应商、模型和合作伙伴次数这部分；<span class="ui">计入用户数</span>、<code>DO_NOT_TRACK=1</code> 或 <code>MAGPIE_NO_STATS=1</code> 全部关闭。从源码构建的版本从不发送。合作伙伴的官网和「获取 Key」链接经 <code>usemagpie.ai/go/…</code> 跳转，跳转前记一次点击（哪个合作伙伴、哪个链接、哪个国家），usemagpie.ai 也会统计合作伙伴列表被拉取的次数。这部分是服务器本身看到的，和任何网站统计访问一样，不受上面的设置影响；不记录 ID、IP 和账号。插件、导入链接和库里的图标经 <code>usemagpie.ai/api/icon</code> 获取，图标所在的服务器只看到 Cloudflare 的地址，看不到你的 IP；这台服务器只转发图片，不计数也不记录。<a href="/docs/zh/privacy">隐私页</a>列出了 magpie 自己发出的所有内容，附每日计数的示例、它在本机留下的文件和每个开关。</p>
+    <p>你的提示词、回复、密钥和账号只发给你用的供应商，中间没有 magpie 自己的服务器。正式发布的 magpie 每天告诉我们一次它在用，好让我们知道有多少人在用、该先照顾哪些：本机随机生成的 ID、magpie 版本和系统，以及用了哪些 agent、供应商和模型，只用 magpie 自己的 ID（<code>claude</code>、<code>deepseek</code>、<code>deepseek/deepseek-v4</code>）和各自的数量。你自己添加的供应商及其上的模型只记作 <code>custom</code>。添加供应商页里排在最前的合作伙伴，每天被展示、打开和添加的次数也一并发送，只有次数。不发送名称、Base URL、账号、密钥、提示词和用量。<span class="ui">设置</span> → <span class="ui">隐私</span> → <span class="ui">分享我用的 agent、provider、模型和插件</span> 可以去掉 agent、供应商、模型、合作伙伴次数，以及装了 Discover 里哪些插件（用于统计每个插件的在用人数和点赞）这部分；<span class="ui">计入用户数</span>、<code>DO_NOT_TRACK=1</code> 或 <code>MAGPIE_NO_STATS=1</code> 全部关闭。从源码构建的版本从不发送。合作伙伴的官网和「获取 Key」链接经 <code>usemagpie.ai/go/…</code> 跳转，跳转前记一次点击（哪个合作伙伴、哪个链接、哪个国家），usemagpie.ai 也会统计合作伙伴列表被拉取的次数。这部分是服务器本身看到的，和任何网站统计访问一样，不受上面的设置影响；不记录 ID、IP 和账号。插件、导入链接和库里的图标经 <code>usemagpie.ai/api/icon</code> 获取，图标所在的服务器只看到 Cloudflare 的地址，看不到你的 IP；这台服务器只转发图片，不计数也不记录。<a href="/docs/zh/privacy">隐私页</a>列出了 magpie 自己发出的所有内容，附每日计数的示例、它在本机留下的文件和每个开关。</p>
 
     <h3 id="proxy-loopback">Agent 报 502 或连不上，magpie 的路由标签页里却什么都没有？</h3>
     <p>代理软件（Surge、Clash、mihomo 等，开了系统代理、TUN 或增强模式）把 Agent 发往 <code>http://127.0.0.1:3425</code> 的请求接走、转去了别处，请求根本没到 magpie。只在跳过列表（<code>skip-proxy</code>、「绕过」）里写 127.0.0.1 不一定够：有些 Agent（比如 Codex）照样会走代理。在代理软件里加两条本地地址直连的规则，放在其他规则前面：</p>
@@ -359,7 +410,7 @@ IP-CIDR6,::1/128,DIRECT,no-resolve</pre>
     </ol>
     <p>模型 id 用 magpie 的（<code>magpie models</code>）。打开共享后，局域网里的其他电脑凭网关密钥也能连入；见 <a href="/docs/zh/remote#share">远程 magpie</a>。</p>
 
-    <p style="margin-top:48px">遇到问题，或者有值得分享的配置？来 <a href="https://discord.gg/vGSnD3ZKQF">Discord</a> 聊。想给自己的用户一键添加供应商的厂商，请看 <a href="/docs/zh/import">Add to magpie</a>。</p>
+    <p style="margin-top:48px">网关报错？见 <a href="/docs/zh/troubleshooting">常见错误排查</a>。遇到问题，或者有值得分享的配置？来 <a href="https://discord.gg/vGSnD3ZKQF">Discord</a> 聊。在 Cherry Studio 里聊天？见 <a href="/docs/zh/cherry-studio">在 Cherry Studio 里用所有模型</a>。想给自己的用户一键添加供应商的厂商，请看 <a href="/docs/zh/import">Add to magpie</a>。</p>
   </article>
 </main>
 

@@ -24,7 +24,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -33,9 +32,11 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/rosetta"
+	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/source"
 )
 
@@ -94,7 +95,31 @@ func fileClient() *http.Client {
 func proxied() http.RoundTripper {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = netproxy.Func
-	return netproxy.Dispatch(t)
+	// a root the user gave in SSL_CERT_FILE (dev-sidecar and the like) is
+	// trusted beside the system's; the file is still checked against the
+	// feed's SHA-256 and, on macOS, the signer
+	netproxy.TrustEnvRoots(t)
+	return updateProxy{netproxy.Dispatch(t)}
+}
+
+// updateProxy has a request that names no proxy of its own (WithProxy,
+// magpie update --proxy) go through Settings' UpdateProxy when it is set
+// (moonlityu on X: models direct, updates through a proxy); unset, it
+// follows the global proxy as updates always did.
+type updateProxy struct{ http.RoundTripper }
+
+func (u updateProxy) RoundTrip(req *http.Request) (*http.Response, error) {
+	if c := strings.TrimSpace(settings.Load().UpdateProxy); c != "" && netproxy.Choice(req.Context()) == "" {
+		req = req.WithContext(netproxy.With(req.Context(), c))
+	}
+	return u.RoundTripper.RoundTrip(req)
+}
+
+// CloseIdleConnections passes on to the transport underneath.
+func (u updateProxy) CloseIdleConnections() {
+	if c, ok := u.RoundTripper.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
 }
 
 // Latest asks the feed for the newest release, its notes in English.
@@ -146,7 +171,7 @@ func Released(v string) bool {
 }
 
 // describe matches what git describe adds after a tag: commits since, hash.
-var describe = regexp.MustCompile(`^\d+-g[0-9a-f]+`)
+var describe = lazyre.New(`^\d+-g[0-9a-f]+`)
 
 // Newer reports whether version a comes after b. A pre-release comes before
 // the release it leads up to.
@@ -503,7 +528,7 @@ func relaunchScript(bundle string, window, quiet bool, log string, waits []strin
 }
 
 // bundleExecutableKey finds the program an app's Info.plist names.
-var bundleExecutableKey = regexp.MustCompile(`<key>CFBundleExecutable</key>\s*<string>([^<]+)</string>`)
+var bundleExecutableKey = lazyre.New(`<key>CFBundleExecutable</key>\s*<string>([^<]+)</string>`)
 
 // bundleExecutable is the name of the program in bundle's Contents/MacOS:
 // the one its Info.plist names, else this one's own when it runs from
@@ -1377,6 +1402,15 @@ func fetch(ctx context.Context, a Asset, path string) error {
 		if res.StatusCode == http.StatusRequestedRangeNotSatisfiable && have > 0 && !restarted {
 			// what was kept isn't the start of the file the host has (it
 			// changed, or the feed's size is off): once more, whole
+			res.Body.Close()
+			have = 0
+			continue
+		}
+		if res.StatusCode == http.StatusPartialContent && have > 0 && !restarted && !strings.HasPrefix(res.Header.Get("Content-Range"), fmt.Sprintf("bytes %d-", have)) {
+			// a 206 that doesn't say it starts where it was asked to (a
+			// host whose Content-Range is bytes NaN-NaN/…, usemagpie.ai
+			// before 0.1.3733): what came can't be laid after what was kept,
+			// so once more, whole
 			res.Body.Close()
 			have = 0
 			continue

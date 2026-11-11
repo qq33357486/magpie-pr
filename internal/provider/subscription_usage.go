@@ -41,6 +41,11 @@ type QuotaWindow struct {
 	// "100% left". Claude's "Extra usage" row (claudeOveragesWindow) is
 	// the one Text window with Used 100: the account counts as spent.
 	Text bool `json:"text,omitempty"`
+	// Lane names a window of an allowance apart from the account's own
+	// ("images", ImageLane): its row is Text, and says only when it comes
+	// back, if known. Added as cards are handed out (WithImageLane), never
+	// cached.
+	Lane string `json:"lane,omitempty"`
 	// Amount of Limit is the window's own count in Unit, when the vendor
 	// counts it so (WorkBuddy's credits): Used is Amount as a share of
 	// Limit. The GUI says it as used or left, as it says the share (#659).
@@ -896,7 +901,12 @@ func claudeWindows(ctx context.Context, user string, active bool) ([]QuotaWindow
 	// limit since (claudeLimitHitAfter, #4443)
 	due := e.tried.IsZero() || claudeAsked.Load() != 0 && asked > e.asked ||
 		active && now.Sub(e.tried) >= claudeWaitOf(e, now) && (e.heard.After(e.tried) || claudeUsedSince(e.tried)) ||
-		active && claudeLimitHitAfter(e.tried)
+		active && claudeLimitHitAfter(e.tried) ||
+		// a first reading that failed (Claude Code not on a GUI's PATH, a
+		// network blink) is tried again after the wait, as nothing is kept
+		// to show and nobody need have used Claude Code since: a user who
+		// never routes Claude through magpie would see "not read" for good
+		active && e.ws == nil && e.err != nil && now.Sub(e.tried) >= e.wait
 	// a saved account the switch off a spent one has no reading of
 	// (spareRead): read once, and again only after a wait while its read
 	// keeps failing, never every look

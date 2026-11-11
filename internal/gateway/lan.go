@@ -514,6 +514,8 @@ func (s *Server) Relisten() error {
 	if s.ln == nil {
 		return nil // not serving
 	}
+	// where it listens now is what a command in another shell is told
+	defer func() { recordListening(s.ln.Addr()) }()
 	to := listenAddr()
 	if s.ln.Addr().String() == to {
 		return nil
@@ -554,6 +556,12 @@ func (s *Server) Relisten() error {
 // including a stale named key.
 func lanGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// with mTLS on, another machine's request needs magpie's client
+		// certificate before anything else is looked at, a callback's
+		// token and a gateway key included (mtls.go)
+		if refuseWithoutClientCert(w, r) {
+			return
+		}
 		if ownCallback(r) {
 			next.ServeHTTP(w, r)
 			return
@@ -563,6 +571,8 @@ func lanGuard(next http.Handler) http.Handler {
 		// (wsl.go), is one of this computer's; one given the key in its
 		// path (Claude Science's) has it taken off first
 		r = takeWSLPathKey(r)
+		// an agent named in the path (AgentPath) is told by it
+		r = takeAgentPath(r)
 		if fromWSL(r) {
 			r = asFromLoopback(r)
 		}
@@ -608,7 +618,16 @@ func lanGuard(next http.Handler) http.Handler {
 		}
 		// the key page itself is the same bytes for everyone, so it is
 		// opened before the key it asks for is typed; its data isn't
-		if remote && keyPageOpen(r) {
+		// magpie's CA, too: public, and fetched before the computer
+		// asking trusts magpie's https:// (https.go)
+		if remote && (keyPageOpen(r) || caFileOpen(r)) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// so is the join page, and its route carries a password, not a
+		// key: the handler judges the password, the browser that sent it
+		// and how often it is tried (join.go)
+		if remote && (joinPageOpen(r) || joinAsked(r)) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -814,6 +833,8 @@ func identifyCaller(w http.ResponseWriter, r *http.Request) (*http.Request, bool
 	}
 	if ok {
 		r = r.WithContext(access.WithIdentity(r.Context(), who))
+		// the names the key gives models, before any route reads one
+		r = aliasRequest(r, who)
 	}
 	r.Header = r.Header.Clone()
 	r.Header.Set("Authorization", "Bearer "+Token)

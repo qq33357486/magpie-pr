@@ -730,7 +730,7 @@ func (s *Server) onKeys(r *http.Request, p provider.Provider, model, asked strin
 	q := p
 	q.Fallback = nil
 	cs, pl := s.plan(q, model, provider.Chat)
-	if len(cs) == 0 && len(pl.left) > 0 && !slices.ContainsFunc(pl.left, func(w Weighed) bool { return !w.Barred }) {
+	if len(cs) == 0 && slices.ContainsFunc(pl.left, func(w Weighed) bool { return w.Barred }) && !slices.ContainsFunc(pl.left, func(w Weighed) bool { return !w.Barred && !w.StandIn }) {
 		return nil, http.StatusForbidden, barredError(asked, pl.left)
 	}
 	if keyWho, held := accountHolds(r); held {
@@ -785,20 +785,11 @@ func groupsHeldError(model string, left []Weighed) string {
 // named as the accounts list names them, "<provider>/<user>" where a
 // provider has the account now, the id alone otherwise.
 func keyAccountNames(who access.Identity) string {
-	names := provider.AccountNames()
 	accounts := who.ShownAccounts()
 	if len(accounts) == 0 {
 		return "none"
 	}
-	shown := make([]string, len(accounts))
-	for i, a := range accounts {
-		if n, ok := names[a]; ok {
-			shown[i] = n
-		} else {
-			shown[i] = a
-		}
-	}
-	return strings.Join(shown, ", ")
+	return access.AccountsShown(provider.AccountNames(), accounts)
 }
 
 // countHeld answers the 403 a gateway key held to some models (#882) gets

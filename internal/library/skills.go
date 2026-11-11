@@ -24,6 +24,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/yetone/magpie/internal/agent"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/source"
 	"gopkg.in/yaml.v3"
 )
@@ -32,6 +33,7 @@ import (
 // the agents that get it.
 type Skill struct {
 	Name   string   `json:"name"`
+	Bundle string   `json:"bundle,omitempty"` // the plugin it came with (plugin.go)
 	Source *Source  `json:"source,omitempty"`
 	Agents []string `json:"agents"`
 	// Hash is of the skill's files as last fetched from GitHub, and Commit
@@ -195,7 +197,7 @@ func parseMeta(b []byte) meta {
 	return m
 }
 
-var unsafe = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
+var unsafe = lazyre.New(`[^A-Za-z0-9_-]+`)
 
 // nameFor is the name a skill in the folder named folder goes by: what its
 // SKILL.md says, made fit for a file name. A name in another script doesn't
@@ -1760,7 +1762,8 @@ func UpdateSkill(name string, replace bool) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	return change(func(l *Library) error {
+	same := false
+	res, err := change(func(l *Library) error {
 		targets := Targets()
 		if s := l.skill(name); s != nil && !replace {
 			// changed while it was fetched
@@ -1768,8 +1771,19 @@ func UpdateSkill(name string, replace bool) (*Result, error) {
 				return editedError(s)
 			}
 		}
-		return up.apply(l, targets)
+		// read whole, not from the memo: the files are compared, not their stamps
+		before, _, _, beforeOK := hashWalk(skillDir(name), leaveNothing, true)
+		if err := up.apply(l, targets); err != nil {
+			return err
+		}
+		after, _, _, afterOK := hashWalk(skillDir(name), leaveNothing, true)
+		same = beforeOK && afterOK && before == after
+		return nil
 	})
+	if err == nil && res != nil && same {
+		res.Current = []string{name}
+	}
+	return res, err
 }
 
 // UpdateSkills fetches again every skill that came from GitHub, each

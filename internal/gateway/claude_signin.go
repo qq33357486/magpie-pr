@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"regexp"
 	"strings"
+
+	"github.com/yetone/magpie/internal/lazyre"
 )
 
 // Claude Code signed in to claude.ai, its base URL magpie's and no key
@@ -112,7 +113,7 @@ func (w *signInWriter) Write(b []byte) (int, error) {
 	return n, nil
 }
 
-var xAPIKey = regexp.MustCompile(`(?i)x-api-key`)
+var xAPIKey = lazyre.New(`(?i)x-api-key`)
 
 // refusedMessage is a provider's refusal of the gateway's credential, as
 // a Claude Code signed in to claude.ai is told it: the customer is told

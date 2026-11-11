@@ -88,9 +88,16 @@ type Memory struct {
 	Sources      []Source  `json:"sources,omitempty"`
 	Created      time.Time `json:"created"`
 	Updated      time.Time `json:"updated"`
+	// Edited is when the user last changed it (Edit by the user, Save
+	// of what they typed): a change made then is theirs, which a sync
+	// from another computer tells apart from an agent's or a tidy's
+	// (Combine)
+	Edited time.Time `json:"edited,omitzero"`
 	// Used is when a search last returned it, Uses how many times
 	Used time.Time `json:"used,omitzero"`
 	Uses int       `json:"uses,omitempty"`
+	// Skill is the Library skill this procedure was made (MadeSkill)
+	Skill string `json:"skill,omitempty"`
 }
 
 // Source is where a memory was said or found.
@@ -126,6 +133,13 @@ type file struct {
 	// conversations that the user deleted or archived, the last
 	// maxDismissed: never proposed again
 	Dismissed []string `json:"dismissed,omitempty"`
+	// Removed is when each memory deleted for good was deleted, kept
+	// keepRemoved: a sync doesn't bring it back from a computer that
+	// still has it (Combine)
+	Removed map[string]time.Time `json:"removed,omitempty"`
+	// Declined are the suggestions the user turned down (Suggest), by
+	// key, the last maxDeclined
+	Declined []string `json:"declined,omitempty"`
 }
 
 // maxDismissed is how many dismissed texts are kept.
@@ -357,6 +371,9 @@ func norm(s string) string {
 func Save(in Input, origin string, src *Source, proj *Project) (m *Memory, added bool, err error) {
 	t := now().UTC()
 	m = &Memory{Kind: Fact, Scope: Global, Origin: origin, Status: Active, Created: t, Updated: t}
+	if origin == FromUser {
+		m.Edited = t
+	}
 	apply(m, in)
 	if err := check(m); err != nil {
 		return nil, false, err
@@ -405,6 +422,9 @@ func Save(in Input, origin string, src *Source, proj *Project) (m *Memory, added
 			}
 			o.Sources = keepSources(append(o.Sources, m.Sources...))
 			o.Updated = t
+			if origin == FromUser {
+				o.Edited = t
+			}
 			m = o
 			return nil
 		}
@@ -473,23 +493,58 @@ func Edit(id string, in Input, byUser bool) (*Memory, error) {
 		if m == nil {
 			return ErrNotFound
 		}
-		c := *m
-		apply(&c, in)
-		if err := check(&c); err != nil {
-			return err
-		}
-		if byUser && c.Status == Archived && m.Status != Archived {
-			dismiss(f, m)
-		}
-		if byUser && (in.Text != nil || in.Kind != nil || in.Scope != nil || in.Why != nil) {
-			c.Origin = FromUser
-		}
-		c.Updated = now().UTC()
-		*m = c
 		out = m
-		return nil
+		return editIn(f, m, in, byUser)
 	})
 	return out, err
+}
+
+// editIn applies in to m, held in f, as Edit does.
+func editIn(f *file, m *Memory, in Input, byUser bool) error {
+	c := *m
+	apply(&c, in)
+	if err := check(&c); err != nil {
+		return err
+	}
+	if byUser && c.Status == Archived && m.Status != Archived {
+		dismiss(f, m)
+	}
+	if byUser && (in.Text != nil || in.Kind != nil || in.Scope != nil || in.Why != nil) {
+		c.Origin = FromUser
+	}
+	c.Updated = now().UTC()
+	if byUser {
+		c.Edited = c.Updated
+	}
+	*m = c
+	return nil
+}
+
+// SetStatus gives the user's status to the memories with ids, in one
+// write: those to review kept at once, or archived or brought back, as
+// Edit would one by one (RealZeroP27 on X). An id no longer there is
+// passed over; n is how many were changed, and none found is ErrNotFound.
+// A status that isn't one changes nothing.
+func SetStatus(status string, ids ...string) (n int, err error) {
+	err = change(func(f *file) error {
+		for _, m := range f.Memories {
+			if !slices.Contains(ids, m.ID) {
+				continue
+			}
+			if err := editIn(f, m, Input{Status: &status}, true); err != nil {
+				return err
+			}
+			n++
+		}
+		if n == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		n = 0
+	}
+	return n, err
 }
 
 // Forget sets the memory with id aside (archived): out of searches and
@@ -506,6 +561,7 @@ func Remove(ids ...string) error {
 		f.Memories = slices.DeleteFunc(f.Memories, func(m *Memory) bool {
 			if slices.Contains(ids, m.ID) {
 				dismiss(f, m)
+				removed(f, m.ID)
 				return true
 			}
 			return false

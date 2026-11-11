@@ -42,6 +42,7 @@ import (
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/library"
+	"github.com/yetone/magpie/internal/memory"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/profile"
 	"github.com/yetone/magpie/internal/provider"
@@ -51,6 +52,14 @@ import (
 
 // addPlugins is backup.AddPlugins: a var so a test installs nothing.
 var addPlugins = backup.AddPlugins
+
+// removePlugin is provider.RemovePlugin, as Settings → Plugins removes one:
+// a var so a test removes nothing.
+var removePlugin = func(name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return provider.RemovePlugin(ctx, name)
+}
 
 // Every is how often the gateway's magpie syncs.
 const Every = 3 * time.Minute
@@ -81,6 +90,10 @@ type Config struct {
 	// Library is whether the library goes too; nil, as in a setup made
 	// before it could, is yes
 	Library *bool `json:"library,omitempty"`
+	// Memory is whether memory goes too (memory.Combine says how two
+	// computers' are merged); nil, as in a setup made before it could,
+	// is yes
+	Memory *bool `json:"memory,omitempty"`
 	// Usage is whether this computer shares its usage with the others
 	// syncing to the server, and sees theirs (#542)
 	Usage bool `json:"usage,omitempty"`
@@ -98,6 +111,14 @@ type Config struct {
 	// itself: 0 is Every's 3, Manual never — then only Sync now syncs
 	// (#847). Set by SetAuto alone; Configure keeps it.
 	AutoEvery int `json:"autoEvery,omitempty"`
+	// FollowServer is this computer following the setup on the server
+	// rather than syncing both ways (Ramon317317 on X: one computer the
+	// others all take theirs from). Each sync brings in every part that
+	// changed on either side since the last one, and nothing goes up: a
+	// change made here is replaced, a copy of it kept in the sync folder
+	// and named in a notice. The computer the others follow keeps syncing
+	// both ways. Set by SetFollowServer alone; Configure keeps it.
+	FollowServer bool `json:"followServer,omitempty"`
 }
 
 // Manual is AutoEvery's never: sync runs only when asked.
@@ -163,6 +184,8 @@ func (old Config) saved(c Config) Config {
 
 func (c Config) library() bool { return c.Library == nil || *c.Library }
 
+func (c Config) memoryOn() bool { return c.Memory == nil || *c.Memory }
+
 // S3 is whether c keeps the file in an S3 bucket rather than a WebDAV folder.
 func (c Config) S3() bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(c.URL)), "s3://")
@@ -191,6 +214,10 @@ type Notice struct {
 	Here  []string  `json:"here,omitempty"`  // this computer's parts, replaced by the server's
 	There []string  `json:"there,omitempty"` // the server's parts, replaced by this computer's
 	Saved string    `json:"saved,omitempty"` // the folder the replaced copies are kept in
+	// Followed is that the parts in Here were changed here and replaced
+	// because this computer follows the server (Config.FollowServer), not
+	// because the server's were newer
+	Followed bool `json:"followed,omitempty"`
 	// Restored is a Restore's notice: Here are the parts it brought in,
 	// what was here before kept in Saved, which Undo brings back
 	Restored bool `json:"restored,omitempty"`
@@ -239,6 +266,11 @@ type state struct {
 	// when not known (never synced with them, or a blind write went
 	// over), when none is taken for removed.
 	SignIns map[string]string `json:"signIns"`
+	// Plugins is the plugins (by name) the last sync left both on the
+	// server and here: one gone from a side since was removed there, and
+	// goes from the other (pluginPlan). Nil when not known (never synced
+	// with them, or a blind write went over), when none is taken for removed.
+	Plugins []string `json:"plugins,omitempty"`
 }
 
 // blind is a write the server didn't check: the file it wrote (Sum), and
@@ -336,7 +368,8 @@ func Configure(c Config) error {
 			if old.Other != nil {
 				c.Servers[strings.ToLower(old.Other.config().Kind())] = *old.Other
 			}
-			c.AutoEvery = old.AutoEvery // SetAuto's, not the form's
+			c.AutoEvery = old.AutoEvery       // SetAuto's, not the form's
+			c.FollowServer = old.FollowServer // SetFollowServer's, not the form's
 			if old.Kind() != c.Kind() {
 				o := old.where()
 				c.Other = &o
@@ -490,6 +523,7 @@ type View struct {
 	PathStyle     bool   `json:"pathStyle,omitempty"`
 	Branch        string `json:"branch,omitempty"`
 	Library       bool   `json:"library"`
+	Memory        bool   `json:"memory"`
 	Usage         bool   `json:"usage,omitempty"`
 	SignIns       bool   `json:"signIns,omitempty"`
 	// UsageError is why usage couldn't be shared the last time it was tried
@@ -504,6 +538,9 @@ type View struct {
 	// Auto is how many minutes apart it syncs by itself; 0 never: only when
 	// asked
 	Auto int `json:"auto"`
+	// FollowServer is whether this computer takes the server's setup and
+	// sends none of its own (Config.FollowServer)
+	FollowServer bool `json:"followServer,omitempty"`
 	// Undo is whether the last Restore can be undone
 	Undo bool `json:"undo,omitempty"`
 	// File is what the server holds instead of a backup, when Error is
@@ -534,13 +571,13 @@ type OtherView struct {
 func Status() View {
 	c, ok := Load()
 	if !ok {
-		return View{Keys: true, Agents: true, Library: true}
+		return View{Keys: true, Agents: true, Library: true, Memory: true}
 	}
 	st := loadState()
 	v := View{On: true, URL: c.URL, User: c.User, PasswordSet: c.Password != "", PassphraseSet: c.Passphrase != "",
-		Keys: c.Keys, Agents: c.Agents, Library: c.library(), Error: st.Error, Notice: st.Notice,
+		Keys: c.Keys, Agents: c.Agents, Library: c.library(), Memory: c.memoryOn(), Error: st.Error, Notice: st.Notice,
 		Kind: strings.ToLower(c.Kind()), Endpoint: c.Endpoint, Region: c.Region, PathStyle: c.PathStyle, Branch: c.Branch,
-		Auto: int(c.auto() / time.Minute)}
+		Auto: int(c.auto() / time.Minute), FollowServer: c.FollowServer}
 	if st.Key == stateKey(c) {
 		v.Last = st.Last
 		v.Undo = st.Undo != "" && isFile(st.Undo)
@@ -823,6 +860,9 @@ func collect(c Config) (backup.Bundle, error) {
 	if !c.library() {
 		b.Library = nil
 	}
+	if !c.memoryOn() {
+		b.Memory = nil
+	}
 	if err == nil && c.SignIns {
 		if serr := backup.WithSignIns(&b); serr != nil {
 			return b, fmt.Errorf("the sign-ins couldn't be read: %w", serr)
@@ -842,6 +882,9 @@ func hashes(b backup.Bundle) map[string]string {
 	settingsHash := h(s)
 	if b.GatewayKeys != nil { // a missing store keeps older bundles' hash
 		settingsHash = h([]any{s, *b.GatewayKeys})
+		if b.AccountGroups != nil { // nor do older bundles without groups
+			settingsHash = h([]any{s, *b.GatewayKeys, *b.AccountGroups})
+		}
 	}
 	ps := slices.Clone(b.Providers)
 	for i := range ps { // this computer's own: kept by Mirror, never synced
@@ -860,6 +903,9 @@ func hashes(b backup.Bundle) map[string]string {
 	}
 	if b.Plugins != nil && len(*b.Plugins) > 0 { // as before them, without one
 		providers = append(providers, map[string][]plugin.Entry{"plugins": *b.Plugins})
+	}
+	if b.Proxies != nil && len(*b.Proxies) > 0 { // as before them, without one
+		providers = append(providers, map[string][]settings.NamedProxy{"proxies": *b.Proxies})
 	}
 	lib := b.Library
 	if lib != nil && lib.Subagents != nil && len(*lib.Subagents) == 0 { // as before them, without one
@@ -882,6 +928,9 @@ func hashes(b backup.Bundle) map[string]string {
 	if b.SignIns != nil { // as before them, without them
 		out["signins"] = h(b.SignIns.Hashes())
 	}
+	if b.Memory != nil { // as before it, without it
+		out["memory"] = b.Memory.Hash()
+	}
 	return out
 }
 
@@ -896,7 +945,7 @@ func hashes(b backup.Bundle) map[string]string {
 func unset(b backup.Bundle, p string) bool {
 	switch p {
 	case "providers":
-		return len(b.Providers) == 0 && len(b.Groups) == 0
+		return len(b.Providers) == 0 && len(b.Groups) == 0 && (b.Proxies == nil || len(*b.Proxies) == 0)
 	case "settings":
 		var s settings.Settings
 		if b.Settings != nil {
@@ -989,6 +1038,17 @@ func take(to *backup.Bundle, from backup.Bundle, part string) {
 		}
 		to.Providers, to.Icons, to.Groups, to.Searches, to.Order, to.GroupOrder = ps, from.Icons, from.Groups, searches, from.Order, from.GroupOrder
 		to.Plugins = from.Plugins
+		if from.Proxies != nil { // the saved proxies the providers name, their passwords as the keys are
+			px := slices.Clone(*from.Proxies)
+			if !keys && to.Proxies != nil && (to.Keys || (to.ProvidersKeys != nil && *to.ProvidersKeys)) {
+				for i := range px {
+					if j := slices.IndexFunc(*to.Proxies, func(o settings.NamedProxy) bool { return o.ID == px[i].ID }); j >= 0 && px[i].Pass == "" {
+						px[i].Pass = (*to.Proxies)[j].Pass
+					}
+				}
+			}
+			to.Proxies = &px
+		}
 		to.ProvidersKeys = backup.Flag(keys || (to.ProvidersKeys != nil && *to.ProvidersKeys))
 		to.Keys = to.Keys || keys // the whole-bundle bit follows it, for a magpie that reads no per-part ones: it keeps the server's keys on its own upload then
 	case "settings":
@@ -999,6 +1059,7 @@ func take(to *backup.Bundle, from backup.Bundle, part string) {
 			copy := *s
 			copy.LANKey, copy.LANKeyID = to.Settings.LANKey, to.Settings.LANKeyID
 			copy.GitHubToken = to.Settings.GitHubToken
+			copy.BarkKey = to.Settings.BarkKey
 			copy.OTel.Headers = nil
 			if strings.TrimRight(strings.TrimSpace(copy.OTel.Endpoint), "/") == to.Settings.OTel.Endpoint {
 				copy.OTel.Headers = to.Settings.OTel.Headers
@@ -1010,6 +1071,9 @@ func take(to *backup.Bundle, from backup.Bundle, part string) {
 		}
 		if keys && from.GatewayKeys != nil {
 			to.GatewayKeys = from.GatewayKeys // an explicit empty store clears it
+		}
+		if keys && from.AccountGroups != nil {
+			to.AccountGroups = from.AccountGroups
 		}
 		to.SettingsKeys = backup.Flag(keys || (to.SettingsKeys != nil && *to.SettingsKeys))
 	case "profiles":
@@ -1048,6 +1112,9 @@ func changed(part string, keys bool) time.Time {
 		m := mtime(settings.Path())
 		if k := mtime(access.Path()); keys && k.After(m) {
 			m = k
+		}
+		if g := mtime(access.GroupsPath()); keys && g.After(m) {
+			m = g
 		}
 		return m
 	case "profiles":
@@ -1136,6 +1203,18 @@ func bring(b backup.Bundle, part string) error {
 // This runs on the first sync alone: afterwards absence from a store this
 // computer has seen means a removal, which must go from every computer.
 func keepUnseenGatewayKeys(remote *backup.Bundle, local backup.Bundle) {
+	// the account groups this computer's keys may name, by id, the same
+	// way (LeiWang_2000 on X): one the folder holds is the folder's
+	if local.AccountGroups != nil && len(*local.AccountGroups) > 0 {
+		if remote.AccountGroups == nil {
+			remote.AccountGroups = &[]access.AccountGroup{}
+		}
+		for _, g := range *local.AccountGroups {
+			if !slices.ContainsFunc(*remote.AccountGroups, func(o access.AccountGroup) bool { return o.ID == g.ID }) {
+				*remote.AccountGroups = append(*remote.AccountGroups, g)
+			}
+		}
+	}
 	if local.GatewayKeys == nil || len(*local.GatewayKeys) == 0 || remote.GatewayKeys == nil {
 		return
 	}
@@ -1170,6 +1249,7 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		if !unchanged && sum(data) != b.Sum {
 			st.Remote, st.Local = b.Remote, b.Local
 			st.SignIns = nil // what went up may be gone: nothing is taken for removed
+			st.Plugins = nil
 		}
 		st.Blind = nil
 	}
@@ -1233,6 +1313,9 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		remember(sealed)
 		return nil
 	}
+	if data == nil && c.FollowServer {
+		return errNothingToFollow
+	}
 	if data == nil { // nothing there yet: this computer's setup is the first
 		if err := push(local, "", blind{}); err != nil {
 			return err
@@ -1243,6 +1326,7 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		if c.SignIns {
 			st.SignIns = local.SignIns.Hashes()
 		}
+		st.Plugins = pluginNames(local.Plugins)
 		return nil
 	}
 	if sum(data) == st.Sum && maps.Equal(L, st.Local) && !follow && !moved {
@@ -1276,7 +1360,9 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		// damaged file's ETag as the version to replace, so the push is
 		// still checked against the server and another computer's parts
 		// survive the way they would on any sync.
-		if !errors.Is(err, backup.ErrCorrupt) || st.Local == nil {
+		// A computer following the server never writes it, a rebuild
+		// included: the computer it follows, or Upload, replaces the file.
+		if !errors.Is(err, backup.ErrCorrupt) || st.Local == nil || c.FollowServer {
 			return described(c, data, err)
 		}
 		good := cached(st.Sum) // the version this computer last read whole
@@ -1312,6 +1398,13 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 	// below changes remote (a join's unseen gateway keys)
 	R, Rafter := hashesOwn(remote, prev), hashesOwn(remote, afterW)
 	first := st.Local == nil
+	// plugins removed on one side since the last sync: gone from the other
+	// too, and not brought back by the part that carries them
+	goneHere, goneThere := pluginPlan(st.Plugins, local.Plugins, remote.Plugins)
+	if len(goneHere) > 0 && remote.Plugins != nil {
+		kept := without(*remote.Plugins, goneHere)
+		remote.Plugins = &kept
+	}
 	merged := remote
 	var bringIn, here, there []string
 	for _, p := range Parts {
@@ -1324,6 +1417,22 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		}
 		lc := !first && L[p] != st.Local[p]
 		rc := first || R[p] != st.Remote[p]
+		if c.FollowServer {
+			// following the server: what changed on either side is the
+			// server's, a change here kept aside first. A part the server's
+			// file holds nothing of on joining is left as it is here
+			// (#5642): nothing has been set there to follow yet.
+			if remote.Library == nil && p == "library" || first && unset(remote, p) && !unset(local, p) {
+				continue
+			}
+			if lc || rc {
+				bringIn = append(bringIn, p)
+			}
+			if lc || first {
+				here = append(here, p)
+			}
+			continue
+		}
 		switch {
 		case lc && !rc:
 			take(&merged, local, p)
@@ -1405,9 +1514,23 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		}
 	}
 	st.Own, st.Here, R = after, kept, Rafter
+	// the plugins the other computers removed, removed here as Settings
+	// removes one; one that can't be (its agent is on magpie) is tried
+	// again at the next sync, and isn't sent up meanwhile
+	var stuck []string
+	for _, name := range goneThere {
+		if err := removePlugin(name); err != nil {
+			log.Printf("sync: removing plugin %s, which another computer removed: %v", name, err)
+			stuck = append(stuck, name)
+		}
+	}
+	if gone := slices.Concat(goneHere, goneThere); len(gone) > 0 && merged.Plugins != nil {
+		kept := without(*merged.Plugins, gone)
+		merged.Plugins = &kept
+	}
 	// the server's file is in; what is pushed next counts as changed here
 	// until the push is done
-	if len(bringIn) > 0 || follow {
+	if len(bringIn) > 0 || follow || len(goneThere) > 0 {
 		if local, err = collect(c); err != nil {
 			return err
 		}
@@ -1428,10 +1551,29 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 			}
 		}
 	}
+	// memory, when it goes: merged memory by memory (memory.Combine),
+	// what the server has put in here, and both sides' going up
+	if c.memoryOn() && (local.Memory != nil || remote.Memory != nil) {
+		merged.Memory = memory.Combine(local.Memory, remote.Memory)
+		changed, err := memory.Put(remote.Memory)
+		if err != nil {
+			return fmt.Errorf("bringing in memory: %w", err)
+		}
+		if changed {
+			// the agents' instructions given what came, as after a change
+			// the user made to memory
+			if _, err := library.PublishMemory(false); err != nil {
+				log.Printf("sync: memory digest: %v", err)
+			}
+			if local, err = collect(c); err != nil {
+				return err
+			}
+		}
+	}
 	now := hashesOwn(local, afterW)
 	M, pending := hashesOwn(merged, afterW), map[string]string{}
-	for _, p := range append(slices.Clone(Parts), "signins") {
-		if _, ok := now[p]; !ok && p == "signins" {
+	for _, p := range append(slices.Clone(Parts), "signins", "memory") {
+		if _, ok := now[p]; !ok && (p == "signins" || p == "memory") {
 			continue
 		}
 		pending[p] = now[p]
@@ -1442,12 +1584,12 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 	st.Local, st.Sum, st.Server, st.Remote = pending, sum(data), ver, R
 	remember(data)
 	if len(here)+len(there) > 0 {
-		st.Notice = &Notice{At: time.Now(), Here: here, There: there, Saved: saved}
+		st.Notice = &Notice{At: time.Now(), Here: here, There: there, Saved: saved, Followed: c.FollowServer && !first}
 		st.Undo = "" // a restore's undo goes with its notice
 	}
 	// A rebuild always writes back: the server's file is the damaged one,
 	// so even a merge that matches the cached copy must replace it.
-	if rebuilt || !maps.Equal(M, R) {
+	if !c.FollowServer && (rebuilt || !maps.Equal(M, R)) {
 		if err := push(merged, etag, blind{Remote: R, Local: pending}); err != nil {
 			return err
 		}
@@ -1457,7 +1599,61 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 	if c.SignIns {
 		st.SignIns = bothSides(shared, local.SignIns.Hashes())
 	}
+	st.Plugins = nil
+	if merged.Plugins != nil {
+		// on both sides now; a removal that failed here stays known, so
+		// the next sync tries it again
+		both := slices.DeleteFunc(pluginNames(local.Plugins), func(n string) bool {
+			return !slices.Contains(pluginNames(merged.Plugins), n)
+		})
+		st.Plugins = append(both, stuck...)
+	}
 	return nil
+}
+
+// pluginNames is the names of the plugins in es, nil for none.
+func pluginNames(es *[]plugin.Entry) []string {
+	if es == nil {
+		return nil
+	}
+	var out []string
+	for _, e := range *es {
+		out = append(out, plugin.Name(e.Spec))
+	}
+	return out
+}
+
+// without is es less the plugins named.
+func without(es []plugin.Entry, names []string) []plugin.Entry {
+	out := []plugin.Entry{}
+	for _, e := range es {
+		if !slices.Contains(names, plugin.Name(e.Spec)) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// pluginPlan tells which plugins one side removed since the last sync (base,
+// the names both had then), as sign-ins are told: a plugin base had that
+// here lacks was removed here (goneHere), and one the server lacks was
+// removed there (goneThere, still here). A plugin on one side that base
+// never had is a new one, and stays. Nothing is told when base is unknown
+// or the server's file carries no plugin list (an older magpie).
+func pluginPlan(base []string, local, remote *[]plugin.Entry) (goneHere, goneThere []string) {
+	if len(base) == 0 || remote == nil {
+		return nil, nil
+	}
+	here, there := pluginNames(local), pluginNames(remote)
+	for _, n := range base {
+		switch inHere, inThere := slices.Contains(here, n), slices.Contains(there, n); {
+		case !inHere && inThere:
+			goneHere = append(goneHere, n)
+		case inHere && !inThere:
+			goneThere = append(goneThere, n)
+		}
+	}
+	return goneHere, goneThere
 }
 
 // bothSides is the sign-ins on the server (shared) that are here too, as

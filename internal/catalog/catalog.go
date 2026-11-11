@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -24,6 +23,7 @@ import (
 
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/filememo"
+	"github.com/yetone/magpie/internal/lazyre"
 )
 
 // Model is one entry the picker can offer.
@@ -85,6 +85,12 @@ type Model struct {
 	// provider after it (magpie_label): the name Provider in model names
 	// Off has here (ARNO on Discord).
 	Plain string `json:",omitempty"`
+	// By, on a model of another magpie's list, is the provider that
+	// magpie names as serving it (magpie_by): its own provider's name, or,
+	// for a model it has from a magpie further on, the one there, the
+	// first in the chain. Its Remote magpie's upstream names (Provider's
+	// UpstreamProviders) say it after the model (lcc580 on X).
+	By string `json:",omitempty"`
 	// Via, on a model of another magpie's list, is the magpies it passes
 	// through to its vendor, that one last (magpie_via.go)
 	Via []string `json:",omitempty"`
@@ -99,6 +105,14 @@ type Model struct {
 	// Fast is set on a model Codex may ask for priority processing (its
 	// Fast mode): one a ChatGPT account serves.
 	Fast bool `json:",omitempty"`
+	// Seals is set on a model whose provider seals a multi-agent V2
+	// lead's subagent tasks as the ChatGPT backend does: one of no sign-in
+	// on the Responses API (a relay of that backend, Sub2API or CPA,
+	// #1109; OpenAI's own API), or a group with such a member. With
+	// "subagents on any model" (settings.CodexAgentsV1) its Codex entry
+	// says V1 as the ChatGPT account's do (codexcat.Entries; brethhbbm on
+	// X: relay/gpt-6-astra kept its subagents).
+	Seals bool `json:",omitempty"`
 	// Tiers, in one ChatGPT account's own model list, are the service
 	// tiers its plan offers on the model ("priority", "ultrafast"); in
 	// another magpie's, the tiers it offers its Codex on the model
@@ -628,12 +642,20 @@ func load() map[string]mdProvider {
 func loadGen() (map[string]mdProvider, int) {
 	loadMu.Lock()
 	defer loadMu.Unlock()
+	loadUsed()
 	if !loaded {
 		loaded = true
 		func() {
-			for _, p := range []string{CachePath(), opencodeCache()} {
-				b, err := os.ReadFile(p)
-				if err != nil {
+			// magpie's own copy, OpenCode's, then the one magpie ships
+			// with (bundled.go): a file that can't be read or parsed is
+			// passed over for the next, never read as no catalog
+			for _, read := range []func() ([]byte, error){
+				func() ([]byte, error) { return os.ReadFile(CachePath()) },
+				func() ([]byte, error) { return os.ReadFile(opencodeCache()) },
+				func() ([]byte, error) { return bundledCatalog(), nil },
+			} {
+				b, err := read()
+				if err != nil || b == nil {
 					continue
 				}
 				var m map[string]mdProvider
@@ -856,11 +878,9 @@ func syncLock(ctx context.Context, onlyIfMissing bool) error {
 	if err := json.Unmarshal(b, &probe); err != nil || len(probe) == 0 {
 		return fmt.Errorf("models.dev: unexpected payload")
 	}
-	p := CachePath()
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(p, b, 0o644); err != nil {
+	// written whole through a rename: a reader never sees it half
+	// written, and a failed write keeps the last good copy
+	if err := writeWhole(CachePath(), b, time.Time{}); err != nil {
 		return err
 	}
 	// the lab catalog beside it is best effort: without it the provider
@@ -1610,7 +1630,7 @@ var relayPrefixes = []string{"claude-"}
 // a model another of them lists is (openai-, databricks-, doubao-, zai-):
 // the model after it is the same model, its window, levels and images
 // included.
-var channelPrefix = regexp.MustCompile(`^[a-z]{2,24}-`)
+var channelPrefix = lazyre.New(`^[a-z]{2,24}-`)
 
 // renamed is the model a relay renamed to b, when models.dev lists none
 // by b (found), and the window the rename names, if any: a window mark
@@ -1812,7 +1832,7 @@ func levelIndexOf(all map[string]mdProvider, at int, pid string) *levelIndex {
 // channel lists gemini-3.8-flash-high, claude-opus-5-5-high,
 // claude-opus-4-6-thinking and gpt-oss-120b-medium, and its xAI channel
 // grok-3-mini-fast. Its "(high)" form is found's.
-var variantSuffix = regexp.MustCompile(`(?i)-(minimal|low|medium|high|xhigh|max|thinking|fast)$`)
+var variantSuffix = lazyre.New(`(?i)-(minimal|low|medium|high|xhigh|max|thinking|fast)$`)
 
 // Unsuffixed is id with a proxy's level or speed word taken off
 // (variantSuffix), and whether it had one. It is for borrowing levels a
@@ -2131,6 +2151,46 @@ func WrongEndpoint(status int, body []byte) bool {
 	} {
 		if strings.Contains(msg, phrase) {
 			return true
+		}
+	}
+	return false
+}
+
+// NoChannel recognizes a relay (New API and its forks) answering 503 that no
+// channel serves the model in the caller's group: the relay holds the model on
+// some of its APIs and has no channel for it on the one asked, so another API
+// of the same relay may serve it (equinox0253 on X: gpt-6.1-sol asked on a
+// relay's Anthropic URL, where only its Claude models have a channel).
+func NoChannel(status int, body []byte) bool {
+	if status != 503 && status != 404 {
+		return false
+	}
+	msg := strings.ToLower(string(Words(body)))
+	for _, phrase := range []string{"no available channel", "无可用渠道", "没有可用渠道"} {
+		if strings.Contains(msg, phrase) {
+			return true
+		}
+	}
+	// a relay that answers 404 for the same case (equinox0253 on X: WandAPI,
+	// 503 on New API): New API gives that refusal the code model_not_found,
+	// and a fork keeps the code when it changes the status. The code alone
+	// is not enough: it is also what a model that does not exist is told,
+	// so the message must name a channel or a group, the relay's own
+	// routing, as a 404 for a wrong base URL or a missing model never does.
+	if status == 404 {
+		var e struct {
+			Error struct {
+				Code    any    `json:"code"`
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(body, &e) == nil {
+			code, _ := e.Error.Code.(string)
+			if code == "model_not_found" || e.Error.Type == "model_not_found" {
+				m := strings.ToLower(e.Error.Message)
+				return strings.Contains(m, "channel") || strings.Contains(m, "渠道") || strings.Contains(m, "分组") || strings.Contains(m, "under group")
+			}
 		}
 	}
 	return false

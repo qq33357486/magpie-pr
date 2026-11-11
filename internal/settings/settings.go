@@ -17,7 +17,6 @@ import (
 	"net/url"
 	"os"
 	"reflect"
-	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -32,6 +31,7 @@ import (
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/fonts"
 	"github.com/yetone/magpie/internal/lastgood"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/redact"
 	"github.com/yetone/magpie/internal/steady"
 )
@@ -44,6 +44,15 @@ const CodexAutoReviewSession = "session"
 // subagent on the model its lead's own turns go on, whatever the lead
 // names for it in spawn_agent.
 const CodexSubagentLead = "lead"
+
+// CodexTierStandard is the CodexServiceTier that sends Codex's requests
+// with no service tier, the standard one, whatever Codex asked; the
+// sentinel codex-rs itself uses for that (SERVICE_TIER_DEFAULT_REQUEST_VALUE).
+const CodexTierStandard = "default"
+
+// CodexServiceTiers are the values CodexServiceTier may take, "" (as
+// Codex asks) first.
+var CodexServiceTiers = []string{"", CodexTierStandard, "priority", "ultrafast"}
 
 // Settings is what the user chose. "" and "system" both mean "follow the OS".
 type Settings struct {
@@ -118,7 +127,35 @@ type Settings struct {
 	// Save sets it from Proxy, and it is stored as Proxy is. This
 	// computer's own (KeepOwn), as Proxy is.
 	ProxyCustom string `json:"proxyCustom,omitempty"`
-	OTel        OTel   `json:"otel,omitempty"`
+	// PluginProxy is the proxy magpie downloads plugins through: the
+	// plugins list, npm's registry, GitHub, the plugins repo's dist
+	// branch, Bun's own download, and bun add, update and git clone
+	// (JonahFu on X: GitHub needs a proxy where the vendors don't). ""
+	// follows Proxy, as every download did before; "direct" uses none;
+	// anything else is the proxy, as Proxy takes it. A plugin's requests
+	// to its vendor are API requests and follow Proxy (and the
+	// provider's or account's own), never this. This computer's own
+	// (KeepOwn), as Proxy is.
+	PluginProxy string `json:"pluginProxy,omitempty"`
+	// PluginProxyCustom is PluginProxy's ProxyCustom.
+	PluginProxyCustom string `json:"pluginProxyCustom,omitempty"`
+	// UpdateProxy is the proxy magpie's own update goes through: the
+	// update feed, the release notes and the release's file (moonlityu on
+	// X: models direct, updates through a proxy). "" follows Proxy, as
+	// updates always did; "direct" uses none; anything else is the proxy,
+	// as Proxy takes it. A proxy given to one `magpie update --proxy` run
+	// comes first. This computer's own (KeepOwn), as Proxy is.
+	UpdateProxy string `json:"updateProxy,omitempty"`
+	// UpdateProxyCustom is UpdateProxy's ProxyCustom.
+	UpdateProxyCustom string `json:"updateProxyCustom,omitempty"`
+	// Proxies are the proxies kept by name (NamedProxy); a proxy choice
+	// "@"+id anywhere (Proxy, PluginProxy, a provider's, a key's, an
+	// account's) uses one. This computer's own (KeepOwn).
+	Proxies []NamedProxy `json:"proxies,omitempty"`
+	// ProxyNames remembers each saved proxy's name by id, so a choice that
+	// outlives its proxy can still say which one it was. This computer's own.
+	ProxyNames map[string]string `json:"proxyNames,omitempty"`
+	OTel       OTel              `json:"otel,omitempty"`
 	// GitHubToken is a GitHub token the library's requests to GitHub's
 	// API carry, raising its rate limit from 60 requests an hour to 5,000.
 	// It is a secret: the Settings page is told only a masked one, and a
@@ -208,6 +245,20 @@ type Settings struct {
 	// its place (gateway.AllowIPs). This computer's own (KeepOwn), as LAN
 	// is: the addresses are of the network this computer is on.
 	AllowIPs []string `json:"allowIPs,omitempty"`
+	// MTLS has other computers show a client certificate magpie issued
+	// (`magpie mtls`, Settings → Network and sharing) before anything is
+	// answered (hhdaxia on X, #5596): the gateway and magpie web's page
+	// are served over TLS with magpie's own CA, and a remote request
+	// without a good certificate is refused. This computer's own
+	// (KeepOwn), as LAN is.
+	MTLS bool `json:"mtls,omitempty"`
+	// HTTPS serves the gateway and magpie web's page to other computers
+	// over https:// (zhangly1 on X: Claude on another computer on the LAN
+	// needed https), with the certificate imported in Settings (kept in
+	// <dir>/https) or else one magpie's own CA signs for this computer's
+	// names and addresses (gateway.ServedCert). This computer may still
+	// call plain http://. This computer's own (KeepOwn), as LAN is.
+	HTTPS bool `json:"https,omitempty"`
 	// FetchPrivate are the private hosts and ranges (a name, name:port, an
 	// IP or a CIDR range) magpie may download a URL from that it didn't
 	// choose itself: an image or video a request names or a vendor answers
@@ -366,6 +417,13 @@ type Settings struct {
 	// "<provider>|<display name>", which provider.adoptLegacyPluginCheckins
 	// carries over).
 	CheckinOff []string `json:"checkinOff,omitempty"`
+	// CheckinAt is the local time of day ("15:04") every daily check-in,
+	// built-in and plugin, waits for before it asks for the vendor's day
+	// (times_ang on X: 可以调整自动签到的时间吗); "" asks as the day turns,
+	// as before. It holds the day's first ask only: the vendor's own turn
+	// (a plugin's until) and the tries after it are kept, so no day is
+	// skipped (provider.checkinGate).
+	CheckinAt string `json:"checkinAt,omitempty"`
 	// ReplyModel is what a reply's model name says when the request went
 	// out under another name than the one asked for (a group's member, a
 	// model's own id, a provider/model id): "" the model the agent asked
@@ -447,6 +505,11 @@ type Settings struct {
 	// NoUsageStats keeps which agents, providers and models magpie is
 	// used with out of that event, which then counts the user only.
 	NoUsageStats bool `json:"noUsageStats,omitempty"`
+	// AgentTelemetryOff turns off the telemetry of every agent with a
+	// switch for it, an agent found later too, over each agent's own
+	// Telemetry row (agent/telemetry_all.go; OipsAnthony on X). Set only
+	// by its route, which writes the agents' files as it changes.
+	AgentTelemetryOff bool `json:"agentTelemetryOff,omitempty"`
 	// NoUpdatePill keeps the header's Update pill away when a newer magpie
 	// is out; UpdateSkip is the one version it was hidden for, and a newer
 	// one brings it back. Either way magpie still downloads the version and
@@ -674,6 +737,17 @@ type Settings struct {
 	// never the value, a burst said once and at most once a minute. Only
 	// requests the app's own gateway serves; off until turned on.
 	MaskAlert bool `json:"maskAlert,omitempty"`
+	// BarkServer and BarkKey are where every alert above is also sent as a
+	// push to the iOS Bark app (EV_John_Liu on X): the server ("" is
+	// https://api.day.app, or a self-hosted Bark server's address) and the
+	// device key the app shows. The key is a secret: the Settings page is
+	// told only that one is set, and a backup or sync without keys leaves
+	// it out, as it does GitHubToken. BarkDaily is the time of day, "HH:MM",
+	// a summary is pushed once a day: what today cost and the allowances
+	// near their end; "" is off.
+	BarkServer string `json:"barkServer,omitempty"`
+	BarkKey    string `json:"barkKey,omitempty"`
+	BarkDaily  string `json:"barkDaily,omitempty"`
 	// PlainNames has the model lists magpie gives agents name each model
 	// by its name alone, without its provider's or "routing group" after it
 	// (#335) — but for two in one list that would read the same, which keep
@@ -684,13 +758,20 @@ type Settings struct {
 	// it (#92: "Opus 5.5", not "Opus 5.5 · Claude Code"), the vendor's names
 	// keeping their provider's after them (see provider.Labels).
 	PlainOwnNames bool `json:"plainOwnNames,omitempty"`
+	// AgentSuffix is an agent's own Provider in model names, by the id
+	// its lists are kept by (lower-cased): "on", "own" or "off", over
+	// PlainNames and PlainOwnNames for that agent alone (KillTry27355 on
+	// X). An agent it doesn't name follows those two (provider.LabelsFor).
+	AgentSuffix map[string]string `json:"agentSuffix,omitempty"`
 	// BareModelIDs has the gateway's /v1/models list each model by its id
 	// without the provider as well ("gpt-5.6-sol" beside
 	// "codex/gpt-5.6-sol"), for clients moved from another proxy that ask
 	// for bare ids (love1sbug on X; provider.BareEntries). Off by default.
 	BareModelIDs bool `json:"bareModelIDs,omitempty"`
 	// CodexAgentsV1 has the OpenAI models magpie hands Codex — the ChatGPT
-	// account's own, their codex/ ids and the groups one is in — say
+	// account's own, their codex/ ids, the groups one is in, and those a
+	// provider that seals as that backend does serves (catalog.Model.Seals:
+	// a relay of it, brethhbbm on X) — say
 	// multi_agent_version "v1" (#141): their subagents are then handed
 	// their tasks as text, which a magpie-served subagent can read, where
 	// V2's are sealed by OpenAI's server, and it is V1 that a ChatGPT
@@ -739,6 +820,13 @@ type Settings struct {
 	// lead asked for; CodexSubagentLead puts each on the model its lead's
 	// own turns go on, even when the lead names another.
 	CodexSubagentModel string `json:"codexSubagentModel,omitempty"`
+	// CodexServiceTier is the service tier the gateway puts on every
+	// request Codex sends, whatever Codex asked (JackyFill on X): "" as
+	// Codex asks it (its /fast, Ultra Fast or neither), CodexTierStandard
+	// with no tier at all, "priority" (Codex's Fast) or "ultrafast" (its
+	// Ultra Fast). Codex's words, as codex-rs ServiceTier::request_value
+	// sends them; its Flex is not offered, the ChatGPT backend takes none.
+	CodexServiceTier string `json:"codexServiceTier,omitempty"`
 	// DesktopSubagentModel is the model the gateway puts Claude Desktop's
 	// subagent tool turns on. "" leaves them on the model their lead asks
 	// for; tool-less helpers and the lead's own turns are never moved.
@@ -746,6 +834,17 @@ type Settings struct {
 	// DesktopSubagentEffort fixes Desktop's subagent tool turns at this
 	// reasoning level. Empty keeps the effort each request asks for.
 	DesktopSubagentEffort string `json:"desktopSubagentEffort,omitempty"`
+	// DshCompactModel is the model the gateway puts DeepSeek Harness's
+	// compaction of its context on, whatever model the session is on:
+	// a switch away from a model whose provider has run out of its limit
+	// compacts on the old model first, and failed with it (#5395). ""
+	// leaves each compaction on the model it asks for.
+	DshCompactModel string `json:"dshCompactModel,omitempty"`
+	// CodexCompactModel is the model the gateway puts Codex's own
+	// compaction of its context on, when it is made by magpie (a model of
+	// magpie's, not a ChatGPT account's sealed one). "" leaves each on the
+	// session's model.
+	CodexCompactModel string `json:"codexCompactModel,omitempty"`
 	// FullContext has Codex, Claude Code and Grok Build told a model's whole context
 	// window. Off, a window above WorkingWindow is told as WorkingWindow,
 	// so they compact a long conversation there instead of sending ever
@@ -776,6 +875,16 @@ type Settings struct {
 	// off, in tokens: 0 is WorkingWindow (#876: 272K was the only one).
 	// A provider's or a model's own (ModelCompacts) comes before it.
 	CompactAt int `json:"compactAt,omitempty"`
+	// ContextCap is the longest context window any model is told, in
+	// tokens, for every model that has no window of its own set by the user
+	// (a model's, or its provider's "*"): the one cap that replaces setting
+	// each model's (WJaunita45604 on X). 0 is no cap. It only lowers: a
+	// model whose window is shorter, or not known, is told what it was.
+	ContextCap int `json:"contextCap,omitempty"`
+	// ContextCapAll makes ContextCap hold a window the user set themselves
+	// too (a model's, or its provider's "*"): the shorter of the two is
+	// told. Off, the user's own window wins even when it is longer.
+	ContextCapAll bool `json:"contextCapAll,omitempty"`
 	// AgentCompacts is Long conversations of an agent's own, by its kind
 	// (CompactAgents), over CompactAt and FullContext for that agent alone
 	// (molianyin4227 on Discord: models differ, so one size for every
@@ -829,6 +938,9 @@ type Settings struct {
 	// own order. Only the page's: the order providers are tried in is the
 	// Providers page's.
 	UsageOrder []string `json:"usageOrder,omitempty"`
+	// PluginPageOrder is how the sidebar lists the plugins' pages, by page
+	// key, as they were dragged there; a page it doesn't name follows.
+	PluginPageOrder []string `json:"pluginPageOrder,omitempty"`
 	// PanelUsageHidden are the subscriptions, by provider id, that the tray
 	// panel's Allowances tab leaves out (H20 on Discord). It is what the
 	// panel shows, nothing more: routing, caps, the Usage page and the menu
@@ -1327,7 +1439,7 @@ var validTerminalBundleID = capre.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]*$`, 255
 // providerID is how a provider's id is spelled: lower-case letters, digits
 // and dashes, as provider.Slug derives it (a custom provider's id is the
 // same, the site it is on when its name has none).
-var providerID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+var providerID = lazyre.New(`^[a-z0-9][a-z0-9-]*$`)
 
 // CheckModelKey is whether a key of one of the per-model maps names a model
 // the way all of them do: "<provider id>/<model id>" — or "<provider id>/*"
@@ -1402,6 +1514,24 @@ const WorkingWindow = 272000
 // waited for the page to load again.
 func (s Settings) LightweightOn() bool { return s.Lightweight != nil && *s.Lightweight }
 
+// Capped is a model's window n under ContextCap: no longer than it, and
+// as it was when the cap is off, is longer than n, or n is not known (0).
+func (s Settings) Capped(n int) int {
+	if s.ContextCap > 0 && n > s.ContextCap {
+		return s.ContextCap
+	}
+	return n
+}
+
+// CappedOwn is a window n the user set themselves under ContextCap: as it
+// was unless ContextCapAll, then no longer than the cap.
+func (s Settings) CappedOwn(n int) int {
+	if s.ContextCapAll {
+		return s.Capped(n)
+	}
+	return n
+}
+
 // Working is the context window an agent is told for a model with one of
 // n tokens (see FullContext).
 func (s Settings) Working(n int) int {
@@ -1449,12 +1579,13 @@ func (s Settings) Compact() int {
 
 // KeepOwn puts back cur's settings that are this computer's own, which a
 // sync or a restored backup never brings from another: the window's size,
-// place and whether it was maximised, the proxy, the gateway's port, whether it
+// place and whether it was maximised, the proxy (and plugin downloads'), the gateway's port, whether it
 // is shared on the local network and the addresses let in to it, what
 // its MCP router says of itself, the Dock, gateway mode, whether WSL is
 // looked in, whether agents' sign-ins are read, when allowances are read, the terminal app a session resumes
 // in, the quick panel's shortcut, whether the local masking model is on
 // (it is downloaded on this computer alone), how many Claude Code processes may run (its memory),
+// whether every agent's telemetry is off (in this computer's files),
 // and what the menu bar or tray shows beside magpie's icon (yoooo on
 // Discord: usage turned off on a Mac came back from a Windows box that
 // shows it; Lullaby: sharing turned on at home came on at work).
@@ -1464,7 +1595,9 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.UIFont, s.CodeFont = cur.UIFont, cur.CodeFont
 	s.Window, s.Proxy, s.Port, s.Dock, s.DockWindow, s.Lightweight = cur.Window, cur.Proxy, cur.Port, cur.Dock, cur.DockWindow, cur.Lightweight
 	s.DockNever, s.DockSettled = cur.DockNever, cur.DockSettled
-	s.ProxyCustom = cur.ProxyCustom
+	s.ProxyCustom, s.Proxies, s.ProxyNames = cur.ProxyCustom, cur.Proxies, cur.ProxyNames
+	s.PluginProxy, s.PluginProxyCustom = cur.PluginProxy, cur.PluginProxyCustom
+	s.UpdateProxy, s.UpdateProxyCustom = cur.UpdateProxy, cur.UpdateProxyCustom
 	s.WindowMaximised, s.KeepAwake, s.KeepAwakeDisplay = cur.WindowMaximised, cur.KeepAwake, cur.KeepAwakeDisplay
 	s.WindowAt = cur.WindowAt
 	s.TrayUsages, s.TrayUsage, s.TrayUsageEvery, s.TrayNoLogos, s.TrayNoBird, s.TrayPace, s.TrayNoCost = cur.TrayUsages, cur.TrayUsage, cur.TrayUsageEvery, cur.TrayNoLogos, cur.TrayNoBird, cur.TrayPace, cur.TrayNoCost
@@ -1473,7 +1606,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.NoWSLAgents = cur.NoWSLAgents
 	s.QuotaReads = cur.QuotaReads
 	s.NoAccountDiscovery = cur.NoAccountDiscovery
-	s.LAN, s.AllowIPs = cur.LAN, cur.AllowIPs
+	s.LAN, s.AllowIPs, s.MTLS, s.HTTPS = cur.LAN, cur.AllowIPs, cur.MTLS, cur.HTTPS
 	s.RouterNote, s.RouterAllTools = cur.RouterNote, cur.RouterAllTools
 	s.FetchPrivate = cur.FetchPrivate
 	s.SessionTerminal = cur.SessionTerminal
@@ -1483,6 +1616,9 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.ClaudeRunsMost = cur.ClaudeRunsMost
 	s.RequestArchiveLocal, s.RequestArchiveLocalMB = cur.RequestArchiveLocal, cur.RequestArchiveLocalMB
 	s.AgentsHere = cur.AgentsHere
+	// the agents' telemetry is in this computer's files, turned off by
+	// this computer's switch
+	s.AgentTelemetryOff = cur.AgentTelemetryOff
 }
 
 // Wires is ModelWires with the provider's own id of each model the user
@@ -1860,6 +1996,10 @@ func CheckProxy(p string) error {
 	if p == "" || p == "direct" {
 		return nil
 	}
+	if IsProxyRef(p) {
+		// a saved proxy: one that is there now
+		return CheckProxyIn(p, Load().Proxies)
+	}
 	raw := p
 	if !strings.Contains(raw, "://") {
 		raw = "http://" + raw
@@ -1962,6 +2102,30 @@ func SetGatewayConversations(on bool) error {
 	s := load()
 	s.GatewayConversations = on
 	return save(s, true)
+}
+
+// SetMTLS sets MTLS alone, from what the file holds now. A settings file
+// that can't be read is left as it is, with the error.
+func SetMTLS(on bool) error {
+	defer lockFile()()
+	s, err := loadChecked()
+	if err != nil {
+		return err
+	}
+	s.MTLS = on
+	return save(s, false)
+}
+
+// SetHTTPS sets HTTPS alone, from what the file holds now. A settings
+// file that can't be read is left as it is, with the error.
+func SetHTTPS(on bool) error {
+	defer lockFile()()
+	s, err := loadChecked()
+	if err != nil {
+		return err
+	}
+	s.HTTPS = on
+	return save(s, false)
 }
 
 // SetQuitNoAsk sets QuitNoAsk alone, from what the file holds now (the
@@ -2208,6 +2372,9 @@ func saveOwn(s Settings, recording, reads bool) error {
 			return fmt.Errorf("%s's warm-up time of day must look like 06:00 or be off, not %q", user, at)
 		}
 	}
+	if _, _, ok := Clock(s.CheckinAt); s.CheckinAt != "" && !ok {
+		return fmt.Errorf("the check-in's time of day must look like 09:00, not %q", s.CheckinAt)
+	}
 	if !slices.Contains(TrayEvery, s.TrayUsageEvery) {
 		return fmt.Errorf("the menu bar's usage is refreshed every %v minutes, not %d", TrayEvery, s.TrayUsageEvery)
 	}
@@ -2251,6 +2418,9 @@ func saveOwn(s Settings, recording, reads bool) error {
 	if s.TurnDoneAlert < 0 || s.TurnDoneAlert > 86400 {
 		return fmt.Errorf("a turn is said done after 1 to 86400 seconds, or 0 for off, not %d", s.TurnDoneAlert)
 	}
+	if err := CheckBark(s.BarkServer, s.BarkKey, s.BarkDaily); err != nil {
+		return err
+	}
 	if math.IsNaN(s.BalanceAlert) || math.IsInf(s.BalanceAlert, 0) || s.BalanceAlert < 0 {
 		return fmt.Errorf("a balance alert is at an amount of 0 or more (0 for off), not %v", s.BalanceAlert)
 	}
@@ -2270,12 +2440,30 @@ func saveOwn(s Settings, recording, reads bool) error {
 	if err := s.OTel.Check(); err != nil {
 		return err
 	}
-	s.Proxy = strings.TrimSpace(s.Proxy)
-	if err := CheckProxy(s.Proxy); err != nil {
+	if err := checkProxies(s.Proxies); err != nil {
 		return err
 	}
-	if s.Proxy != "" && s.Proxy != "direct" {
+	s.ProxyNames = rememberProxyNames(s.ProxyNames, s.Proxies)
+	s.Proxy = strings.TrimSpace(s.Proxy)
+	if err := CheckProxyIn(s.Proxy, s.Proxies); err != nil {
+		return err
+	}
+	if s.Proxy != "" && s.Proxy != "direct" && !IsProxyRef(s.Proxy) {
 		s.ProxyCustom = s.Proxy
+	}
+	s.PluginProxy = strings.TrimSpace(s.PluginProxy)
+	if err := CheckProxyIn(s.PluginProxy, s.Proxies); err != nil {
+		return fmt.Errorf("plugin downloads: %w", err)
+	}
+	if s.PluginProxy != "" && s.PluginProxy != "direct" && !IsProxyRef(s.PluginProxy) {
+		s.PluginProxyCustom = s.PluginProxy
+	}
+	s.UpdateProxy = strings.TrimSpace(s.UpdateProxy)
+	if err := CheckProxyIn(s.UpdateProxy, s.Proxies); err != nil {
+		return fmt.Errorf("updates: %w", err)
+	}
+	if s.UpdateProxy != "" && s.UpdateProxy != "direct" && !IsProxyRef(s.UpdateProxy) {
+		s.UpdateProxyCustom = s.UpdateProxy
 	}
 	s.Vision = strings.TrimSpace(s.Vision)
 	if s.Vision != "" && s.Vision != "off" && !strings.Contains(s.Vision, "/") {
@@ -2301,6 +2489,10 @@ func saveOwn(s Settings, recording, reads bool) error {
 	if s.CodexSubagentModel != "" && s.CodexSubagentModel != CodexSubagentLead && !strings.Contains(s.CodexSubagentModel, "/") {
 		return fmt.Errorf("the model for Codex's subagents must be a model's id such as codex/gpt-5.5, not %q", s.CodexSubagentModel)
 	}
+	s.CodexServiceTier = strings.TrimSpace(s.CodexServiceTier)
+	if !slices.Contains(CodexServiceTiers, s.CodexServiceTier) {
+		return fmt.Errorf("Codex's service tier must be one of %q, not %q", CodexServiceTiers[1:], s.CodexServiceTier)
+	}
 	s.RedactRouteTo = strings.TrimSpace(s.RedactRouteTo)
 	if s.RedactRouteTo != "" && !strings.Contains(s.RedactRouteTo, "/") {
 		return fmt.Errorf("the model for requests masking would change must be a model's id such as ollama/qwen3, not %q", s.RedactRouteTo)
@@ -2308,6 +2500,14 @@ func saveOwn(s Settings, recording, reads bool) error {
 	s.DesktopSubagentModel = strings.TrimSpace(s.DesktopSubagentModel)
 	if s.DesktopSubagentModel != "" && !strings.Contains(s.DesktopSubagentModel, "/") {
 		return fmt.Errorf("the model for Claude Desktop's subagents must be a model's id such as deepseek/deepseek-v4, not %q", s.DesktopSubagentModel)
+	}
+	s.DshCompactModel = strings.TrimSpace(s.DshCompactModel)
+	if s.DshCompactModel != "" && !strings.Contains(s.DshCompactModel, "/") {
+		return fmt.Errorf("the model for DeepSeek Harness's compaction must be a model's id such as deepseek/deepseek-v4, not %q", s.DshCompactModel)
+	}
+	s.CodexCompactModel = strings.TrimSpace(s.CodexCompactModel)
+	if s.CodexCompactModel != "" && !strings.Contains(s.CodexCompactModel, "/") {
+		return fmt.Errorf("the model for Codex's compaction must be a model's id such as deepseek/deepseek-v4, not %q", s.CodexCompactModel)
 	}
 	s.DesktopSubagentEffort = strings.ToLower(strings.TrimSpace(s.DesktopSubagentEffort))
 	if e := s.DesktopSubagentEffort; e != "" && (!slices.Contains(catalog.EffortRank, e) || e == "ultra") {
@@ -2354,6 +2554,7 @@ func saveOwn(s Settings, recording, reads bool) error {
 	s.AgentOrder, s.AgentsHidden, s.AgentsShown = ids(s.AgentOrder), ids(s.AgentsHidden), ids(s.AgentsShown)
 	s.AgentsHere = ids(s.AgentsHere)
 	s.UsageOrder = ids(s.UsageOrder)
+	s.PluginPageOrder = ids(s.PluginPageOrder)
 	s.PanelUsageHidden = ids(s.PanelUsageHidden)
 	s.UsageAgentsHidden = ids(s.UsageAgentsHidden)
 	s.UsageCardsHidden = ids(s.UsageCardsHidden)
@@ -2508,6 +2709,12 @@ func (s Settings) normal() Settings {
 			*w.at = (*w.ats)[0]
 		}
 	}
+	// the check-in's time of day, as 09:00 whichever way it came
+	s.CheckinAt = strings.TrimSpace(s.CheckinAt)
+	if h, m, ok := Clock(s.CheckinAt); ok {
+		s.CheckinAt = fmt.Sprintf("%02d:%02d", h, m)
+	}
+	s.BarkServer, s.BarkKey, s.BarkDaily = normalBark(s.BarkServer, s.BarkKey, s.BarkDaily)
 	// a reply's model name: memberModel, as a magpie before replyModel
 	// kept it, when replyModel isn't set, and kept beside it for that
 	// magpie

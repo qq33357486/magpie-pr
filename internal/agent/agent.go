@@ -291,6 +291,10 @@ type Agent struct {
 	// to start it on magpie, a function magpie gave their shells (agy);
 	// "" when there is none, and Launch is the way.
 	Typed func() string
+	// Start, for such an agent, is what `magpie <id> run` starts it with:
+	// its command, the variables and its model flag, the model "" while
+	// it isn't on magpie's, when it starts as it is.
+	Start func() Starting
 	// SplitSuffix, for an agent whose model values carry something of its
 	// own after the model that varies from value to value (omp's thinking
 	// level, "…:max"), splits a value into the model the picker offers and
@@ -315,6 +319,10 @@ type Agent struct {
 	// is the model's on the command line: magpie claude opus sets the
 	// model, where another field's name alone shows that field.
 	ModelAliases []string
+	// Telemetry, when set, turns the agent's own telemetry to its vendor
+	// off in its config (telemetry.go). It is not a field: a profile
+	// saved before would turn it back on.
+	Telemetry *Telemetry
 	// detect, when set, says whether the agent is here in place of looking
 	// for its files and binary: a distro's, probed once.
 	detect func() bool
@@ -341,6 +349,10 @@ type Agent struct {
 	// that is known yet, and the proxy and where it is set; ok with no
 	// proxy when it sends them straight there (see codex_proxy.go).
 	viaProxy func() (ok, known bool, proxy, from string)
+	// through, when set, puts magpie's provider in the agent's config at
+	// the gateway behind a proxy's prefix ("" for the gateway itself):
+	// Hermes's, through billion-context's /bili/ (HermesThrough)
+	through func(prefix string) error
 	// dirShared says Dir is a folder another agent keeps its files in too
 	// (omp's, when PI_CODING_AGENT_DIR points it at Pi's): that it is there
 	// says nothing of this agent.
@@ -453,15 +465,15 @@ func (a *Agent) Detected() bool {
 // and added that to the user's PATH, or a self-update restarting with the
 // PATH it had then, never listed it, while the sign-in, which asked
 // FindTool, found it (#839, #1482). A mise wrapper script found there is
-// given as the program it runs (proc.LookPath). "" when it is in none.
+// given as the program it runs (proc.LookPath). Linux and macOS are no
+// different when magpie is started from a desktop launcher: its PATH has no
+// ~/.local/bin, where the official Antigravity CLI installer puts agy
+// (Xuanwo on X). "" when it is in none.
 func binAt(name string) string {
 	if p, err := proc.LookPath(name); err == nil {
 		return p
 	}
-	if runtime.GOOS == "windows" {
-		return proc.FindTool(name)
-	}
-	return ""
+	return proc.FindTool(name)
 }
 
 // agentDir reports whether p is a folder an agent itself made. Skill

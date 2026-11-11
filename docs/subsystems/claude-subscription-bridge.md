@@ -43,6 +43,21 @@ FrierenF on Discord). A run as anyone else has its env as before. Only the
 bridge's run gets it; the warm-up and `/usage` runs don't skip
 permissions.
 
+A run asks Claude Code for the model by `claudeRunName`. A Claude model
+of the 5 generation or later that Claude Code doesn't know (Fable 5.2 on
+2.1.316) is asked for by its `[1m]` name. By its own name Claude Code
+assumed a 200K window for it and turned a longer conversation away before
+Anthropic was asked ("Prompt is too long", `blocking_limit`), while magpie
+tells agents the model's 1M window: Codex, compacting at 272K, never
+compacted and failed every turn past 200K (magicalaciw18 on X).
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` is not read for a Claude name. The models
+Claude Code knows at 1M (`claudeKnownLong`) keep their names, since a new
+name misses the prompt cache once. Every 4 generation model keeps its name
+too: `claude-sonnet-4-6[1m]` is refused even a short turn on an account
+without usage credits ("Usage credits required for 1M context"). The
+reply, the saved session and the logs keep the model as asked; only
+Claude Code's `--model` has the mark.
+
 Every Claude Code magpie starts for the subscription (a turn's run, the
 warm-up and model test `askClaude`, `/usage`, and the sign-in's
 `auth login` and `auth status`) is given its proxy through one helper,
@@ -74,6 +89,13 @@ stay apart), the same in every run, so a resumed session, the history
 run was offered it. `subscriptionRun.names` (`bridgeNames`) maps it back
 to the declared name in `toolStart`, for streamed and whole messages, and
 in `mcpCall` (#2649).
+Each tool's input schema is folded to an object root (`objectSchema`,
+`provider.ObjectRoot`), as a Messages request magpie builds is: Claude
+Code leaves out an MCP tool whose `inputSchema` has a `oneOf`, `anyOf` or
+`allOf` at its root, which Anthropic's API refuses, so Codex desktop's
+`mcp__cua_repl__js` (a `oneOf` of objects) never reached the model. The
+variants' fields are merged, and a field every variant requires stays
+required; a schema that already has an object root goes as it came.
 
 A client's MCP tool that it announced but hasn't loaded (Claude Code's
 tool search names deferred tools in a reminder and leaves them out of
@@ -365,8 +387,7 @@ it has stayed so for 300ms (`ready`, `trustSettle`). Pressing Enter blind
 chose "No, exit" in the real gateway, and no run started.
 
 Every run is `-p` only when the Claude Code editor's "Claude Code runs
-as" row is on claude -p (`claudePrintMode`; magpie web as a gateway
-switches it with the editor's *Claude Code's interactive mode* row), or in the gateway's own
+as" row is on claude -p (`claudePrintMode`; the one row, in the editor and, in magpie web as a gateway, there too), or in the gateway's own
 tests, whose fake Claude Codes are `-p` ones (`claudeTUIRuns`, code
 `no-shim`). With it On, nothing ever runs as `-p` (the owner, 11-01): the
 plan counts a `-p` request as another client's, at about twice the
@@ -388,7 +409,9 @@ any more (`claudePrint` keeps an image known by its URL, which
 
 The one exception to "nothing runs as `-p`" with it On is a turn Anthropic
 refuses in the interactive mode as a third-party app's: a 400 "Third-party
-apps now draw from your extra usage" (#4503). Anthropic judges the agent's
+apps now draw from your extra usage" (#4503), or on a Team or
+Enterprise workspace "draw from extra usage" with no "your" (#5645; both
+wordings are `thirdPartyIn`). Anthropic judges the agent's
 own system prompt, as a whole, there and serves the same prompt to `-p`
 (isjiajia01's controlled tests; Raven on Discord: Pi in Cindy through
 `group/auto`, every turn refused). When the refusal comes with nothing of
@@ -473,17 +496,19 @@ Claude Code reads `CLAUDE_CODE_EXTRA_BODY` from its own environment as
 it builds each request, and nothing outside it changes that once it runs
 (2.1.316: a later `apply_flag_settings` or a rewritten `--settings` file
 changes nothing it sends). `startRun` puts them in its environment, and
-writes the same extra body to `guard.json` in the run's temp folder,
-named to the helper by `MAGPIE_CLAUDE_GUARD` (`claudetui.GuardEnv`). The
-helper hands it to Claude Code as WSL reads it, and takes it out of the
-environment otherwise. On each `/v1/messages` request whose body is a
-string with a `safeguards` key, `tap.js` reads the file, puts its
-`safeguards` there in place of Claude Code's, and sets
-`CLAUDE_CODE_EXTRA_BODY` in Claude Code's environment to it, so the
-requests after are built with it. A JSON parse and stringify of a
-2.1.316 body is byte for byte the same, so the request is what Claude
-Code sends with that variable. At the first such request it writes
-`guard.json.live`. `setSafeguards` replaces the file (temp file and
+writes the same extra body to `guard.json` in the run's temp folder
+(`guardBody`; every interactive run has the file, `{}` with no
+safeguards), named to the helper by `MAGPIE_CLAUDE_GUARD`
+(`claudetui.GuardEnv`). The helper hands it to Claude Code as WSL reads
+it, and takes it out of the environment otherwise. On each
+`/v1/messages` request whose body is a string with a `safeguards` key,
+`tap.js` reads the file, puts its `safeguards` there in place of Claude
+Code's, and sets `CLAUDE_CODE_EXTRA_BODY` in Claude Code's environment
+to it (the file without its `effort`), so the requests after are built
+with it. A JSON parse and stringify of a 2.1.316 body is byte for byte
+the same, so the request is what Claude Code sends with that variable.
+At the first such request, or the first of the main turn's
+(`x-claude-code-request-class: main`), it writes `guard.json.live`. `setSafeguards` replaces the file (temp file and
 rename) before the turn or tool results go to the run, and the run goes
 on, its cache too: an auto-mode tool loop's classifier context grows by
 a `prior_turn_context` entry each batch, and restarting for that began
@@ -492,6 +517,35 @@ the cache again (3 to 10 times the cost;
 `TestClaudeTUIToolLoopCarriesEachBatchsSafeguards`,
 `TestTapPutsTheGuardFilesSafeguards`). A changed safety beta, or
 safeguards appearing or going, still restarts.
+
+A turn asking another effort goes on in its run too (#5584). The `-p`
+run is told it by `apply_flag_settings` (`setEffort`, #502). The
+interactive mode takes another level only from a person typing
+`/effort`, and 2.1.318 saves that as the default for new sessions
+(`modelSettings.<model>.effortLevel` in the settings of the account's
+folder, the user's own `~/.claude/settings.json` for Claude Code's own
+sign-in; only `max` is the session's alone), and reads a `--settings`
+file once, as it starts. So `setTUIEffort` writes the level beside the
+safeguards in `guard.json` (`tellGuard`, from the run's safeguards and
+`effort`; none while it is the `--effort` the run started at,
+`ownEffort`), and `tap.js` asks each main request at it in
+`output_config.effort`, leaving Claude Code's other requests (titles,
+summaries, its classifiers) as they were. That is the one field
+Claude Code's own `/effort` changes in its requests: on the real
+2.1.318 with Haiku 5.5, the turn after one asked high in place of
+medium read the whole conversation from the cache (55,392 tokens read,
+41 written; the turn before, 55,308 and 84). The level is the request's
+own, as `--effort` takes it, not fitted to the model as Claude Code
+fits its own: one the model refuses (claude-haiku-4-5 answers "API
+Error: 400 This model does not support the effort parameter.") fails
+that turn, which lets the run go (`ended`), and the turn asked again
+starts a Claude Code at that `--effort`. A run without a `.live` file,
+or a turn asking Claude Code's own level (`""`) of a run started at
+another, is let go, the log saying why, and the turn starts a run anew
+(`TestClaudeTUIEffortChangeGoesOnInItsRun`,
+`TestClaudeTUIEffortChangeWithoutTapStartsAnew`,
+`TestClaudeTUIEffortRefusedStartsAnew`,
+`TestTapAsksTheGuardFilesEffort`).
 
 A run with no `.live` file (no tap, a Claude Code not on
 `FetchSession`, or no request yet) can't be given them. Its classifier
@@ -535,6 +589,36 @@ interactive, so its `/usage` asks the usage endpoint alone
 `provider.parseClaudeUsage` reads. Only a sign-in without that scope (a
 setup-token, which magpie never reads, or an API key) gets the session's
 cost instead. `TestClaudeUsageStartsNoInteractiveRun` holds it.
+
+The text omits the extra-usage cap. The same run prints `--output-format
+json --verbose` (`claudeUsageArgs`), whose messages carry
+`usage_report.rate_limits.extra_usage` (cap and spend in cents);
+`claudeExtraUsage` turns an enabled one with a cap into one more line
+(`provider.ClaudeExtraLine`), read as the "Usage credits" window: an
+`Aside` row with the month's spend over the cap, which never marks the
+account used up. It is not the prepaid balance (a separate endpoint magpie
+does not call), and only Anthropic decides whether a request spends it
+(X, Shinji_Zl). Tried against fakes only; the owner's account has extra
+usage off.
+
+A turn's run (`claudeRunEnv`) is not given
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, which the one-off runs above
+keep (`cleanClaudeEnv`). With it, or `DISABLE_TELEMETRY` or
+`DO_NOT_TRACK`, Claude Code 2.1.316 reads none of its feature flags, and
+one of them (`tengu_curious_tower`) is Message Threads: a turn sends only
+what came after the last reply. Without it every turn sent the whole
+history again, every image in it (#5963, nylesssssssss: with a ~3 MB PNG,
+672 KB on each of four turns; 737, 6, 3 and 3 KB with the flags read, on
+a real Team account behind a counting proxy). Nothing forces threads:
+`CLAUDE_CODE_TETHER_LIVE`, which turns them on whatever the account's
+flag says, is never set, and an account Anthropic hasn't given threads
+sends whole, as its own `claude` does. Updates and error reports stay off
+(`DISABLE_AUTOUPDATER`, `DISABLE_ERROR_REPORTING`); Claude Code's own
+telemetry goes as a plain `claude`'s does, unless the user turned it off:
+a quiet variable set in magpie's environment or in their Claude Code's
+`settings.json` env is given to the run as they set it, and the run then
+reads no flags. An interactive run sends Claude Code's quota request as it
+starts, right before the turn's own. `TestClaudeRunReadsItsFlags` holds it.
 
 The helper still takes a typed `/usage`, and nothing of magpie's sends it
 now: it is told `{"type":"command","command":"/usage"}`, types it, waits for the
@@ -630,10 +714,11 @@ each, which they remove: `-p` asks nothing about trust.
 The Claude Code provider editor's "Claude Code runs as" row
 (`claudeModeRow` in app.js, drawn by claudemode.js, which it loads with
 its first read) is a switch between Interactive mode (TUI) and claude
--p: pressing one saves `claudePrintMode` as Settings' row does
-(`savePrefs`) and reads the mode again. In magpie web it is the
-gateway's, and only its own Settings change it, so the switch is
-disabled. Hovering or focusing it opens what tells the two apart. It
+-p: pressing one saves `claudePrintMode` (`savePrefs`) and reads the mode again.
+It is the only control for it: Settings' second row, which wrote the same
+setting and was the one that worked in magpie web (the editor's was
+disabled there, and read as a switch that doesn't switch), is gone
+(Anotiaww on X, `claude-tui-setting.test.cjs`). Hovering or focusing it opens what tells the two apart. It
 reads `GET /api/claude/mode` (`gateway.ClaudeModeNow`) as the page
 opens, kept 30 seconds and dropped when the setting changes, not in
 `/api/providers`' polls. What decides it for every run on the machine is
@@ -646,7 +731,8 @@ subscription with Only switch serves nothing through magpie and shows no
 row.
 
 A turn the interactive mode can't take ends the run, and the next starts
-anew: a turn that takes earlier turns back, an effort change. A run given up on
+anew: a turn that takes earlier turns back, an effort change its tap
+can't ask (see the safeguards above). A run given up on
 (`letGo`) is not taken back, since the interactive mode can't answer a
 control request to stop a turn.
 
@@ -751,6 +837,16 @@ interactive mode's side question (`branchAt`). Up to v0.1.3266 the three
 branches carried none, and their runs went back to an hour under a 5m
 pick (linkaww); `everyRunKept5m` in the fork, busy-retry and side
 question tests.
+
+`branch` also takes a side request that sends the conversation whole with the
+calls its run still waits on dropped, and the words before them kept: Claude
+Code's AgentSummary (#6128). The last reply then has no call to find a line
+by, so the run is the one with a call line whose conversation is the one
+before that reply, and the session is cut before its first call line
+(`cutBefore`). Before, such a request was told the whole transcript by a new
+Claude Code (90K to 160K cache tokens written for a label). When no branch is
+found the log says why, by structure only: `no branch of a run's session for
+this request: <reason>`.
 
 A new run (and one started from a transcript, `replaySession`) picks its
 lifetime with `runTTLFor`:
@@ -1767,6 +1863,10 @@ again as the reply begins (`relay`'s `begin`), once the turn's own
 `rate_limit_event` is in. A run on Claude Code's own home that has moved to
 another account says nothing (`ClaudeCodeMovedOff`), as its event isn't
 kept either.
+An event names only some windows (often `five_hour` alone): the rest
+stand as last kept, after a restart as `quotas.json` kept them, when
+they haven't renewed since (`keptClaudeWindows`; ifccod7391564 on X: the
+week's ring went on a cold start, `TestNoteClaudeLimitsKeepsTheWeekOnDisk`).
 
 A Claude Code signed in to claude.ai (its sign-in field set to
 `claudeai`, `claudeSignIns` in `internal/agent/claude.go`) reads these into its status line's `rate_limits`, which
@@ -1813,3 +1913,28 @@ go test -tags nogui ./internal/gateway/ -run 'TestClaudeTaskNotification|TestWit
 rule that keeps another conversation out; `claude_lost_media_test.go` does
 the same for images taken out, from Hana's request bodies. `claude_resume_test.go`'s harness
 stands in for Claude Code with a script that keeps sessions as it does.
+
+## Which entry a request used
+
+Each request the bridge answers notes how its run started: `startRun` calls
+`noteEntry(ctx, tui, code)` beside `noteClaudeRun`, which is the process's
+last mode and so says nothing of one request. The note rides the request's
+context (`withEntry`, `claude_entry.go`) and `serve` copies it onto the try
+(`Try.Entry` "tui" or "print", `Try.EntryWhy` the `claudePrint` code that
+chose -p: off, os, missing, no-shim, image, third-party, cache-marks). The
+Routing page's request row shows a TUI or -p chip with the reason in its
+title (`entryNote` in the routing plugin's client.js), so the plan cost of
+a request can be told from how it ran (Anotiaww on X,
+`TestEntryNoted`, `routing-entry.test.cjs`).
+
+## Claude Code on a remote magpie
+
+A local Claude Code that uses a remote magpie holding the account sends its
+whole history each turn to the remote gateway, as any API client does. The
+remote bridge keeps the run's session and resumes it (`--resume`), typing
+only the turn that is new (`from.since`), so Anthropic is not sent the
+history twice. A new run (first request, a restart, a branch, a session that
+isn't found) replays the conversation once as one message, with a cache
+miss. The remote Claude Code adds its own system prompt (about 1K tokens,
+cached) beside the caller's, which the Short Claude system prompt setting
+(`claudeLeanPrompt`) removes (Tossipe on X).

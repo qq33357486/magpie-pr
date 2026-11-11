@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -31,6 +30,7 @@ import (
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/lastgood"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/sessions"
 	"github.com/yetone/magpie/internal/settings"
@@ -167,6 +167,7 @@ type codexTop struct {
 	Desktop        any `toml:"desktop"`
 	Profile        any `toml:"profile"`
 	Profiles       any `toml:"profiles"`
+	Analytics      any `toml:"analytics"`
 }
 
 // codexTopOf is the config at path as codexTop, decoded again only once the
@@ -1854,7 +1855,8 @@ func codexIn(at place) *Agent {
 
 	a := atomic(&Agent{
 		ID: "codex", Name: "Codex", Icon: "codex-color", Bin: "codex", Dir: dir, Path: path,
-		UA: []string{"codex", "acp-extension-codex"}, // The ACP adapter's default client name becomes Codex's originator.
+		Telemetry: codexTelemetry(at, path),
+		UA:        []string{"codex", "acp-extension-codex"}, // The ACP adapter's default client name becomes Codex's originator.
 		// Codex as it was before magpie: its default puts it back as
 		// installed, OpenAI and its default model, where this brings back
 		// the provider and model the user had
@@ -2225,7 +2227,7 @@ func codexIn(at place) *Agent {
 			return ""
 		},
 		// every prompt typed into Codex goes into history.jsonl
-		LastUsed: func() time.Time { return lastJSONLTime(filepath.Join(dir, "history.jsonl"), "ts", "text") },
+		LastUsed: func() time.Time { return lastJSONLTime(filepath.Join(dir, "history.jsonl"), "ts", "text", nil) },
 		// the Codex app writes no history.jsonl, but it and the TUI log each
 		// model request they open
 		Reached: func(since time.Time) (time.Time, string, bool) { return codexReached(dir, since) },
@@ -2363,6 +2365,34 @@ func codexIn(at place) *Agent {
 				},
 			},
 			{
+				// the model magpie puts Codex's compaction on, whatever the
+				// session is on: kept in magpie's settings and read by the
+				// gateway on each compaction (codexCompactTo), so a change
+				// needs no restart. Only a compaction magpie makes is moved;
+				// a ChatGPT account's own, whose summary only that account
+				// reads, stays where it is (0neB1aze on X)
+				Key: "compact_model", Label: "compaction model", Quiet: true, Live: true,
+				Get: provider.CodexCompactModel,
+				Set: provider.SetCodexCompactModel,
+				Options: func(map[string]string) []Option {
+					var out, groups []Option
+					for _, e := range provider.CodexSubagentModels() {
+						if e.Group != "" {
+							groups = append(groups, Option{Value: e.ID, Label: e.Name, Note: "routing group · via magpie",
+								Icon: e.Provider.Icon, Icons: e.Icons, Group: RoutingGroups, Ref: e.ID})
+							continue
+						}
+						note := e.Provider.Name + " · via magpie"
+						if a := e.Provider.Account; a != nil && a.User != "" {
+							note = a.User + " · via magpie"
+						}
+						out = append(out, Option{Value: e.ID, Label: e.Name, Note: note, Icon: e.Provider.Icon,
+							Group: e.Provider.Name, Ref: e.ID, Context: e.Context})
+					}
+					return append(out, groups...)
+				},
+			},
+			{
 				// [agents] default_subagent_reasoning_effort: unset, a
 				// subagent runs at the session's effort, or at its model's
 				// default when it has a model of its own
@@ -2473,7 +2503,7 @@ var packedBudget int64 = 128 << 20
 // ccSwitchProvider matches the ids of the provider tables CC Switch writes
 // into Codex's config: "custom", and "cc-switch", "cc-switch-2"… from its
 // older versions. Its "cc-switch-official" is its own proxy to OpenAI.
-var ccSwitchProvider = regexp.MustCompile(`^(custom|cc-switch(-[0-9]+)?)$`)
+var ccSwitchProvider = lazyre.New(`^(custom|cc-switch(-[0-9]+)?)$`)
 
 // codexBuiltinProvider is the providers Codex has built in, which a thread
 // can name with no table in config.toml (codex-rs model-provider-info:
@@ -3056,6 +3086,16 @@ func CodexOwnOnly() bool {
 	return true
 }
 
+// CodexModelNow is the model this machine's Codex is set to, whoever's it
+// is (gateway.CodexModelNow); "" when it can't be read.
+func CodexModelNow() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return codex(home).Values()["model"]
+}
+
 // CodexSideModel is the model this machine's Codex is set to when it is
 // one of magpie's, picked beside its ChatGPT sign-in (SideModel), for the
 // gateway to answer the Codex app's side turns on (gateway.CodexSideModel).
@@ -3248,4 +3288,28 @@ func codexReachedRead(path string, since time.Time) (at time.Time, to string, re
 		}
 	}
 	return
+}
+
+// codexRetagOpenThreads is run as the Codex app's app-server is about to be
+// ended for a change of provider: the chats the app has open hold their
+// lock, so no move of threads could take them, and the app-server that
+// starts in place resumes each on its row's provider, which Codex refuses
+// when it isn't the one it is on ("This chat uses openai, but your current
+// provider is magpie"). They go onto the provider Codex is on now, from
+// OpenAI and magpie, the two ids magpie moves threads between
+// (sessions.RetagLoadedCodexThreads).
+func codexRetagOpenThreads(home string) {
+	now := sessions.CodexProviderIn(home)
+	for _, from := range []string{"openai", magpieID} {
+		if from == now {
+			continue
+		}
+		ids, err := sessions.RetagLoadedCodexThreads(home, from, now)
+		if len(ids) > 0 {
+			log.Printf("codex: %d chat(s) the Codex app has open moved from %s to %s before its app-server restarts, so it goes on with them", len(ids), from, now)
+		}
+		if err != nil {
+			log.Printf("codex: moving the chats the Codex app has open from %s: %v", from, err)
+		}
+	}
 }

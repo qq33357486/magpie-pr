@@ -49,6 +49,7 @@ func stubCodexApp(t *testing.T) *codexAppStub {
 		codexApp.ended, codexApp.backBy, codexApp.spent, codexApp.why = nil, time.Time{}, false, ""
 		codexApp.back, codexApp.backAt = nil, time.Time{}
 		codexApp.crashSince, codexApp.crashBy, codexApp.snag, codexApp.snagPids = time.Time{}, time.Time{}, false, nil
+		codexApp.crashSpent = false
 		codexApp.Unlock()
 	}
 	oldCrashed, oldRelaunch, oldOff := CodexAppCrashed, CodexAppRelaunch, CodexTakeoverOff
@@ -1178,21 +1179,30 @@ func TestCodexAppLeftRunningForMagpiesOwnChanges(t *testing.T) {
 	s.on = false
 	none("magpie gave Codex back its account at the reset")
 
-	// a switch the user made, alone or after one of magpie's
+	// a switch the user made among accounts with room, alone or beside
+	// one of magpie's: the app's projects are kept per ChatGPT identity,
+	// and a restart onto the new one hid them (Michael25651150 on X)
 	codexAppSwitched(false, true)
 	codexAppAccountSwitched()
-	ends("switched by the user after magpie", 101)
+	none("switched by the user after magpie")
 	codexAppAccountSwitched()
 	codexAppSwitched(false, true)
-	ends("switched by the user, then magpie", 102)
+	none("switched by the user, then magpie")
+	codexAppAccountSwitched()
+	none("switched by the user")
+	// one off a used-up account: the app greys Send till it restarts
+	codexAppSpentSwitch()
+	ends("switched by the user off a used-up account", 101)
 	// a Connect: where Codex's config sends it changed, not by the takeover
 	s.route = "connected"
-	ends("connected", 103)
+	ends("connected", 102)
 
-	// ticked: magpie's changes the app works without restart it as well
+	// ticked: the changes the app works without restart it as well
 	restarts = true
 	codexAppSwitched(false, true)
-	ends("RestartApp on, magpie switched back", 104)
+	ends("RestartApp on, magpie switched back", 103)
+	codexAppAccountSwitched()
+	ends("RestartApp on, switched by the user", 104)
 	s.on = true
 	ends("RestartApp on, magpie took over", 105)
 	s.on = false
@@ -1359,5 +1369,34 @@ func TestCodexAppRestartedWhenTheTakeoverIsTurnedOff(t *testing.T) {
 	}
 	if !CodexAppBack() {
 		t.Fatal("the app left on the takeover's app-server at the reset isn't said")
+	}
+}
+
+// The chat open in the Codex app is moved to the provider Codex is on by
+// CodexBeforeAppEnd, and that happens before the app-server is ended, since
+// the next app-server resumes the chat at once.
+func TestCodexRouteChangeMovesOpenChatsFirst(t *testing.T) {
+	signIn(t)
+	s := stubCodexApp(t)
+	now := time.Now()
+	idle := func() (int, time.Time) { return 0, now.Add(-time.Minute) }
+	step := func() []int { return codexAppStep(context.Background(), now, idle) }
+	var order []string
+	old := CodexBeforeAppEnd
+	CodexBeforeAppEnd = func(string) { order = append(order, "move") }
+	t.Cleanup(func() { CodexBeforeAppEnd = old })
+	oldEnd := endCodexAppServer
+	endCodexAppServer = func(int) error { order = append(order, "end"); return nil }
+	t.Cleanup(func() { endCodexAppServer = oldEnd })
+
+	s.running = []int{60}
+	s.route = "openai_base_url=http://127.0.0.1:3425/backend-api/codex"
+	step()
+	s.route = "openai_base_url="
+	if got := step(); !slices.Equal(got, []int{60}) {
+		t.Fatalf("ended %v, want [60]", got)
+	}
+	if !slices.Equal(order, []string{"move", "end"}) {
+		t.Fatalf("order %v, want the chats moved before the app-server ends", order)
 	}
 }

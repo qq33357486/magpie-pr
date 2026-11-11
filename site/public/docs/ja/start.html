@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>はじめに · magpie ドキュメント</title>
+<title>はじめに：Claude Code や Codex などエージェントごとにモデルを選ぶ · magpie ドキュメント</title>
 <meta name="description" content="magpie の全体の仕組みとセットアップ方法：手持ちのプロバイダを追加し、エージェントごとにモデルを選び、必要に応じて 1 つのモデルを複数のアカウントにルーティングします。">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#fafafa">
@@ -39,6 +39,54 @@
 <meta property="og:image" content="https://usemagpie.ai/img/og.png">
 <meta property="og:url" content="https://usemagpie.ai/docs/ja/start">
 <meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@graph": [
+  {
+   "@type": "TechArticle",
+   "headline": "はじめに",
+   "description": "magpie の全体の仕組みとセットアップ方法：手持ちのプロバイダを追加し、エージェントごとにモデルを選び、必要に応じて 1 つのモデルを複数のアカウントにルーティングします。",
+   "inLanguage": "ja",
+   "url": "https://usemagpie.ai/docs/ja/start",
+   "about": {
+    "@type": "SoftwareApplication",
+    "name": "magpie",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "macOS, Windows, Linux"
+   },
+   "publisher": {
+    "@type": "Organization",
+    "name": "magpie",
+    "url": "https://usemagpie.ai/"
+   }
+  },
+  {
+   "@type": "BreadcrumbList",
+   "itemListElement": [
+    {
+     "@type": "ListItem",
+     "position": 1,
+     "name": "magpie",
+     "item": "https://usemagpie.ai/ja/"
+    },
+    {
+     "@type": "ListItem",
+     "position": 2,
+     "name": "ドキュメント",
+     "item": "https://usemagpie.ai/docs/ja/start"
+    },
+    {
+     "@type": "ListItem",
+     "position": 3,
+     "name": "はじめに",
+     "item": "https://usemagpie.ai/docs/ja/start"
+    }
+   ]
+  }
+ ]
+}
+</script>
 </head>
 <body>
 
@@ -247,6 +295,8 @@ magpie group rule add opus-anywhere use=deepseek/deepseek-v4-flash compact  <spa
 magpie group rule add opus-anywhere use=kimi/kimi-k2.6 folders=~/oss,<span class="s">"~/My Project"</span>  <span class="c"># これらのプロジェクトのターンはまずこのモデルへ</span>
 magpie group rule add opus-anywhere pause=copilot/claude-opus-5.5 time=14:00-18:00 days=mon-fri  <span class="c"># その時間帯は外す</span>
 magpie group rule add opus-anywhere pause=claude/claude-opus-5-5 except-folders=~/big-task  <span class="c"># ~/big-task のタスク専用：ほかのフォルダでは外す</span>
+magpie group rule add opus-anywhere use=deepseek/deepseek-v4-flash when=<span class="s">"effort is off"</span> when=<span class="s">"not subagent"</span>  <span class="c"># 推論オフでサブエージェントでないリクエスト</span>
+magpie group rule add opus-anywhere use=deepseek/deepseek-v4-flash when=<span class="s">"system matches ^你是对话标题命名"</span>  <span class="c"># システムプロンプトでタイトル生成リクエストを見分ける</span>
 magpie group set coder models+=group/opus-anywhere  <span class="c"># グループの中のグループ</span>
 magpie group rule opus-anywhere      <span class="c"># ルール一覧。rule rm|mv &lt;n&gt;、rule classifier &lt;group&gt; &lt;model&gt;</span>
 magpie group copy opus-anywhere <span class="s">"Opus test"</span>  <span class="c"># モデル・ルーティング・ルールが同じ複製。別々に変更できる</span>
@@ -311,13 +361,14 @@ magpie claude group/opus-anywhere    <span class="c"># これを使う</span></p
 
     <h3 id="data-folder"><a class="anchor" href="#data-folder">magpie のファイルを別のディスクに置いて、システムを再インストールしても失わないようにできますか？</a></h3>
     <p>インストール版の magpie は、設定・プロバイダ・使用量・ライブラリを <code>~/.config/magpie</code>（Windows では <code>C:\Users\&lt;ユーザー&gt;\.config\magpie</code>）に保存します。1 日 1 回自動でバックアップしますが、その保存先は同じフォルダ内の <code>auto-backups</code> なので、システムを再インストールするとバックアップも一緒に失われます。<span class="ui">設定</span> → <span class="ui">同期とバックアップ</span> の <span class="ui">バックアップフォルダ</span> の下にもそう表示されます。そこで <span class="ui">変更…</span> を押し、別のディスク上のフォルダ（<code>D:\magpie-backups</code> など）か、クラウドドライブが同期するフォルダを選んでください。再インストール後は magpie を入れ、同じ場所で同じフォルダを選び、最新の版を <span class="ui">復元…</span> します。バックアップに API キーは含まれません。<span class="ui">バックアップにサインインを含める</span> を有効にすると、サブスクリプションのアカウントとプラグインのサインインもパスフレーズで暗号化して含めます。キーも持ち出すには、同じ場所で WebDAV フォルダ、S3 バケット、GitHub リポジトリへの同期をパスフレーズ付きで設定してください。</p>
+    <p>magpie 自身のファイルをそのディスク（外付け SSD など）に置くなら、同じ場所の <span class="ui">データフォルダ</span> の <span class="ui">移動…</span> を押し、そのディスク上のフォルダを選びます。magpie は再起動し、ファイルとキャッシュをその中の <code>magpie</code> フォルダに移し、元の場所にリンクを残すので、ほかは何も変わりません。ディスクはつないだままにしてください。外すと、戻すまで magpie は開きません。<span class="ui">元に戻す</span> で元の場所に戻ります。ターミナルでは <code>magpie data move &lt;フォルダ&gt;</code> で同じことができます。</p>
     <p>すべてをそのディスクに置くなら、ポータブルで使います。<code>magpie.exe</code> をそのディスク上のフォルダに置き、隣に <code>data</code> という空のフォルダを作ります（<code>D:\magpie\magpie.exe</code> と <code>D:\magpie\data</code>）。magpie はキャッシュやログも含めてすべてを <code>data</code> に保存し、ユーザーフォルダには自分のファイルを書きません。<span class="ui">設定</span> → <span class="ui">情報</span> → <span class="ui">設定フォルダ</span> にポータブルと表示されます。それを開き、上の手順でバックアップを復元します。再インストール後は <code>D:\magpie\magpie.exe</code> をもう一度開くだけです。各エージェント自身の設定（<code>~/.claude</code>、<code>~/.codex</code>…）は、それぞれが読む場所に残ります。</p>
 
     <h3 id="log">magpie のログはどこにありますか？</h3>
     <p>アプリ（ウィンドウ、メニューバーやトレイのアイコン、パネル。どう開いたかによらず）は <code>app.log</code> を書きます。macOS では <code>~/Library/Logs/magpie/app.log</code>、Windows では <code>%LOCALAPPDATA%\magpie\logs\app.log</code>、Linux では <code>~/.local/state/magpie/app.log</code>（<code>$XDG_STATE_HOME</code> が設定されていれば <code>$XDG_STATE_HOME/magpie</code>）、ポータブル版ではデータフォルダーの <code>logs</code> です。<span class="ui">設定</span> → <span class="ui">情報</span> → <span class="ui">ログ</span>にパスがあり、<span class="ui">開く</span>でそのフォルダーを表示します。<code>magpie log</code> はパスを表示し、<code>magpie log -f</code> は追いかけます。5 MiB に達すると隣の <code>app.old.log</code> になり、残るのは最大 2 ファイルです。記録されるのは magpie がしたことと出会ったエラー（プロバイダーがリクエストを断った、再試行した、プラグインが起動しなかった）で、キー、プロンプト、返答は含みません。キーやトークンに見えるものも伏せられます。サービスとして動く <code>magpie serve</code> のログは別の場所です。macOS では <code>~/Library/Logs/magpie/serve.log</code>、Linux では <code>journalctl --user -u magpie</code>。<code>magpie log</code> はそれも示します。</p>
 
     <h3 id="privacy">magpie は何を送信しますか？</h3>
-    <p>プロンプト、返答、キー、アカウントは、使っているプロバイダーにだけ送られます。間に magpie 自身のサーバーはありません。リリース版の magpie は 1 日 1 回、使われていることを知らせます。何人が使っていて、何を優先して面倒を見るべきかを知るためです。送るのは、このコンピュータで作ったランダムな ID、magpie のバージョンとシステム、そして使っているエージェント、プロバイダー、モデルを magpie 自身の ID（<code>claude</code>、<code>deepseek</code>、<code>deepseek/deepseek-v4</code>）で、それぞれの数とともに。自分で追加したプロバイダーとそのモデルは <code>custom</code> とだけ記録します。プロバイダー追加シートの先頭に載るパートナーについては、1 日に表示された回数、開かれた回数、追加された回数も送ります（回数のみ）。名前、Base URL、アカウント、キー、プロンプト、使用量は送りません。<span class="ui">設定</span> → <span class="ui">プライバシー</span> → <span class="ui">使っているエージェント、プロバイダー、モデルを共有</span> でエージェント、プロバイダー、モデルとパートナーの回数を外せます。<span class="ui">ユーザー数に含める</span>、<code>DO_NOT_TRACK=1</code>、<code>MAGPIE_NO_STATS=1</code> のどれかですべてオフになります。ソースからのビルドは送信しません。パートナーの公式サイトと「キーを取得」のリンクは <code>usemagpie.ai/go/…</code> を経由し、移動の前にクリックを 1 回数えます（どのパートナーか、どのリンクか、国）。usemagpie.ai はパートナー一覧が取得された回数も数えます。これはサーバー自身が見るもので、どの Web サイトのアクセス集計とも同じく、上の設定には左右されません。ID、IP アドレス、アカウントは記録しません。プラグイン、インポートリンク、ライブラリが示すアイコンは <code>usemagpie.ai/api/icon</code> を経由して取得するので、アイコンのあるサーバーに見えるのはあなたの IP ではなく Cloudflare のアドレスです。このサーバーは画像を中継するだけで、数えることも記録することもしません。magpie が自分から送るものすべては、毎日のカウントの例、手元に残すファイル、各スイッチとともに<a href="/docs/ja/privacy">プライバシー</a>のページに挙げています。</p>
+    <p>プロンプト、返答、キー、アカウントは、使っているプロバイダーにだけ送られます。間に magpie 自身のサーバーはありません。リリース版の magpie は 1 日 1 回、使われていることを知らせます。何人が使っていて、何を優先して面倒を見るべきかを知るためです。送るのは、このコンピュータで作ったランダムな ID、magpie のバージョンとシステム、そして使っているエージェント、プロバイダー、モデルを magpie 自身の ID（<code>claude</code>、<code>deepseek</code>、<code>deepseek/deepseek-v4</code>）で、それぞれの数とともに。自分で追加したプロバイダーとそのモデルは <code>custom</code> とだけ記録します。プロバイダー追加シートの先頭に載るパートナーについては、1 日に表示された回数、開かれた回数、追加された回数も送ります（回数のみ）。名前、Base URL、アカウント、キー、プロンプト、使用量は送りません。<span class="ui">設定</span> → <span class="ui">プライバシー</span> → <span class="ui">使っているエージェント、プロバイダー、モデル、プラグインを共有</span> でエージェント、プロバイダー、モデル、パートナーの回数、Discover のどのプラグインを入れているか（各プラグインの利用者数といいねの集計用）を外せます。<span class="ui">ユーザー数に含める</span>、<code>DO_NOT_TRACK=1</code>、<code>MAGPIE_NO_STATS=1</code> のどれかですべてオフになります。ソースからのビルドは送信しません。パートナーの公式サイトと「キーを取得」のリンクは <code>usemagpie.ai/go/…</code> を経由し、移動の前にクリックを 1 回数えます（どのパートナーか、どのリンクか、国）。usemagpie.ai はパートナー一覧が取得された回数も数えます。これはサーバー自身が見るもので、どの Web サイトのアクセス集計とも同じく、上の設定には左右されません。ID、IP アドレス、アカウントは記録しません。プラグイン、インポートリンク、ライブラリが示すアイコンは <code>usemagpie.ai/api/icon</code> を経由して取得するので、アイコンのあるサーバーに見えるのはあなたの IP ではなく Cloudflare のアドレスです。このサーバーは画像を中継するだけで、数えることも記録することもしません。magpie が自分から送るものすべては、毎日のカウントの例、手元に残すファイル、各スイッチとともに<a href="/docs/ja/privacy">プライバシー</a>のページに挙げています。</p>
 
     <h3 id="proxy-loopback">エージェントが 502 を返す、または接続できず、magpie の Routing タブに何も出ない？</h3>
     <p>プロキシアプリ（Surge、Clash、mihomo など。システムプロキシ、TUN、拡張モードのいずれかが有効）が、エージェントから <code>http://127.0.0.1:3425</code> へのリクエストを横取りして別の場所へ送っているため、magpie に届いていません。除外リスト（<code>skip-proxy</code>、バイパス）に 127.0.0.1 を書くだけでは足りないことがあります。Codex など一部のエージェントは、それでもプロキシを通します。ローカルアドレスを直結にするルールを、他のルールより前に追加してください：</p>
@@ -359,7 +410,7 @@ IP-CIDR6,::1/128,DIRECT,no-resolve</pre>
     </ol>
     <p>モデル id は magpie のもの（<code>magpie models</code>）です。共有をオンにすると、同じネットワークのほかのコンピューターもゲートウェイキーで接続できます。<a href="/docs/ja/remote#share">リモート magpie</a> を参照してください。</p>
 
-    <p style="margin-top:48px">困ったときや、共有したい構成があるときは <a href="https://discord.gg/vGSnD3ZKQF">Discord</a> でどうぞ。ユーザーにすぐ使えるプロバイダを配りたいベンダーの方は <a href="/docs/ja/import">magpie に追加</a> をご覧ください。</p>
+    <p style="margin-top:48px">ゲートウェイのエラーは <a href="/docs/ja/troubleshooting">よくあるエラーの直し方</a> を参照してください。困ったときや、共有したい構成があるときは <a href="https://discord.gg/vGSnD3ZKQF">Discord</a> でどうぞ。Cherry Studio でチャットする場合は <a href="/docs/ja/cherry-studio">Cherry Studio ですべてのモデルを使う</a>を参照してください。ユーザーにすぐ使えるプロバイダを配りたいベンダーの方は <a href="/docs/ja/import">magpie に追加</a> をご覧ください。</p>
   </article>
 </main>
 

@@ -36,7 +36,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -51,6 +50,7 @@ import (
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -193,7 +193,15 @@ func dshOn(at place, dir, list string, fresh, lead func() string) *Agent {
 	} else if f := fresh(); f != "" {
 		path = f
 	}
-	return &Agent{
+	joined := func() bool {
+		files := dshProfilesHeld(dir)
+		if len(files) == 0 {
+			return false
+		}
+		_, items, err := dshLook(files[0]) // dshOver changes a copy
+		return err == nil && dshWired(dshOver(dir, items))
+	}
+	a := &Agent{
 		Spelled: prefixed,
 		Dir:     dir, Path: path,
 		Sync:  func() error { return dshSyncFresh(at, dir, gw(), fresh) },
@@ -202,14 +210,7 @@ func dshOn(at place, dir, list string, fresh, lead func() string) *Agent {
 		// leaves magpie's route in its list: dsh is still connected, its
 		// /model has magpie's models beside DeepSeek's (Fate on Discord:
 		// DSH went back to Not connected)
-		Joined: func() bool {
-			files := dshProfilesHeld(dir)
-			if len(files) == 0 {
-				return false
-			}
-			_, items, err := dshLook(files[0]) // dshOver changes a copy
-			return err == nil && dshWired(dshOver(dir, items))
-		},
+		Joined: joined,
 		// connected so, Disconnect takes the route out, the start magpie
 		// wrote and its key; the model picked in dsh stays its own
 		Unwire: func() error {
@@ -280,6 +281,44 @@ func dshOn(at place, dir, list string, fresh, lead func() string) *Agent {
 				return static(dshEfforts...)
 			},
 		}},
+	}
+	if list == "dsh" {
+		a.Fields = append(a.Fields, dshCompactField(func() bool { return !at.cold && joined() }, list))
+	}
+	return a
+}
+
+// dshCompactField picks the model DeepSeek Harness compacts its context
+// on, whatever model the session is on (#5395): unset, dsh compacts on the
+// session's latest model, so a switch away from one whose provider is out
+// of its limit failed on its compaction. dsh's own setting for it is in
+// each agent preset's whole config, which a profile patch can only replace
+// whole, so it is magpie's setting (settings.DshCompactModel), read by
+// the gateway on each request (gateway dshCompactTo): Live, and a change
+// needs no restart. Offered while dsh is on magpie's route; DS Bot, whose
+// requests the gateway can't tell from dsh's, has none of its own. Its
+// models are spelt as the model field's, magpie/<id>, so `magpie dsh
+// deepseek/flash` is still the model (the CLI gives a bare value to the
+// first field offering it), and either spelling is taken. joined looks at
+// nothing at a cold place: a stopped distro's files start it (#3896).
+func dshCompactField(joined func() bool, list string) Field {
+	return Field{
+		Key: "compact_model", Label: "compaction model", Quiet: true, Live: true,
+		Get: func() string {
+			if m := provider.DshCompactModel(); m != "" {
+				return magpieID + "/" + m
+			}
+			return ""
+		},
+		Set: func(v string) error {
+			return provider.SetDshCompactModel(strings.TrimPrefix(v, magpieID+"/"))
+		},
+		Options: func(map[string]string) []Option {
+			if !joined() {
+				return nil
+			}
+			return viaMagpie(list, magpieID+"/")
+		},
 	}
 }
 
@@ -590,7 +629,7 @@ type dshItem struct {
 	lines  []string
 }
 
-var dshIDLine = regexp.MustCompile(`^(?:- |  )id:\s*['"]?([^'"#\s]+)['"]?\s*(#.*)?$`)
+var dshIDLine = lazyre.New(`^(?:- |  )id:\s*['"]?([^'"#\s]+)['"]?\s*(#.*)?$`)
 
 // dshParse splits the patch list at path into what comes before its first
 // entry and the entries. A list written in flow style ([ {id: a} ], which
@@ -670,6 +709,7 @@ type dshParsed struct {
 // read and parsed every profile's list again on each ask, a third of what
 // forty asks allocated with real accounts.
 func dshLook(path string) ([]string, []dshItem, error) {
+	dshUsed()
 	d, err := filememo.Read("dsh list", path, func(b []byte) (dshParsed, error) {
 		head, items, err := dshParse(path, string(edit.TrimBOM(b)))
 		return dshParsed{head, items}, err
@@ -740,6 +780,7 @@ func dshNodeShared(it dshItem) (*yaml.Node, error) {
 	// keyed by a hash of the lines, checked against a copy of them, so a
 	// look that finds the entry allocates nothing: joining the lines into a
 	// key each time was most of what the drift poll's dsh check still made
+	dshUsed()
 	key := dshLinesHash(it.lines)
 	dshNodes.Lock()
 	n, ok := dshNodes.find(key, it.lines)
@@ -945,7 +986,7 @@ func dshRouteLists(route *yaml.Node, id string) bool {
 	return false
 }
 
-var dshModelLine = regexp.MustCompile(`^\s+model:\s*(.+?)\s*$`)
+var dshModelLine = lazyre.New(`^\s+model:\s*(.+?)\s*$`)
 
 // dshLead is the profile whose start magpie shows: the one named lead
 // when there is one (the desktop app's when DeepSeek Harness Desktop is
@@ -2107,7 +2148,16 @@ func dshStartOnItsRoute(items []dshItem, models []catalog.Model) []dshItem {
 			continue
 		}
 		want, id := "", c["model"]
-		for _, ref := range []string{id, provider.PublicRef(id), provider.RenamedRef(id), provider.PublicRef(provider.RenamedRef(id))} {
+		// each ref is worked out only when the one before it isn't listed:
+		// PublicRef and RenamedRef of an auto ref look at the whole catalog
+		refs := []func(string) string{
+			func(id string) string { return id },
+			provider.PublicRef,
+			provider.RenamedRef,
+			func(id string) string { return provider.PublicRef(provider.RenamedRef(id)) },
+		}
+		for _, of := range refs {
+			ref := of(c["model"])
 			for _, m := range models {
 				if m.ID == ref {
 					want, id = dshRouteOf(m), ref
@@ -2465,8 +2515,20 @@ func (s *dshSaidOnce) first(trouble string) bool {
 // dshModelsFor is how long a round takes magpie's models as built before
 // while provider.StampNow says nothing changed: what the stamp can't see
 // (another app rewriting an account's file, a model retired by its date)
-// reaches dsh's lists within it.
-const dshModelsFor = 5 * time.Minute
+// reaches dsh's lists within it, and a new day builds them again for the
+// models retired by date. At 5 minutes each build (~42 MB allocated with a
+// real catalog) was most of what an idle magpie allocated.
+const dshModelsFor = 30 * time.Minute
+
+// dshModelsStale says whether models built at at are to be built again now.
+func dshModelsStale(at, now time.Time) bool {
+	if now.Sub(at) >= dshModelsFor {
+		return true
+	}
+	y1, m1, d1 := at.Date()
+	y2, m2, d2 := now.Date()
+	return y1 != y2 || m1 != m2 || d1 != d2
+}
 
 // dshHomesRounds are a round for each dsh home magpie keeps wired: dsh's
 // own, and DS Bot's, whose app runs its own dsh on a home of its own
@@ -2499,11 +2561,14 @@ type dshRounds struct {
 	// whose models are written there; "": dsh's.
 	home func() string
 	list string
-	// the models, and the stamp and time they were built at
-	models []catalog.Model
-	stamp  provider.Stamp
-	at     time.Time
-	built  bool
+	// the stamp and time the models were last built at, their sum in
+	// last: the list itself is not kept between rounds, where it was the
+	// largest thing an idle magpie held (~9 MB with real accounts, and the
+	// catalog it was built from with it), and is built again only for a
+	// round that writes
+	stamp provider.Stamp
+	at    time.Time
+	built bool
 	// what the last round went by, and whether it wrote nothing, nothing
 	// else wrote while it ran, and nothing troubled it
 	last dshRoundKey
@@ -2617,17 +2682,27 @@ func (r *dshRounds) once() string {
 		r.done = false
 		return ""
 	}
+	// one catalog for the whole round: outside a Hold, each PublicRef,
+	// RenamedRef and Exposed the round asks built every provider's models
+	// again, 158 MB of what a real account's magpie allocated in its first
+	// minute
+	defer provider.Hold()()
 	key := dshRoundKey{files: dshFilesSum(dir, files), gw: gateway.URL(), models: r.last.models}
 	// the stamp is read before the models are built: a change while they
 	// are moves it past the one kept, and the next round builds them again
-	if stamp := provider.StampNow(); !r.built || stamp != r.stamp || time.Since(r.at) >= dshModelsFor {
-		r.models, r.stamp, r.at, r.built = magpieModels(list), stamp, time.Now(), true
-		key.models = dshModelsSum(r.models)
+	var models []catalog.Model
+	if stamp := provider.StampNow(); !r.built || stamp != r.stamp || dshModelsStale(r.at, time.Now()) {
+		models = magpieModels(list)
+		r.stamp, r.at, r.built = stamp, time.Now(), true
+		key.models = dshModelsSum(models)
 	}
 	if r.done && key == r.last {
 		return ""
 	}
-	trouble := dshWiredWith(dir, files, r.models)
+	if models == nil {
+		models = magpieModels(list)
+	}
+	trouble := dshWiredWith(dir, files, models)
 	// kept only when the round wrote nothing and nothing else wrote while
 	// it ran: a file written by either is read again next round
 	r.last, r.done = key, trouble == "" && dshFilesSum(dir, dshProfiles(dir)) == key.files

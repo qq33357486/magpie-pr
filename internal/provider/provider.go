@@ -18,7 +18,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -29,6 +28,8 @@ import (
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/lastgood"
+	"github.com/yetone/magpie/internal/lazyre"
+	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/steady"
 )
@@ -152,6 +153,16 @@ type Provider struct {
 	// always has (routes.Seat.Lead).
 	UseFirst bool `json:"useFirst,omitempty"`
 
+	// NoStandIn keeps another model's request off it (sonnnnnnnnnnnna on
+	// X): a request that went first to a provider not so marked, such as
+	// a local uncensored model that is down or out of room, is never sent
+	// on to it as a fallback or a routing group's next member, so text
+	// written for that model can't get a vendor's account banned. One
+	// that goes first to it, or to another provider so marked, still
+	// moves on as ever. Off, the default, it stands in for any. See
+	// gateway.standInsOut.
+	NoStandIn bool `json:"noStandIn,omitempty"`
+
 	// Affinity is how long a conversation stays with the key or account
 	// that answered it, so the vendor's prompt cache it filled is read
 	// again rather than lost (see Affinities): "" auto, "session",
@@ -271,6 +282,10 @@ type Provider struct {
 	// weighs it at nothing). Prices and the costs Usage counts stay as
 	// listed: it says what to spend first, not what a call cost.
 	CountFree bool `json:"countFree,omitempty"`
+	// Billing is the user's word on how the provider bills: BillingPlan
+	// or BillingPAYG (EV_John_Liu on X); "" has magpie read it
+	// (BillingKind). It only marks the provider on Providers and Routing.
+	Billing string `json:"billing,omitempty"`
 	// RateWindows are the time-of-day windows it bills at its own rate
 	// (#2463): a peak at 2× or 3×, a discount off peak. The first window
 	// that holds a call's time multiplies the price again, on top of
@@ -333,6 +348,15 @@ type Provider struct {
 	// once through DeepSeek's Files API, for a day, and the turns name it
 	// by its file id (gateway's deepseek_files.go, #5407).
 	ImageFilesOff bool `json:"imageFilesOff,omitempty"`
+
+	// UpstreamProviders, on a Remote magpie, `upstream-providers=on`, names each
+	// of its models in the agents' lists by the provider serving it on
+	// the other magpie, the first in a chain of them: "Claude Sonnet 5 ·
+	// Office › RelayA", whatever that magpie's own Provider in model names
+	// is, so one model from two of its providers is told apart here
+	// (lcc580 on X). Off, the default, names each as that magpie's list
+	// does. The ids stay as they are: office/relaya/claude-sonnet-5.
+	UpstreamProviders bool `json:"upstreamProviders,omitempty"`
 
 	// PromptAsWritten, on Antigravity's subscription, has the system prompt
 	// go to Google exactly as the agent wrote it. By default the few lines
@@ -460,6 +484,28 @@ type Provider struct {
 	// (TakesInsecureTLS), for the hosts of its own base URLs
 	// (UncheckedHosts); see Via.
 	HTTP1 bool `json:"http1,omitempty"`
+
+	// ClientCert and ClientKey are the PEM files of a client certificate
+	// magpie shows the provider's own HTTPS hosts when they ask for one,
+	// and ServerCA a PEM CA their certificate may be signed by beside the
+	// system's roots (#5596, clxsh, and hhdaxia on X: Remote magpie to a
+	// magpie at home behind an Nginx that requires a client certificate,
+	// or one with `magpie mtls` on). Only a provider the user added, and
+	// Remote magpie, takes them (TakesClientCert), for the hosts of its
+	// own base URLs (UncheckedHosts), on every request made for it:
+	// models, the connection test, requests, quotas; see Via.
+	ClientCert string `json:"clientCert,omitempty"`
+	ClientKey  string `json:"clientKey,omitempty"`
+	ServerCA   string `json:"serverCA,omitempty"`
+
+	// ServerPin is the SHA-256 (lower-case hex) of the one server
+	// certificate its own HTTPS hosts are taken with, trusted as it is
+	// (Zhangzhangi on X: a magpie at home on a domain of its own with a
+	// self-signed certificate, which macOS calls not standards
+	// compliant): the certificate's chain, name and dates aren't checked
+	// there, and any other certificate is refused. "" checks them as
+	// usual. Taken where TakesClientCert is; see Via and PeekServerCert.
+	ServerPin string `json:"serverPin,omitempty"`
 
 	// Proxy is the proxy magpie's requests to this provider go through
 	// (#237: Codex through one, a vendor at home without): "" follows
@@ -668,6 +714,11 @@ type Provider struct {
 	// it is listed there only behind "Show N hidden", or when searched
 	// for by name (#116).
 	Tucked bool `json:"tucked,omitempty"`
+	// Forgot is set on a removed account the user signed out of magpie
+	// while its agent stays signed in, which magpie never signs out
+	// (Claude Code): it is no longer listed among the removed, and stays
+	// hidden until it is added back by a new sign-in (ikunbots on X).
+	Forgot bool `json:"forgot,omitempty"`
 
 	// Account is set when the provider is an agent the user signed in to
 	// (see account.go); it is derived, never stored.
@@ -1047,6 +1098,7 @@ func accountSettings(a, pk Provider) Provider {
 	a.AccountCaps, a.AccountWindowCaps, a.AccountWindowAmounts = pk.AccountCaps, pk.AccountWindowCaps, pk.AccountWindowAmounts
 	a.CapStop, a.CapCareful = pk.CapStop, pk.CapCareful
 	a.UseFirst = pk.UseFirst
+	a.NoStandIn = pk.NoStandIn
 	a.AccountNames = pk.AccountNames
 	a.MaxConcurrency, a.PinUpstream = pk.MaxConcurrency, pk.PinUpstream
 	a.MaxAccounts = pk.MaxAccounts
@@ -1063,6 +1115,8 @@ func accountSettings(a, pk Provider) Provider {
 	a.PriceRate = pk.PriceRate
 	// counted free by the user's word, every account alike
 	a.CountFree = pk.CountFree
+	// and how it bills, by the user's word (BillingKind)
+	a.Billing = pk.Billing
 	// the hours the provider bills at its own rate (#2463), as the editor
 	// keeps them for the account like the rest of these
 	a.RateWindows = pk.RateWindows
@@ -1163,7 +1217,7 @@ func readElsewhere() string {
 	return fmt.Sprintf("\n  this magpie reads its files from %s, as XDG_CONFIG_HOME says; the app opened from the Dock or Start menu keeps them in %s. Run it with XDG_CONFIG_HOME unset (env -u XDG_CONFIG_HOME magpie …) to use those", appdir.Config(), def)
 }
 
-var idRe = regexp.MustCompile(`[^a-z0-9]+`)
+var idRe = lazyre.New(`[^a-z0-9]+`)
 
 // Slug derives an id from a name: "My Relay" → "my-relay".
 func Slug(name string) string {
@@ -1174,8 +1228,12 @@ func Slug(name string) string {
 func Save(p Provider) error {
 	// a key given a Vertex AI provider is refused here, before normalize
 	// drops it: it would never be sent
-	if p.IsVertex() && (strings.TrimSpace(p.Key) != "" || len(p.Keys) > 0) {
-		return errors.New("Google Vertex AI is asked with your Google credentials, not an API key")
+	if p.IsVertex() && len(p.Keys) > 0 {
+		return errors.New("Google Vertex AI takes one API key")
+	}
+	// a base URL with no key is refused before normalize drops it
+	if p.IsVertex() && p.Vertex != nil && strings.TrimSpace(p.Vertex.BaseURL) != "" && strings.TrimSpace(p.Key) == "" {
+		return errors.New("a base URL is for an API key: Google credentials are sent only to Google's own address")
 	}
 	p = normalize(p)
 	p.IconURL = "" // import-only: never stored
@@ -1229,7 +1287,7 @@ func Save(p Provider) error {
 			return fmt.Errorf("%q is the id of the %s subscription; pick another name", p.ID, p.ID)
 		}
 		if p.IsVertex() {
-			if err := p.Vertex.check(); err != nil {
+			if err := p.Vertex.check(p.Key != ""); err != nil {
 				return err
 			}
 		} else if !hasEndpoint(p) {
@@ -1243,6 +1301,29 @@ func Save(p Provider) error {
 		}
 		if p.HTTP1 && !p.TakesInsecureTLS() {
 			return fmt.Errorf("%s is a preset's: only a provider you added with your own base URL can be held to HTTP/1.1", p.Name)
+		}
+		if v := strings.TrimSpace(p.ServerPin); v != "" {
+			if p.ServerPin = netproxy.NormalPin(v); p.ServerPin == "" {
+				return fmt.Errorf("%s: %q isn't a certificate's SHA-256 fingerprint (64 hex digits)", p.ID, v)
+			}
+			if !p.TakesServerPin() {
+				return fmt.Errorf("%s: a trusted server certificate is only for an https:// address of your own: a provider you added with a base URL of its own, Remote magpie, or a preset you pointed at your own server", p.ID)
+			}
+		}
+		if p.ClientCert != "" || p.ClientKey != "" || p.ServerCA != "" {
+			if !p.TakesClientCert() {
+				return fmt.Errorf("%s: a client certificate or server CA is only for a provider you added with a base URL of its own, or Remote magpie", p.ID)
+			}
+			for _, f := range []*string{&p.ClientCert, &p.ClientKey, &p.ServerCA} {
+				v, err := CertPath(*f)
+				if err != nil {
+					return fmt.Errorf("%s: %w", p.ID, err)
+				}
+				*f = v
+			}
+			if err := netproxy.CheckClientCert(p.ClientCert, p.ClientKey, p.ServerCA); err != nil {
+				return fmt.Errorf("%s: %w", p.ID, err)
+			}
 		}
 		if strings.Contains(p.Decide, WorkspaceID) {
 			return errors.New("Bailian's decision model is asked at your workspace's host: give its workspace ID (workspace=… or the editor's Workspace ID), or pick the Token Plan")
@@ -1477,7 +1558,11 @@ func AddCopy(p Provider, from string) (string, error) {
 	}
 	p.Searches = p.Searches || src.Searches
 	p.Unredacted = p.Unredacted || src.Unredacted
+	p.NoStandIn = p.NoStandIn || src.NoStandIn
 	p.CountFree = p.CountFree || src.CountFree
+	if p.Billing == "" {
+		p.Billing = src.Billing
+	}
 	p.NativeCompaction = p.NativeCompaction || src.NativeCompaction
 	if p.Socket == "" {
 		p.Socket = src.Socket
@@ -1611,6 +1696,22 @@ func QuietAccount(id string) error {
 	return nil
 }
 
+// forgetKeptAccount marks a removed account signed out of magpie while its
+// agent's own sign-in stays: Excluded leaves it out.
+func forgetKeptAccount(id string) error {
+	f, err := read()
+	if err != nil {
+		return err
+	}
+	for i := range f.Providers {
+		if f.Providers[i].ID == id && f.Providers[i].Hidden {
+			f.Providers[i].Forgot = true
+			return store(f)
+		}
+	}
+	return nil
+}
+
 // ShowAccount brings back the signed-in account of an agent the user had
 // removed from magpie.
 func ShowAccount(id string) error {
@@ -1620,7 +1721,7 @@ func ShowAccount(id string) error {
 	}
 	for i := range f.Providers {
 		if f.Providers[i].ID == id && f.Providers[i].Hidden {
-			f.Providers[i].Hidden, f.Providers[i].Quiet, f.Providers[i].Tucked = false, false, false
+			f.Providers[i].Hidden, f.Providers[i].Quiet, f.Providers[i].Tucked, f.Providers[i].Forgot = false, false, false, false
 			return store(f)
 		}
 	}
@@ -1739,13 +1840,19 @@ func normalize(p Provider) Provider {
 	if !p.IsVertex() {
 		p.Vertex = nil
 	} else {
-		// asked only at the address its project and location make, with a
-		// Google token that no other address is to be sent, and never with
-		// a key: one put in providers.json by hand is dropped, so it stands
-		// in for neither that token nor a project, and the provider as
-		// found still saves
+		// asked only at the address its project and location make (or its
+		// BaseURL, with a key), with a Google token that no other address
+		// is to be sent: the URLs of a provider put in providers.json by
+		// hand are dropped. It has one key, or none.
 		p.Chat, p.Responses, p.Anthropic, p.Gemini, p.Decide = "", "", "", "", ""
-		p.Key, p.KeyName, p.Keys, p.KeyProtocol, p.KeyWeight, p.KeyPlan = "", "", nil, "", 0, ""
+		p.Key = strings.TrimSpace(p.Key)
+		p.KeyName, p.Keys, p.KeyProtocol, p.KeyWeight, p.KeyPlan = "", nil, "", 0, ""
+		if p.Key == "" && p.Vertex != nil && p.Vertex.BaseURL != "" {
+			// no key to go with it: Google's token must not go there
+			v := *p.Vertex
+			v.BaseURL = ""
+			p.Vertex = v.Normal()
+		}
 	}
 	p.remoteMagpieEndpoints()
 	for _, u := range []*string{&p.Chat, &p.Responses, &p.Anthropic, &p.Gemini, &p.Decide, &p.Website, &p.KeysURL} {
@@ -2009,7 +2116,7 @@ func (p Provider) Base(proto Protocol) string {
 		// Vertex AI's partner models, on Google's OpenAI-compatible chat
 		// completions at the project (VertexPartner)
 		if p.IsVertex() {
-			if b := p.vertexBase(); b != "" {
+			if b := p.vertexBase(); b != "" && !p.VertexExpress() {
 				return b + "/endpoints/openapi"
 			}
 			return ""
@@ -2021,6 +2128,9 @@ func (p Provider) Base(proto Protocol) string {
 		// Vertex AI's Claude models, on Anthropic's Messages API at the
 		// project, each at a path of its own (VertexClaudeRequest)
 		if p.IsVertex() {
+			if p.VertexExpress() {
+				return "" // express mode serves Gemini alone
+			}
 			return p.vertexBase()
 		}
 		return p.Anthropic

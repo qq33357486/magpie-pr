@@ -10,12 +10,12 @@ import (
 	"net"
 	"net/http"
 	"path"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -112,6 +112,7 @@ func readChat(body []byte, facts bool) (*Request, error) {
 		switch m.Role {
 		case "system", "developer":
 			sys = append(sys, stringOrText(m.Content))
+			r.systemRaw = append(r.systemRaw, m.Content)
 		case "user":
 			r.Messages = append(r.Messages, Message{Role: "user", Parts: chatParts(m.Content)})
 		case "assistant":
@@ -194,6 +195,14 @@ func chatParts(raw json.RawMessage) []Part {
 			FileID   string `json:"file_id"`
 			Filename string `json:"filename"`
 		} `json:"file"`
+		VideoURL struct {
+			URL string `json:"url"`
+		} `json:"video_url"`
+		// the AI SDK's file part, flat (#4101: ZCode's), whose video
+		// alone is read here
+		Data      string `json:"data"`
+		MediaType string `json:"mediaType"`
+		Filename  string `json:"filename"`
 	}
 	decodeJSON(raw, &items)
 	var out []Part
@@ -208,6 +217,17 @@ func chatParts(raw json.RawMessage) []Part {
 		case "file":
 			if p, ok := chatFile(it.File.FileData, it.File.FileID, it.File.Filename); ok {
 				out = append(out, p)
+			} else if strings.HasPrefix(strings.ToLower(it.MediaType), "video/") {
+				if v, ok := videoPart(it.Data, it.MediaType, it.Filename); ok {
+					out = append(out, v)
+				}
+			}
+		case "video_url":
+			// a video, as DashScope's, Kimi's and OpenRouter's Chat take
+			// one (#4101, #6135): left out before, and the model answered
+			// for the words alone
+			if v, ok := videoPart(it.VideoURL.URL, "", ""); ok {
+				out = append(out, v)
 			}
 		}
 	}
@@ -301,7 +321,7 @@ func buildHost(p provider.Provider) string {
 			return id
 		}
 	}
-	return p.Host()
+	return p.VendorHost()
 }
 
 // failedAsText are the plugins whose vendor has no failed mark on a tool
@@ -489,6 +509,11 @@ func buildChat(r *Request, model, host string, rejectTemp bool) []byte {
 			case Text:
 				content = append(content, map[string]any{"type": "text", "text": p.Text})
 			case File:
+				if isVideo(p) && !r.videoOff {
+					plain = false
+					content = append(content, chatVideo(p))
+					break
+				}
 				content = append(content, map[string]any{"type": "text", "text": attachmentText(p)})
 			case Image:
 				plain = false
@@ -989,7 +1014,7 @@ var gemini3Levels = []string{"minimal", "low", "medium", "high"}
 // thinking_level minimal alike; and gemini-3.1-pro-preview's
 // "thinking_level MINIMAL is not supported by this model" at its
 // generateContent.
-var geminiLevelRefused = regexp.MustCompile(`(?i)thinking[ _]level\W+(?:(minimal|low|medium|high)\W+is not supported|is unsupported\W+thinking_level_(minimal|low|medium|high))`)
+var geminiLevelRefused = lazyre.New(`(?i)thinking[ _]level\W+(?:(minimal|low|medium|high)\W+is not supported|is unsupported\W+thinking_level_(minimal|low|medium|high))`)
 
 // geminiRefusedLevel is the thinking level Gemini turned away in body
 // (geminiLevelRefused), or "".
