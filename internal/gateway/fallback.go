@@ -1625,7 +1625,7 @@ func restOf(id string) (Rest, bool) {
 
 // quotaWords are how vendors say "out of quota" or "slow down" when their
 // status code doesn't: some answer 400 or 403 with it.
-var quotaWords = lazyre.New(`(?i)quota|insufficient|balance|credit|billing|out of budget|budget (exceeded|exhausted)|exceeded|rate.?limit|usage.?limit|limit.?reached|hit your .*limit|limit.{0,24}resets|too many requests|overloaded|余额|额度|欠费|限流|频率|频繁|速率|套餐|用量|上限`)
+var quotaWords = lazyre.New(`(?i)quota|insufficient|balance|credit|billing|out of budget|budget (exceeded|exhausted)|exceeded|rate.?limit|usage.?limit|limit.?reached|(?:hit|reached) your .*limit|limit.{0,24}resets|too many requests|overloaded|余额|额度|欠费|限流|频率|频繁|速率|套餐|用量|上限`)
 
 // quotaSaid is whether an error's words, with no status to go by, say
 // out of quota or slow down: quotaWords, unless they say the conversation
@@ -1760,7 +1760,9 @@ func promptRefused(status int, body []byte) bool {
 // JSON schema: OpenCode Go's 400 "JSON schema exceeds the maximum nesting
 // depth of 10 levels" on muse-spark-1.3-contributor for Claude Code's MCP
 // tools (#1870), which another member's model may take as they are; and a
-// custom tool turned away (customToolRefusal, DeepSeek's "Unsupported
+// Huawei CodeArts's HTTP 200 "The request param is invalid" over a
+// parameter it can't take, InferHub.001001005.400 (a `stop` array, #6342),
+// which the plugin now sends as a string; and a custom tool turned away (customToolRefusal, DeepSeek's "Unsupported
 // custom tool: 'exec'", #2656) where no translation took it in. A
 // request missing what every API requires ("field required") or too long
 // for the model isn't one. Google's refusal of a function declaration's
@@ -1775,7 +1777,7 @@ func promptRefused(status int, body []byte) bool {
 // the only field set." (#5374, worksyang) — a description beside an
 // anyOf, which Google's Schema takes alone, the reporter's same tools
 // another member took.
-var shapeWords = lazyre.New(`(?i)failed to deserialize|unknown (item |content |input )?(type|variant|field|parameter)|unknown_parameter|unrecognized (request argument|field|parameter)|extra (inputs|fields) are not permitted|additional properties are not allowed|schema exceeds the maximum (nesting )?depth|schema[^"]{0,60}\bnesting depth\b|function_declarations\[\d+\]\.parameters\b|schema specified other fields alongside any_?of`)
+var shapeWords = lazyre.New(`(?i)failed to deserialize|unknown (item |content |input )?(type|variant|field|parameter)|unknown_parameter|unrecognized (request argument|field|parameter)|extra (inputs|fields) are not permitted|additional properties are not allowed|schema exceeds the maximum (nesting )?depth|schema[^"]{0,60}\bnesting depth\b|function_declarations\[\d+\]\.parameters\b|schema specified other fields alongside any_?of|InferHub\.001001005\.400`)
 
 // unsaidWords are Command Code's Provider API turning a request away with
 // nothing but a trace id: {"message":"invalid request error trace_id:
@@ -2298,6 +2300,14 @@ func passing(status int, header http.Header, body []byte, again int) (time.Durat
 			// one asked again would burn it twice over before the error
 			// (#2972). A group's next member still is.
 			return 0, false
+		}
+		if bytes.Contains(body, []byte(emptyReply)) {
+			// a model that answered nothing was asked again in place
+			// already (emptyRetries); asking the whole request again as
+			// often as a vendor's outage multiplied the two, nine asks of a
+			// minute each for one turn (fwxkogaia on X: 170 to 230s
+			// before the 502). Once more, for a try that was not.
+			return wait, again < 1
 		}
 		return wait, again < lastRetries
 	case status == 429:

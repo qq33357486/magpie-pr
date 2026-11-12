@@ -50,6 +50,13 @@ const CodexSubagentLead = "lead"
 // sentinel codex-rs itself uses for that (SERVICE_TIER_DEFAULT_REQUEST_VALUE).
 const CodexTierStandard = "default"
 
+// CodexOpens are the values CodexOpen may take, "" for the default.
+var CodexOpens = []string{"", "app", "terminal"}
+
+// CodexClients are the values CodexClient may take, "" for Codex CLI, the
+// default. Each is a client OpenAI makes, and only those.
+var CodexClients = []string{"", "desktop"}
+
 // CodexServiceTiers are the values CodexServiceTier may take, "" (as
 // Codex asks) first.
 var CodexServiceTiers = []string{"", CodexTierStandard, "priority", "ultrafast"}
@@ -96,6 +103,11 @@ type Settings struct {
 	// westernUnits, which asked for K/M/B: what that chose is now the
 	// default, so an old file's is left unread.
 	ChineseUnits bool `json:"chineseUnits,omitempty"`
+	// DayStart is the hour a day starts at in usage: 0 is midnight, and 1 to
+	// 6 count the small hours before it with the day before (ssharpcc on X,
+	// who codes past 1am). The Usage page, its daily cards and the gateway
+	// keys' daily and calendar caps cut their days there.
+	DayStart int `json:"dayStart,omitempty"`
 	// Dock keeps magpie in the Mac's Dock as well as the menu bar, for a
 	// menu bar too full to show its icon.
 	Dock bool `json:"dock,omitempty"`
@@ -148,6 +160,14 @@ type Settings struct {
 	UpdateProxy string `json:"updateProxy,omitempty"`
 	// UpdateProxyCustom is UpdateProxy's ProxyCustom.
 	UpdateProxyCustom string `json:"updateProxyCustom,omitempty"`
+	// UpdateSource is where magpie's update is read and downloaded from
+	// (RootSir and Sakugar_ on X: usemagpie.ai's download is slow, or
+	// github.com is the one that works). "" is automatic: usemagpie.ai,
+	// then GitHub when it can't be reached; UpdateSourceSite never goes to
+	// GitHub; UpdateSourceGitHub never to usemagpie.ai (Stable's release
+	// list excepted, which only the site has). The release is held to its
+	// signature whichever source gave it. This computer's own (KeepOwn).
+	UpdateSource string `json:"updateSource,omitempty"`
 	// Proxies are the proxies kept by name (NamedProxy); a proxy choice
 	// "@"+id anywhere (Proxy, PluginProxy, a provider's, a key's, an
 	// account's) uses one. This computer's own (KeepOwn).
@@ -833,6 +853,16 @@ type Settings struct {
 	// Ultra Fast). Codex's words, as codex-rs ServiceTier::request_value
 	// sends them; its Flex is not offered, the ChatGPT backend takes none.
 	CodexServiceTier string `json:"codexServiceTier,omitempty"`
+	// CodexClient is the Codex client magpie presents to the ChatGPT
+	// backend on a signed-in account's requests (ouhthuo on X): "" is Codex
+	// CLI (originator codex_cli_rs), "desktop" the Codex app (originator
+	// "Codex Desktop"), each with the User-Agent that client sends.
+	CodexClient string `json:"codexClient,omitempty"`
+	// CodexOpen is what Codex opens in from its Agents row menu
+	// (Yink88564391 on X): "app" the Codex desktop app, "terminal" the CLI
+	// in a terminal. "" is the app where one is installed, else the
+	// terminal. It belongs to this computer.
+	CodexOpen string `json:"codexOpen,omitempty"`
 	// DesktopSubagentModel is the model the gateway puts Claude Desktop's
 	// subagent tool turns on. "" leaves them on the model their lead asks
 	// for; tool-less helpers and the lead's own turns are never moved.
@@ -902,6 +932,16 @@ type Settings struct {
 	// (molianyin4227 on Discord: models differ, so one size for every
 	// agent fits none). An agent with none follows those two (ForAgent).
 	AgentCompacts map[string]AgentCompact `json:"agentCompacts,omitempty"`
+	// AgentContexts is the context window an agent is told for a model, when
+	// it is not the one every agent is told (ul3140773077392 on X: dsh
+	// compacts earlier than Codex does at the same window, so its window
+	// wants setting apart). By the agent's list id (Agent.ListsFor), then
+	// the model as the catalog has it ("provider/model", or "group/<id>"),
+	// "provider/*" for every model of a provider, a bare model id for that
+	// model at any provider, and "*" for all of them (which only shortens a
+	// window, as a provider's "*" does). An agent with none is told the
+	// model's own, or a group's.
+	AgentContexts map[string]map[string]int `json:"agentContexts,omitempty"`
 	// CodexAsyncCompact has Codex (0.163 on) compact a long conversation
 	// in the background, while its turn goes on, once it is past
 	// CodexAsyncCompactPercent of the model's window (#2490, lantern2077
@@ -970,6 +1010,13 @@ type Settings struct {
 	// stays. Only what that page shows: routing, caps, counting, the tray
 	// panel (PanelUsageHidden is its own) and the menu bar's cells keep them.
 	UsageCardsHidden []string `json:"usageCardsHidden,omitempty"`
+	// UsageWindowsHidden are the quota rows of an allowance card that the
+	// Overview leaves out (wangshaowei39 on X: Antigravity's Claude & GPT
+	// rows unwanted), each as the provider id, "|" and the row's group: a
+	// pool's or a model family's name, else the window's name. Every
+	// account of the provider alike. A card is never left with none: when
+	// every row is named, all show. Only what that page shows.
+	UsageWindowsHidden []string `json:"usageWindowsHidden,omitempty"`
 	// ClientAgents counts a client magpie doesn't know as one of the agents
 	// it does, on the Usage and Sessions pages (#1958, NorethSea): a bridge
 	// that starts Codex's app-server under a name of its own
@@ -1269,6 +1316,12 @@ const AnyProvider = "*/"
 // UpdateStable is UpdateChannel's Stable: a version a week, an urgent one
 // at once.
 const UpdateStable = "stable"
+
+// The values of Settings.UpdateSource; "" is automatic.
+const (
+	UpdateSourceSite   = "site"
+	UpdateSourceGitHub = "github"
+)
 
 // What a reply's model name says (ReplyModel): the model asked for is "".
 const (
@@ -1617,6 +1670,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.ProxyCustom, s.Proxies, s.ProxyNames = cur.ProxyCustom, cur.Proxies, cur.ProxyNames
 	s.PluginProxy, s.PluginProxyCustom = cur.PluginProxy, cur.PluginProxyCustom
 	s.UpdateProxy, s.UpdateProxyCustom = cur.UpdateProxy, cur.UpdateProxyCustom
+	s.UpdateSource = cur.UpdateSource
 	s.WindowMaximised, s.KeepAwake, s.KeepAwakeDisplay = cur.WindowMaximised, cur.KeepAwake, cur.KeepAwakeDisplay
 	s.WindowAt = cur.WindowAt
 	s.TrayUsages, s.TrayUsage, s.TrayUsageEvery, s.TrayNoLogos, s.TrayNoBird, s.TrayPace, s.TrayNoCost = cur.TrayUsages, cur.TrayUsage, cur.TrayUsageEvery, cur.TrayNoLogos, cur.TrayNoBird, cur.TrayPace, cur.TrayNoCost
@@ -1630,6 +1684,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.RouterNote, s.RouterAllTools = cur.RouterNote, cur.RouterAllTools
 	s.FetchPrivate = cur.FetchPrivate
 	s.SessionTerminal = cur.SessionTerminal
+	s.CodexOpen = cur.CodexOpen
 	s.PanelShortcut = cur.PanelShortcut
 	s.RedactModel, s.RedactModelName, s.RedactModelScore = cur.RedactModel, cur.RedactModelName, cur.RedactModelScore
 	s.RedactModelOff, s.RedactModelAuto = cur.RedactModelOff, cur.RedactModelAuto
@@ -2441,6 +2496,9 @@ func saveOwn(s Settings, recording, reads bool) error {
 	if s.BusyLoad < 0 || s.BusyLoad >= BusyLoadMost {
 		return fmt.Errorf("busy models go last over a load from 1 to %d%%, or 0 for off, not %d", BusyLoadMost-1, s.BusyLoad)
 	}
+	if s.DayStart < 0 || s.DayStart > 6 {
+		return fmt.Errorf("a day starts at an hour from 0 to 6, not %d", s.DayStart)
+	}
 	if s.UsageAlert < 0 || s.UsageAlert > 100 {
 		return fmt.Errorf("a usage alert is at a percentage from 1 to 100, or 0 for off, not %d", s.UsageAlert)
 	}
@@ -2497,6 +2555,11 @@ func saveOwn(s Settings, recording, reads bool) error {
 	if s.UpdateProxy != "" && s.UpdateProxy != "direct" && !IsProxyRef(s.UpdateProxy) {
 		s.UpdateProxyCustom = s.UpdateProxy
 	}
+	switch s.UpdateSource {
+	case "", UpdateSourceSite, UpdateSourceGitHub:
+	default:
+		return fmt.Errorf("the update source must be site or github, not %q", s.UpdateSource)
+	}
 	s.Vision = strings.TrimSpace(s.Vision)
 	if s.Vision != "" && s.Vision != "off" && !strings.Contains(s.Vision, "/") {
 		return fmt.Errorf("the vision model must be a model's id such as openai/gpt-5-mini, or off, not %q", s.Vision)
@@ -2524,6 +2587,14 @@ func saveOwn(s Settings, recording, reads bool) error {
 	s.CodexServiceTier = strings.TrimSpace(s.CodexServiceTier)
 	if !slices.Contains(CodexServiceTiers, s.CodexServiceTier) {
 		return fmt.Errorf("Codex's service tier must be one of %q, not %q", CodexServiceTiers[1:], s.CodexServiceTier)
+	}
+	s.CodexClient = strings.TrimSpace(s.CodexClient)
+	if !slices.Contains(CodexClients, s.CodexClient) {
+		return fmt.Errorf("the Codex client must be one of %q, not %q", CodexClients[1:], s.CodexClient)
+	}
+	s.CodexOpen = strings.TrimSpace(s.CodexOpen)
+	if !slices.Contains(CodexOpens, s.CodexOpen) {
+		return fmt.Errorf("Open Codex with must be one of %q, not %q", CodexOpens[1:], s.CodexOpen)
 	}
 	s.RedactRouteTo = strings.TrimSpace(s.RedactRouteTo)
 	if s.RedactRouteTo != "" && !strings.Contains(s.RedactRouteTo, "/") {
@@ -2590,6 +2661,7 @@ func saveOwn(s Settings, recording, reads bool) error {
 	s.PanelUsageHidden = ids(s.PanelUsageHidden)
 	s.UsageAgentsHidden = ids(s.UsageAgentsHidden)
 	s.UsageCardsHidden = ids(s.UsageCardsHidden)
+	s.UsageWindowsHidden = ids(s.UsageWindowsHidden)
 	s.ClientAgents = clientAgents(s.ClientAgents)
 	s.UsageCleared = usageCleared(s.UsageCleared)
 	s.TrayUsages = ids(s.TrayUsages)

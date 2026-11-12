@@ -125,7 +125,9 @@ const readTags = new WeakMap();
 // heads, when given, is shown the answer's headers (loadQuotas' X-Magpie-Reading);
 // signal, when given, cancels the request (a read the reader moved on from)
 async function api(path, body, heads, signal) {
-  if (web && path === "open") { window.open(body.url, "_blank", "noopener"); return null; }
+  // a web link is the browser's to open; an app's import link (cindy://)
+  // is the host's, where that app and its database are
+  if (web && path === "open" && /^https?:/i.test(body.url)) { window.open(body.url, "_blank", "noopener"); return null; }
   // a segment may be an agent id, and omp's named profiles are omp#<name>:
   // left raw, the browser reads #work as the fragment and the request
   // reaches the default omp row (#1187). Only # is encoded: ? = & stay a
@@ -150,6 +152,10 @@ async function api(path, body, heads, signal) {
   try { data = text ? JSON.parse(text) : null; } catch {
     throw new Error(notJSON(res, text));
   }
+  // a state sends each fields' option list once, as indexes into its
+  // options, "*" for a fastFor of the agent's own (shareOptions,
+  // statewrite.go)
+  if (data?.optionLists) for (const a of data.agents) for (const f of a.fields) if (f.list) f.options = data.optionLists[f.list - 1].map((o) => (o = data.options[o]).fastFor == "*" ? { ...o, fastFor: a.id } : o);
   if (!res.ok) {
     const err = new Error(data?.error || `${res.status} ${res.statusText}`);
     if (data?.code === "runtime_unavailable") {
@@ -282,7 +288,11 @@ const CHEV_R = "m6.5 4.5 3 3.5-3 3.5";
 const CHECK = "m3.5 8.5 3 3 6-7";
 const CROSS = "M4.5 4.5l7 7M11.5 4.5l-7 7";
 const PLUS = "M8 3.5v9M3.5 8h9";
+const HEART = "M8 13.2S2.5 9.9 2.5 6.1A2.8 2.8 0 0 1 8 5a2.8 2.8 0 0 1 5.5 1.1C13.5 9.9 8 13.2 8 13.2Z";
+// internal/gui/providers.go's sponsorMail, the one mailto: /api/open opens
+const SPONSOR_MAIL = "mailto:yetoneful@gmail.com?subject=Sponsoring%20magpie";
 const OUT = "M6.5 3.5h-3v9h9v-3M9 3.5h3.5V7M12.5 3.5 7.5 8.5";
+const PLAY_ICON = "M5.5 3.75v8.5L12.25 8z";
 const COPY_ICON = "M5.5 5.5V3.5h7v7h-2M3.5 5.5h7v7h-7z";
 const PENCIL = "M3.5 12.5l.5-2.5 6.8-6.8a1.2 1.2 0 0 1 1.7 0l.3.3a1.2 1.2 0 0 1 0 1.7L6 12z M9.8 4.2l2 2";
 const PUZZLE = "M6.2 2.8h2.3a1.3 1.3 0 1 1 2.5 0h2.2V5a1.3 1.3 0 1 0 0 2.6v5.6H3V7.6a1.3 1.3 0 1 1 0-2.6V2.8z";
@@ -2834,8 +2844,8 @@ function importButton(a) {
   b.append(el("span", "chev", svg(OUT, 11, 1.6)));
   b.onclick = (ev) => {
     ev.stopPropagation();
-    if (web) location.href = a.import;
-    else api("open", { url: a.import }).then(() => status(t("Sent to {name}: confirm adding magpie there", a), "ok"), statusErr);
+    // the host's own app, even from a browser on another machine
+    api("open", { url: a.import }).then(() => status(t("Sent to {name}: confirm adding magpie there", a), "ok"), statusErr);
   };
   return b;
 }
@@ -3801,7 +3811,9 @@ function openAgentMenu(anchor, a, inFold, at) {
   const i = shown.findIndex((x) => x.id === a.id);
   const reapply = !a.cliMissing && (a.drift || a.fields.some((f) => optionFor(f, f.value)?.ref));
   // coolmantou, lileo0668
-  const o = a.terminal && mode != "panel" && !web, term = [...o ? [{ name: "Open in terminal", icon: LAUNCH_GLYPH, sep: !0, run: () => api("agents/open", { agent: a.id }).catch(statusErr) }] : [], ...a.command ? [{ name: "Copy launch command", icon: COPY_ICON, sep: !o, run: () => copy(a.command, t("Launch command")) }] : []];
+  // Codex's desktop app, by the setting Open Codex with (Yink88564391 on
+  // X): in the menu, not on the row, so the row lines up with the others
+  const app = a.openApp && mode != "panel" && !web, o = a.terminal && mode != "panel" && !web, term = [...app ? [{ name: "Open the Codex app", icon: LAUNCH_GLYPH, sep: !0, run: () => api("agents/open", { agent: a.id }).catch(statusErr) }] : [], ...o ? [{ name: "Open in terminal", icon: LAUNCH_GLYPH, sep: !app, run: () => api("agents/open", { agent: a.id, terminal: !0 }).catch(statusErr) }] : [], ...a.command ? [{ name: "Copy launch command", icon: COPY_ICON, sep: !o && !app, run: () => copy(a.command, t("Launch command")) }] : []];
   const acts = inFold && isHidden(a)
     ? [{ name: "Show", icon: EYE, run: () => setAgentHidden(a, false) }]
     : inFold
@@ -3936,8 +3948,8 @@ const codexRowed = (a, f) => a.id === "codex" && !gatewayMode && (f.label === SU
 const CODEX_SUB_LEAD = "lead";
 const LEADS_PICK = "Lead's pick";
 const SAME_AS_LEAD = "Same as the lead";
-const SUB_MODEL_UNSET = "The lead picks each subagent's model, one of Codex's own too; one it names none for runs on the lead's model ({model}). A resumed subagent stays on the model it started on. Same as the lead, or a model picked here, holds every subagent to it, even when the lead names another.";
-const SUB_MODEL_UNSET_PLAIN = "The lead picks each subagent's model, one of Codex's own too; one it names none for runs on the lead's model. A resumed subagent stays on the model it started on. Same as the lead, or a model picked here, holds every subagent to it, even when the lead names another.";
+const SUB_MODEL_UNSET = "The lead picks each subagent's model, or the lead's own ({model}) if it names none. Pick one here to use it for every subagent.";
+const SUB_MODEL_UNSET_PLAIN = "The lead picks each subagent's model, or the lead's own if it names none. Pick one here to use it for every subagent.";
 const SUB_MODEL_LEAD = "Every subagent runs on the lead's model ({model}), even when the lead names another. Lead's pick lets the lead choose again.";
 const SUB_MODEL_LEAD_PLAIN = "Every subagent runs on the lead's model, even when the lead names another. Lead's pick lets the lead choose again.";
 const SUB_MODEL_SET = "Every subagent runs on this model, even when the lead names another. Lead's pick lets the lead choose again.";
@@ -4346,7 +4358,9 @@ for (const k of "pointerdown keydown input wheel".split(" ")) addEventListener(k
 }, true);
 
 // renderUpdateBadge shows the header's Update pill once a newer magpie is
-// downloaded or out; Settings or its × keeps it away.
+// downloaded or out and has been for a while (u.quiet: releases come every
+// few minutes, so a pill lit for each is never out; an urgent one lights it
+// at once); Settings or its × keeps it away.
 
 async function renderUpdateBadge() {
   const b = $("#update"), label = b.querySelector("span");
@@ -4360,7 +4374,7 @@ async function renderUpdateBadge() {
     b.classList.remove("busy");
   }
   // a package manager's magpie: Settings names its command, no pill
-  const on = pulling || (!!u && !updatePillOff(u.latest) && (u.state === "ready" || (u.state === "available" && !u.packaged) || u.state === "found" || (u.state === "error" && u.retry)));
+  const on = pulling || (!!u && !u.quiet && !updatePillOff(u.latest) && (u.state === "ready" || (u.state === "available" && !u.packaged) || u.state === "found" || (u.state === "error" && u.retry)));
   if (b.hidden !== !on) b.hidden = !on;
   if (!on) return;
   const hide = $("#updateHide");
@@ -5441,11 +5455,9 @@ function boltIcon(ultra, size) {
 // setFast marks the model fast or not in every list it is in for the agent:
 // the open picker's, and the agent's fields (its tiers pick the same model)
 function setFast(o, fast, ultra = false) {
-  const same = (x) => x.ref === o.ref && x.fastFor === o.fastFor;
-  for (const a of state.agents) for (const f of a.fields) for (const x of f.options || []) if (same(x)) { x.fast = fast; x.ultra = ultra; }
-  for (const x of [...(pick?.options || []), ...(pick?.items || [])]) if (same(x)) { x.fast = fast; x.ultra = ultra; }
-  o.fast = fast;
-  o.ultra = ultra;
+  const mark = (x) => { if (x.ref === o.ref && x.fastFor === o.fastFor) { x.fast = fast; x.ultra = ultra; } };
+  for (const a of state.agents) for (const f of a.fields) (f.options || []).forEach(mark);
+  [...(pick?.options || []), ...(pick?.items || []), o].forEach(mark);
   // the field's button says it of the model it has
   const anchor = pick?.anchor;
   if (anchor?.classList.contains("field") && optionFor(pick.field, pick.field.value)?.ref === o.ref) {
@@ -6233,6 +6245,7 @@ function openProviderMenu(anchor, p, at) {
     { name: "Move to bottom", icon: MOVE_BOTTOM, key: ALT + SHIFT + "↓", off: i === on.length - 1, run: () => arrangeProvider(p.id, on.length - 1) },
     { name: "Use first", icon: p.useFirst ? CHECK : "", sep: !0, run: () => accountAction("provider/usefirst", { id: p.id, useFirst: !p.useFirst }, t(p.useFirst ? "{name} takes its turn with the others" : "{name} is used first", { name: p.name })) },
     { name: "Never a fallback", icon: p.noStandIn ? CHECK : "", run: () => accountAction("provider/standin", { id: p.id, noStandIn: !p.noStandIn }, t(p.noStandIn ? "{name} can be a fallback again" : "{name} is never a fallback for another model", { name: p.name })) },
+    { name: "Only on this device", icon: p.thisDevice ? CHECK : "", sep: !0, run: () => accountAction("provider/thisdevice", { id: p.id, thisDevice: !p.thisDevice }) },
     ...magpie.actions?.("provider", { provider: { id: p.id, name: p.name } }) || [],
   ], at);
 }
@@ -7134,11 +7147,15 @@ function renderAdd() {
   c.dataset.pick = "custom";
   c.title = t("any OpenAI or Anthropic compatible URL");
   c.onclick = () => { editing = { custom: true }; draft = null; renderProviders(); };
-  head.append(q, c);
   const imp = el("button", "text", t("Import…"));
   imp.title = t("Bring over providers set up in other apps");
   imp.onclick = openImportApps;
-  head.append(imp);
+  // the sheet's tools, one group: scrolled out of sight beside the sidebar
+  // they show in the title bar (addToolsFloat), the same nodes, so the
+  // search keeps its words and the focus
+  const tools = el("span", "add-tools");
+  tools.append(q, c, imp);
+  head.append(tools);
   if (providers.providers.length) {
     const x = el("button", "text", t("Close"));
     x.onclick = closeAddSheet;
@@ -7175,7 +7192,17 @@ function renderAdd() {
     if (partners.length) {
       any = true;
       const grid = section("Partners", "magpie's sponsors");
-      shinePartners(grid.previousElementSibling, grid);
+      const k = grid.previousElementSibling;
+      // the heading's row ends in the way to join them, the address
+      // usemagpie.ai's own "Become a sponsor" writes to
+      const head = el("div", "kind-row");
+      const join = el("button", "sponsor-me");
+      join.type = "button";
+      join.append(svg(HEART, 12, 1.4), el("span", "", t("Become a sponsor")));
+      join.onclick = () => (web ? (location.href = SPONSOR_MAIL) : api("open", { url: SPONSOR_MAIL }));
+      k.replaceWith(head);
+      head.append(k, join);
+      shinePartners(k, grid);
       // a new one's tile keeps a dot until opened (partnerTile)
       newPartnerTiles ??= new Set();
       for (const p of partners) if (p.new && !p.added) newPartnerTiles.add(p.id);
@@ -7253,6 +7280,8 @@ function renderAdd() {
     }
   };
   drawTiles();
+  // its tools shown in the title bar once out of sight (addfloat.js)
+  if (self.addToolsFloat) addToolsFloat(true); else import("./addfloat.js").then(() => addToolsFloat(true), () => {});
   if (hadFocus && $("#modal").hidden) {
     (focusPick && sheet.querySelector(`[data-pick="${CSS.escape(focusPick)}"]`) || q).focus(NO_SCROLL);
     if (selection) q.setSelectionRange(...selection);
@@ -7734,7 +7763,6 @@ function proxyPicker() {
   });
   seg.classList.add("proxy-mode");
   place(draft.proxyMode || "");
-  // its room kept while not asked for: a pick never moves the dialog
   const row = el("div", "proxy-row");
   row.append(seg, addr, saved);
   box.append(row, login, hint);
@@ -9207,10 +9235,7 @@ const apiLabel = (proto) => (PROTOS.find(([k]) => k === proto) || [])[1] || prot
 // vertexBase: a Vertex AI provider's address (provider.vertexBase), "" till its project is one
 // vertexRoot: the base URL typed as a root, as provider.vertexRootOf keeps it
 function vertexRoot(u) {
-  u = (u || "").trim().replace(/\/+$/, "");
-  if (!u) return "";
-  if (!u.includes("://")) u = "https://" + u;
-  return u.replace(/\/v1(?:beta1)?$/, "");
+  return withScheme(u, "https").replace(/\/+$/, "").replace(/\/v1(?:beta1)?$/, "");
 }
 function vertexBase(v, keyed) {
   const project = (v?.project || "").trim().toLowerCase(), loc = (v?.location || "").trim().toLowerCase() || "global";
@@ -9514,6 +9539,12 @@ function drawEditor(p, presetID) {
   adv.append(el("summary", "", t("Advanced")));
   const advIn = el("div", "inner");
   adv.append(advIn);
+  // Routing, Rate limited and Stays: changed by few, so under Advanced, at
+  // its top, and opening it when one isn't its default (the owner, 11-12)
+  const routingAdvanced = (p) => {
+    if (!(advanced && advanced.of === editing) && ((draft.routing ?? p.routing) || (draft.affinity ?? p.affinity) || (draft.sink ?? p.sink))) adv.open = true;
+    return renderRouting(p);
+  };
 
   const unmaskRow = (hint, urls) => {
     const [ltk, lcb] = tick(t("Send requests unmasked"), !!draft.unredacted);
@@ -9537,7 +9568,7 @@ function drawEditor(p, presetID) {
       const via = a.wsl ? t("Runs through WSL · {distro}: Claude Code there signs in and answers; Windows has none of its own.", { distro: a.wsl }) + " " : "", alone = /^c(laude|odex)$/.test(a.agent) ? " " + t("Just want accounts switched? {agent} needn't be connected to magpie.", { agent: a.agentName }) : "";
       ed.append(...field(t("Accounts"), renderAccounts(a, p), via + (p.routing ? t("Tick every account to use; Routing says how requests spread over them.") + (subOf(a.agent).own ? " " + t("Only requests through magpie use them; {agent} itself stays signed in as it is.", { agent: a.agentName || p.name }) : "") : subOf(a.agent).single ? t("{agent} keeps one account; the gateway runs it for every request. Signing in to another replaces it.", { agent: a.agentName }) : subOf(a.agent).own && (a.logins || []).some((l) => l.own) ? t("The gateway uses the first. Tick more and it moves on to the next when the one before it is out of quota. {agent} itself stays signed in as it is.", { agent: a.agentName && a.agentName !== a.agent ? a.agentName : p.name }) : subOf(a.agent).own || subOf(a.agent).plugin ? t("The gateway uses the first. Tick more and it moves on to the next when the one before it is out of quota.") : t("{agent} signs in to the first. Tick more and magpie moves on to the next when the one before it is out of quota. Sessions already running keep theirs until restarted.", { agent: a.agentName })) + alone));
       ed.append(...pluginOptionsField(subOf(a.agent), true));
-      if ((a.logins || []).filter((l) => l.active || l.on).length > 1) ed.append(...renderRouting(p));
+      if ((a.logins || []).filter((l) => l.active || l.on).length > 1) advIn.append(...routingAdvanced(p));
       if (p.move) ed.append(...renderMove(p));
     } else {
       const acct = el("div", "acct");
@@ -9758,7 +9789,7 @@ function drawEditor(p, presetID) {
   };
   if (addressField) ed.append(...addressField);
   if (p?.keyList?.length) ed.append(...field(t("Accounts"), renderKeyAccounts(p), p.routing ? t("Tick every key to use; Routing says how requests spread over them.") : t("Tick every key to use. Requests go to the first; when it runs out of quota or hits a rate limit, the next ticked key takes over.")));
-  if (p?.keyList?.filter((k) => k.on).length > 1) ed.append(...renderRouting(p));
+  if (p?.keyList?.filter((k) => k.on).length > 1) advIn.append(...routingAdvanced(p));
   else if (vertex) ed.append(...vertexFields());
   // keys are replaced in Accounts; the box is for no key yet (Kylin_Cloud on X)
   else if (!p?.keyList?.length) ed.append(...field(t("API key"), keyWrap, isNew ? t("Kept in ~/.config/magpie/providers.json, readable by you alone. Nothing is read from your shell.") : ""));
@@ -11346,8 +11377,8 @@ function renderModels(p) {
       closeAgentMenu();
       closeProtoMenu();
       if (again) return;
-      const acts = [noTest ? { name: "Test this model", icon: "M5.5 3.75v8.5L12.25 8z", off: true, why: noTest, run() {} }
-        : { name: "Test this model", icon: "M5.5 3.75v8.5L12.25 8z", run: () => testOne(id) }];
+      const acts = [noTest ? { name: "Test this model", icon: PLAY_ICON, off: true, why: noTest, run() {} }
+        : { name: "Test this model", icon: PLAY_ICON, run: () => testOne(id) }];
       // asked as Codex or Claude Code asks, for a relay that serves only
       // them (耍赖天都爱 on Discord); Claude Code's once it has come
       // through magpie, its headers being the ones it came with
@@ -11355,8 +11386,9 @@ function renderModels(p) {
         for (const [as, agent, name] of [["codex", "Codex", "Test as Codex"], ["claude-code", "Claude Code", "Test as Claude Code"]]) {
           if (!(as in (p.testsAs || {}))) continue;
           const why = p.testsAs[as] ? t(p.testsAs[as]) : "";
-          acts.push({ name, icon: "M5.5 3.75v8.5L12.25 8z", off: !!why, why, tip: t("Asked as {agent} asks, for a relay that serves only {agent}", { agent }), run: () => testOne(id, as) });
+          acts.push({ name, icon: PLAY_ICON, off: !!why, why, tip: t("Asked as {agent} asks, for a relay that serves only {agent}", { agent }), run: () => testOne(id, as) });
         }
+        if (p.testPicks) acts.push({ name: "Test on account…", icon: PLAY_ICON, tip: t("Pick the account or key the test is sent to"), run: () => openProtoMenu(c, p.testPicks.map((k) => ({ v: k.id, name: k.name, literalName: true })), null, (v) => testOne(id, "", v), "Account to test", "model-account-menu") });
       }
       // its id as agents and the gateway name it, to paste where a model is
       // typed (ARNO, Discord: 右击菜单除了测试模型外，还能添加拷贝模型id的功能)
@@ -12069,17 +12101,17 @@ function renderModels(p) {
     draw();
   });
   // one model, the others' results kept
-  const testOne = async (id, as) => {
+  // on one of its accounts or keys, where it has several: the result says which (tmr11235 on X)
+  const testOne = async (id, as, account) => {
     const got = modelTests[p.id] = modelTests[p.id] || {};
     got[id] = null;
     draw();
     try {
-      const r = await provTest(p.id, { ...asTyped(), test: [id], ...(as ? { as } : {}) });
+      const r = await provTest(p.id, { ...asTyped(), test: [id], as, account });
       const x = got[id] = r.results[0];
-      const via = x.protocol ? apiLabel(x.protocol) : "";
-      const error = (x.status ? x.status + " · " : "") + x.error;
-      status(x.ok ? (via ? t("{model} answered via {api} in {took}", { model: id, api: via, took: ledTook(x.ms) }) : t("{model} answered in {took}", { model: id, took: ledTook(x.ms) }))
-        : via ? t("{model} didn't answer via {api}: {error}", { model: id, api: via, error }) : t("{model} didn't answer: {error}", { model: id, error }), x.ok ? "ok" : "err");
+      const api = x.protocol ? apiLabel(x.protocol) : "", took = ledTook(x.ms), model = id, error = (x.status ? x.status + " · " : "") + x.error;
+      status((x.ok ? (api ? t("{model} answered via {api} in {took}", { model, api, took }) : t("{model} answered in {took}", { model, took }))
+        : api ? t("{model} didn't answer via {api}: {error}", { model, api, error }) : t("{model} didn't answer: {error}", { model, error })) + (p.testPicks && x.account ? " · " + x.account : ""), x.ok ? "ok" : "err");
     } catch (e) { delete got[id]; testErr(e); }
     draw();
   };
@@ -13120,10 +13152,8 @@ function renderSigning(sub) {
     u.title = t("Open it in another browser or profile: copy it there");
     const cp = copyBtn(signing.url, t("Sign-in link"));
     cp.title = t("Copy link");
-    link.append(u, cp);
-    tt.append(link);
     const acts = el("span", "acts");
-    const open = el("button", "link", signing.linkOnly && !signing.opened ? t("Open") : t("Open again"));
+    const open = el("button", "link", signing.linkOnly && !signing.opened ? t("Open in browser") : t("Open again"));
     // one that fails says why, where "magpie opened the sign-in page" was (#2043)
     // a poll may have put a fresh copy of the same sign-in in its place
     const flow = signing;
@@ -13133,7 +13163,10 @@ function renderSigning(sub) {
     }, (e) => {
       if (same()) { signing = { ...signing, openError: e.message }; renderProviders(); }
     });
-    acts.append(open);
+    // Copy link, then Open to its right: a sign-in kept to its link is
+    // copied into a private window or another profile, or opened here
+    link.append(u, cp, open);
+    tt.append(link);
     const ghe = copilotHostSwitch(sub);
     if (ghe) acts.append(ghe);
     acts.append(signInProxyLink(sub));
@@ -13661,8 +13694,9 @@ function renderAccounts(a, p) {
       imp.title = importSay(a.agent).from;
       list.append(imp);
     }
-    if (sub.importable && (a.agent === "claude" || a.agent === "codex")) list.append(addRow(t("Export accounts to a file…"), () => startExport(a.agent)));
     if (a.agent === "claude") list.append(addRow(t("Add an account by setup-token…"), startClaudeToken));
+    // last of them, and no plus: it adds nothing (the owner, 11-12)
+    if (sub.importable && (a.agent === "claude" || a.agent === "codex")) list.append(addRow(t("Export accounts to a file…"), () => startExport(a.agent), EXPORT_GLYPH));
   }
   arrangeAccountRows(list, p);
   return list;
@@ -14191,9 +14225,11 @@ function accountNameButton(p, user) {
   return wrap;
 }
 // an account or key list's last row, adding one
-function addRow(say, go) {
+// an arrow up out of a tray: what leaves magpie, CLI_UP the other way
+const EXPORT_GLYPH = "M8 10.5v-8M4.5 6 8 2.5 11.5 6M3.5 13.5h9";
+function addRow(say, go, glyph = PLUS) {
   const b = el("button", "acc add"), ic = el("span", "dot");
-  ic.append(svg(PLUS, 10, 1.8));
+  ic.append(svg(glyph, 10, 1.8));
   b.append(ic, el("span", "n", say));
   b.onclick = go;
   return b;
@@ -14604,6 +14640,10 @@ function quotaAllJS() {
   return (quotaAllJS.p ||= import("./quotaall.js").then(() => renderQuotas(), () => {}));
 }
 const quotaAllOf = (...a) => window.quotaAll ? quotaAll(...a) : void quotaAllJS();
+// quotatable.js: the allowances as a table, loaded once chosen. Cards or
+// table is the reader's own pick on this computer, cards until then.
+let quotaView = kept("quotaView", "cards");
+const quotaTableJS = () => (quotaTableJS.p ||= import("./quotatable.js").then(() => renderQuotas(), () => {}));
 // tiersText: a family's windows, one a line, for its tooltip.
 function tiersText(w) {
   return (w.tiers || []).map((x) => t(x.name) + " " + quotaText(x)
@@ -15419,7 +15459,7 @@ function workspaceOf(tmpl, url) {
 }
 
 function respellURL(u, api) {
-  u = u.trim().replace(/\/+$/, "");
+  u = withScheme(u).replace(/\/+$/, "");
   if (api === "anthropic") return u.replace(/\/v1$/, "");
   if (api === "decide") u = u.replace(/\/systemone$/, "");
   if (api === "gemini") return /^https?:\/\/[^/]+\/v1$/.test(u) ? u + "beta" : /^https?:\/\/[^/]+$/.test(u) ? u + "/v1beta" : u;
@@ -15605,7 +15645,15 @@ function slug(s) { return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^
 // groupSlug: a routing group's id as provider.GroupSlug derives it, the
 // dots kept (gpt-6.1-sol, #968).
 function groupSlug(s) { return s.toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/\.{2,}/g, ".").replace(/^[-.]+|[-.]+$/g, ""); }
-function hostOf(u) { try { return new URL(u.includes("://") ? u : "https://" + u).host; } catch { return ""; } }
+// withScheme: a typed address with its scheme certain, as provider.WithScheme
+// has it: http or https already there stays, in any letter case, and is never
+// given a second; one saved twice ("http://http://host") is one again; none
+// gets def (none, when def is empty).
+function withScheme(s, def) {
+  s = (s || "").trim();
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s.replace(/^(?:https?:\/\/)*(https?)(?=:\/\/)/i, (_, x) => x.toLowerCase()) : s && def ? def + "://" + s : s;
+}
+function hostOf(u) { try { return new URL(withScheme(u, "https")).host; } catch { return ""; } }
 
 // localAddress is a local server's address as typed, as provider.AtAddress
 // takes it: its origin, http when no scheme is given, any path dropped; ""
@@ -15615,7 +15663,7 @@ function localAddress(s) {
   if (!s) return "";
   if (/\s/.test(s)) return null;
   try {
-    const u = new URL(s.includes("://") ? s : "http://" + s);
+    const u = new URL(withScheme(s, "http"));
     if ((u.protocol !== "http:" && u.protocol !== "https:") || !u.hostname) return null;
     return u.protocol + "//" + u.host;
   } catch { return null; }
@@ -15983,6 +16031,16 @@ function renderQuotas(lazy) {
     }
     slide(pick, "quotaMode");
   }
+  const views = $("#quotaView");
+  views.hidden = !quotas?.length;
+  if (!views.hidden) {
+    views.replaceChildren(...[["cards", "Cards"], ["table", "Table"]].map(([v, name]) => {
+      const b = el("button", "opt" + (v === quotaView ? " on" : ""), t(name));
+      b.onclick = () => { if (v !== quotaView) { quotaView = v; keep("quotaView", v); renderQuotas(); } };
+      return b;
+    }));
+    slide(views, "quotaView");
+  }
   renderQuotaTrend();
   renderQuotaHid();
   if (!quotas) {
@@ -16000,6 +16058,19 @@ function renderQuotas(lazy) {
   // less the ones hidden from it (overviewCards, the Usage page's)
   const shown = overviewCards(quotas);
   subscriptions.hidden = !shown.length;
+  // the table: a row an account, in the cards' order
+  const rows = quotaView === "table" && shown.length && (window.quotaTable ? quotaTable(byUsageOrder(keyCards(shown))) : void quotaTableJS());
+  subscriptions.classList.toggle("tabled", !!rows);
+  if (rows) {
+    usagePack.disconnect();
+    usagePacked = null;
+    subscriptions.classList.remove("packed");
+    subscriptions.style.gridTemplateColumns = "";
+    subscriptions.append(rows);
+    restoreFlash();
+    restoreRefresh();
+    return;
+  }
   // an agent with several accounts is one card, a section per account
   const groups = [];
   keepIcons(...was);
@@ -16470,7 +16541,7 @@ function creditDays(daily, named) {
   // picked range's own (#1492), its last 120 at most
   const range = periodDays(period);
   const last = range ? dayOfKey(range.to) : today;
-  let n = range ? Math.round((last - dayOfKey(range.from)) / 864e5) + 1 : { today: 1, "last:24h": 2, "7d": 7, "30d": 30 }[period];
+  let n = range ? Math.round((last - dayOfKey(range.from)) / 864e5) + 1 : { today: 1, "last:24h": 2, "7d": 7, "30d": 30 }[period] || (/^last:(\d+)h$/.test(period) ? Math.ceil(+period.slice(5, -1) / 24) + 1 : 0);
   if (!n) n = Math.round((today - new Date(since + "T12:00:00")) / 864e5) + 1;
   n = Math.min(120, Math.max(1, n));
   const list = [];
@@ -16773,13 +16844,17 @@ function drawQuotaPlot(g, lines, x0, x1, w, h, now, thin) {
     const s = i % 7, color = `var(--c${s + 1})`;
     const c = l.cycle || quotaCycle(l, now);
     // a window far shorter than the span (a 5-hour one over a week) is
-    // drawn faint, without its even burn, an all but upright dash
+    // drawn without its even burn, an all but upright dash
     const short = !thin && c.reset && c.reset - c.start < (x1 - x0) / 12;
     if (c.reset && c.start < c.reset && !short) {
       const e = sv("line", { x1: X(c.start), y1: 0, x2: X(c.reset), y2: h, class: "qc-even", "data-series": s }, { stroke: color });
       g.append(e);
     }
-    const d = quotaPaths(l.points, x0, x1, w, h);
+    // and only its current cycle: the cycles before it, each a drop of its
+    // own, crawled across the week like a comb of bugs (@xxxxxthhh on X)
+    let pts = l.points;
+    if (short) { const now1 = pts.filter((p) => p.at >= c.start); pts = now1.length ? now1 : pts.slice(-1); }
+    const d = quotaPaths(pts, x0, x1, w, h);
     if (d) g.append(sv("path", { d, class: "qc-line" + (short ? " qc-short" : ""), "data-name": l.name, "data-series": s }, { stroke: color }));
   });
   // a spark ends at now already, and in 16px the dotted now line read as a
@@ -18699,7 +18774,8 @@ function quotaWindows(sub) {
       if (!r) quota.append(r = el("div", "quota-reset"));
       const line = holdsLine(w.holds);
       // a past cycle's whole is reckoned at its own last reading (#2009)
-      if (sub.history) line.title = t("Estimated from the window that began {start}, read {at}", { start: quotaCycleDate(Date.parse(w.holds.since)), at: quotaCycleDate(w.recordedAt) }) + "\n" + line.title;
+      // the last window's, kept until this one has data to tell its own
+      if (sub.history || w.holds.prevAt) line.title = t("Estimated from the window that began {start}, read {at}", { start: quotaCycleDate(w.holds.since), at: quotaCycleDate(w.recordedAt || w.holds.prevAt) }) + "\n" + line.title;
       r.append(line);
     } else if (w.holdsWhy && holdsWhy[w.holdsWhy]) {
       // and where it can't be told, so, and why in its tooltip (#2045)
@@ -20156,6 +20232,16 @@ function renderSettings() {
   repo.title = "github.com/yetone/magpie";
   repo.onclick = () => api("open", { url: "https://github.com/yetone/magpie" }).catch(() => {});
   row(t("Community"), t("questions, ideas and feedback, on Discord or GitHub"), "", join, repo);
+  // the facts that help a fix, copied (never put in the link), then the
+  // feedback post on X, to reply to there (River_WLan on X)
+  const report = el("button", "text", t("Open"));
+  report.onclick = async () => {
+    const f = await fetch("/api/feedback?surface=" + (web ? "browser" : "app")).then((r) => r.ok ? r.json() : null).catch(() => null);
+    if (!f) return status(t("Couldn't read the details to copy"), "err");
+    await copy(f.text, "", report, t("Details copied. Paste them in your reply"));
+    api("open", { url: f.url }).catch(statusErr);
+  };
+  row(t("Report a problem"), "", "", report);
   // magpie uninstall, from the app (Jevik_AI on X deleted magpie's folders
   // by hand and Codex kept pointing at a gateway that was gone). Never in a
   // browser: magpie web would be taken off the computer serving the page.
@@ -20549,6 +20635,7 @@ function renderTrayUsage(s, keep) {
   $("#unitsRow").hidden = locale !== "zh" && locale !== "zh-TW";
   $("#unitsSegs").replaceChildren(segs([[false, t("K / M / B")], [true, t("万 / 亿")]], !!s.chineseUnits,
     (v) => savePrefs({ ...keep, chineseUnits: v })));
+  $("#dayStartSegs").replaceChildren(segs([...Array(7).keys()].map((h) => [h, h + ":00"]), s.dayStart || 0, (v) => savePrefs({ ...keep, dayStart: v })));
   renderAlerts(s, keep);
   $("#plainNamesSegs").replaceChildren(suffixSegs());
   sayNoNamesInSettings();
@@ -20717,6 +20804,7 @@ function renderProxy(s, keep) {
   });
   renderProxyCheck(s, row);
   renderPluginProxy(s, keep);
+  import("./updatesource.js").then(() => updateSourcePick(s, keep), statusErr);
 }
 const proxyState = { custom: false };
 // plugin downloads' proxy (JonahFu on X); plugins' vendor requests follow the one above
@@ -21117,11 +21205,11 @@ function renderAlerts(s, keep) {
 
 // AGENT_PREFS: an agent's own settings rows, by its id (openAgentPrefs)
 const AGENT_PREFS = {
-  codex: ["codexAgentsV1Row", "codexSubagentModelRow", "codexServiceTierRow", "fullContextRow", "codexAsyncRow", "codexTitlesRow", "codexDescriptionsRow", "codexPredictionsRow", "codexAutoReviewRow", "codexMemoriesRow"],
+  codex: ["codexAgentsV1Row", "codexOpenRow", "codexSubagentModelRow", "codexServiceTierRow", "codexClientRow", "fullContextRow", "codexAsyncRow", "codexTitlesRow", "codexDescriptionsRow", "codexPredictionsRow", "codexAutoReviewRow", "codexMemoriesRow"],
   claude: ["fullContextRow"],
   grok: ["fullContextRow"],
 };
-const agentPrefsOf = (a) => gatewayMode ? null : AGENT_PREFS[kindOf(a)] || (a.telemetry ? [] : null);
+const agentPrefsOf = (a) => gatewayMode ? null : AGENT_PREFS[kindOf(a)] || (a.telemetry || a.fields.length ? [] : null);
 
 // telemetryRow: the agent's own telemetry off in its config (OipsAnthony on X)
 function telemetryRow(a) {
@@ -21153,7 +21241,7 @@ function telemetryRow(a) {
 const PREFS_GLYPH = "M2.75 4.75h10.5M2.75 11.25h10.5M5.75 3.25v3M10.25 9.75v3";
 let agentPrefRowEls = null;
 // an agent's own Long conversations, under every agent's (agentcompact.js)
-const agentCompactIn = (list, ids, a) => ids.includes("fullContextRow") && (window.agentCompactFill ? agentCompactFill(list, a) : import("./agentcompact.js").then(() => agentCompactFill(list, a), () => {}));
+const agentCompactIn = (list, ids, a) => window.agentCompactFill ? agentCompactFill(list, a, ids) : import("./agentcompact.js").then(() => agentCompactFill(list, a, ids), () => {});
 // homeAgentPrefRows: the rows a sheet took back in the page
 function homeAgentPrefRows() {
   const box = $("#agentPrefRows");
@@ -21201,6 +21289,7 @@ function renderAgentPrefs() {
   homeAgentPrefRows();
   // what each row does, in its tooltip (#2120)
   for (const [row, en] of [
+    ["#codexClientRow", "Which Codex requests to your ChatGPT accounts say they come from: the CLI or the desktop app"],
     ["#codexServiceTierRow", "Every request Codex sends goes at this tier, whatever /fast is set to in Codex; Ultrafast goes as Fast where the plan has none"],
     ["#codexTitlesRow", "Names each thread in a hidden request of its own; same as the session, it goes on the session’s model, as Codex sends it when that is one of Codex’s own"],
     ["#codexDescriptionsRow", "Writes each thread’s short description in a hidden request of its own; same as the session, it goes on the session’s model, as Codex sends it when that is one of Codex’s own"],
@@ -21258,6 +21347,8 @@ function renderAgentPrefs() {
   if (held.length) box.append(el("div", "hint codex-async-held", codexHeld(held)));
   $("#codexAsyncSegs").replaceChildren(box);
   renderCodexServiceTier(s);
+  renderCodexClient(s);
+  renderCodexOpen(s);
   renderCodexTitles(s);
   renderCodexDescriptions(s);
   renderCodexPredictions(s);
@@ -21343,24 +21434,31 @@ const CODEX_TIERS = [
   { v: "priority", name: "Fast", note: "priority" },
   { v: "ultrafast", name: "Ultrafast", note: "ultrafast" },
 ];
-function renderCodexServiceTier(s) {
-  const v = s.codexServiceTier || "";
-  const cur = CODEX_TIERS.find((o) => o.v === v) || CODEX_TIERS[0];
-  const b = el("button", "rt-cond on");
+function renderCodexServiceTier(s) { codexMenuPick(CODEX_TIERS, s.codexServiceTier, "Codex service tier", "codexServiceTier", "tier"); }
+
+// a Codex row's button: the choice made, and the app's menu to change it,
+// posted on its own to settings/<path> as {<field>: value}
+function codexMenuPick(opts, v, label, key, field) {
+  const cur = opts.find((o) => o.v === (v || "")) || opts[0];
+  const b = el("button", "rt-cond on", t(cur.name));
   b.type = "button";
-  b.setAttribute("aria-label", t("Codex service tier"));
+  b.setAttribute("aria-label", t(label));
   b.setAttribute("aria-haspopup", "menu");
-  b.append(el("span", "", t(cur.name)));
   b.onclick = (e) => {
     e.stopPropagation();
     if (b.classList.contains("open")) return closeProtoMenu();
-    openProtoMenu(b, CODEX_TIERS, cur.v, (tier) => {
-      if (tier === cur.v) return;
-      prefWrite(api("settings/codex-service-tier", { tier }));
-    }, "Codex service tier", "sess-menu");
+    openProtoMenu(b, opts, cur.v, (x) => x !== cur.v && prefWrite(api("settings/" + key.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase()), { [field]: x })), label, "sess-menu");
   };
-  $("#codexServiceTierPick").replaceChildren(b);
+  $("#" + key + "Pick").replaceChildren(b);
 }
+
+// the Codex magpie presents to ChatGPT (ouhthuo on X)
+const CODEX_CLIENTS = [{ v: "", name: "Codex CLI" }, { v: "desktop", name: "Codex Desktop" }];
+function renderCodexClient(s) { codexMenuPick(CODEX_CLIENTS, s.codexClient, "Codex client", "codexClient", "client"); }
+
+// what Codex's Open button opens (Yink88564391 on X)
+const CODEX_OPENS = [{ v: "", name: "Automatic" }, { v: "app", name: "Codex app" }, { v: "terminal", name: "Terminal" }];
+function renderCodexOpen(s) { codexMenuPick(CODEX_OPENS, s.codexOpen, "Open Codex with", "codexOpen", "open"); }
 
 // Codex's descriptions: as sent, off, or a model
 function renderCodexDescriptions(s) { codexSidePick(s, "codexDescriptions", "Codex thread descriptions", "no description, nothing sent", "codex-descriptions"); }
@@ -21481,17 +21579,7 @@ function renderImages(s, keep) {
   r.append(who, val);
   box.append(r);
   renderImageGen(s, keep, box);
-  // both as the gateway's MCP servers, for an agent with no Library (JonahFu on X)
-  const mcpRow = (id, path, name, sub) => {
-    const url = mcpAddress(s, path), r = el("div", "row pref"), who = el("div", "who"), val = el("div", "val");
-    who.append(el("div", "name", name), el("div", "sub", sub));
-    val.append(el("code", "", url), copyBtn(url, t("Address")));
-    r.append(who, val);
-    r.id = id;
-    box.append(r);
-  };
-  mcpRow("visionMcpRow", "/mcp/magpie/vision", t("Image recognition MCP server"), t("Agents can add image recognition as an MCP server (Streamable HTTP) with one analyze_image tool, which reads an image with the Image recognition model from a file path, a URL or a data URL. From another computer, send a gateway key as Authorization: Bearer <key> and the image as a URL or data URL."));
-  mcpRow("imageMcpRow", "/mcp/magpie/image", t("Image generation MCP server"), t("Agents can add image generation as an MCP server (Streamable HTTP) with generate_image, generate_video and generation_result tools, which draw with the Image generation model. An image comes back in the answer and at a URL kept for an hour, a video at a URL; nothing is saved in the agent's project. From another computer, send a gateway key as Authorization: Bearer <key>."));
+  mcpRows(s, box);
 }
 
 // libWay: a row's way to give agents magpie's own server name in the
@@ -21608,7 +21696,7 @@ function waitRow(id, name, sub, ns, cur, unit, pick) {
 // mcpAddress: where one of the gateway's own MCP servers is, at path. A
 // page other machines open (magpie web) shows MAGPIE_PUBLIC_URL's (#1551).
 function mcpAddress(s, path) {
-  return ((web && s.publicURL) || s.gateway || providers?.gateway?.url || `http://127.0.0.1:${s.port || 3425}`).replace(/\/+$/, "") + path;
+  return (self.mcpBase?.(s) || (web && s.publicURL) || s.gateway || providers?.gateway?.url || `http://127.0.0.1:${s.port || 3425}`).replace(/\/+$/, "") + path;
 }
 
 // sideEffortChip: beside a model magpie asks on its own (Image
@@ -22693,7 +22781,7 @@ function dockChoice(s) {
 
 // prefsKeep is what the settings page sends of s, all of it each time.
 function prefsKeep(s) {
-  return { theme: s.theme, colorblind: !!s.colorblind, reduceMotion: !!s.reduceMotion, noBird: !!s.noBird, lang: s.lang, tray: s.tray, dock: !!s.dock, dockWindow: !!s.dockWindow, dockNever: !!s.dockNever, lightweight: s.lightweight, keepAwake: !!s.keepAwake, keepAwakeDisplay: !!s.keepAwakeDisplay, noWSLAgents: !!s.noWSLAgents, quitNoAsk: !!s.quitNoAsk, restoreOnQuit: !!s.restoreOnQuit, proxy: s.proxy || "", pluginProxy: s.pluginProxy || "", updateProxy: s.updateProxy || "",
+  return { theme: s.theme, colorblind: !!s.colorblind, reduceMotion: !!s.reduceMotion, noBird: !!s.noBird, lang: s.lang, tray: s.tray, dock: !!s.dock, dockWindow: !!s.dockWindow, dockNever: !!s.dockNever, lightweight: s.lightweight, keepAwake: !!s.keepAwake, keepAwakeDisplay: !!s.keepAwakeDisplay, noWSLAgents: !!s.noWSLAgents, quitNoAsk: !!s.quitNoAsk, restoreOnQuit: !!s.restoreOnQuit, proxy: s.proxy || "", pluginProxy: s.pluginProxy || "", updateProxy: s.updateProxy || "", updateSource: s.updateSource || "",
     sessionTerminal: s.sessionTerminal || "",
     uiFont: s.uiFont || null, codeFont: s.codeFont || null,
     otel: s.otel || {},
@@ -22704,7 +22792,7 @@ function prefsKeep(s) {
     replyModel: s.replyModel || "", noLoopGuard: !!s.noLoopGuard, claudeLeanPrompt: !!s.claudeLeanPrompt, claudePrintMode: !!s.claudePrintMode, refusalRetries: s.refusalRetries ?? null, retryAfterCap: s.retryAfterCap ?? null,
     noUpdatePill: !!s.noUpdatePill, noAutoUpdate: !!s.noAutoUpdate, updateEvery: s.updateEvery || 360, autoRestart: !!s.autoRestart, noAutoDownload: !!s.noAutoDownload, updateChannel: s.updateChannel || "",
     trayUsage: s.trayUsage || "", trayUsageEvery: s.trayUsageEvery || 3, trayNoLogos: !!s.trayNoLogos, trayNoBird: !!s.trayNoBird, trayNoNumber: !!s.trayNoNumber, trayPace: !!s.trayPace, trayNoCost: !!s.trayNoCost, trayWindows: s.trayWindows || {}, vision: s.vision || "", visionEffort: s.visionEffort || "", searcherEffort: s.searcherEffort || "", imageGen: s.imageGen || "", videoGen: s.videoGen || "", imageTimeout: s.imageTimeout || 0, classifyTimeout: s.classifyTimeout || 0, searcher: s.searcher || "", searchFirst: s.searchFirst || "", currency: s.currency || "usd",
-    chineseUnits: !!s.chineseUnits, usageAlert: s.usageAlert || 0, balanceAlert: s.balanceAlert || 0, resetReminder: s.resetReminder || 0,
+    chineseUnits: !!s.chineseUnits, dayStart: s.dayStart || 0, usageAlert: s.usageAlert || 0, balanceAlert: s.balanceAlert || 0, resetReminder: s.resetReminder || 0,
     turnDoneAlert: s.turnDoneAlert || 0, maskAlert: !!s.maskAlert };
 }
 
@@ -23611,6 +23699,7 @@ function layoutNav() {
   sideWidth();
   renderSideToggle();
   fitTop();
+  self.addToolsFloat?.(true);
 }
 // the sidebar's width, the reader's own once dragged (sideDrag), else
 // app.css's; at most ~a third of a narrow window
@@ -24084,7 +24173,7 @@ if (mode === "window") {
         set("--crumb-max", "none");
         return;
       }
-      const head = $(":is(#view-library .lib-head, #view-plugins .pm-head, #view-settings .set-head):not([hidden] *)");
+      const head = $(":is(#view-library .lib-head, #view-plugins .pm-head, #view-settings .set-head, #addSheet .add-tools.afloat):not([hidden] *)");
       const c = crumb.getBoundingClientRect(), gap = parseFloat(getComputedStyle(crumb).columnGap) || 0;
       const wide = kids.map((e) => (e.tagName === "B" ? e.scrollWidth : e.getBoundingClientRect().width) + gap);
       const whole = Math.ceil(wide.reduce((w, x) => w + x, 0) - (kids.length ? gap : 0));
@@ -24116,6 +24205,7 @@ if (mode === "window") {
       set("--tools-l", Math.ceil(c.left + max + 16) + "px");
     });
   };
+  self.sideTools = tools;
   const ro = new ResizeObserver(tools);
   for (const e of [$(".top"), $("#crumb"), $(".actions")]) ro.observe(e);
   addEventListener("resize", tools);

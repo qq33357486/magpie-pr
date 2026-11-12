@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
+	"net/http"
 	"slices"
 	"sort"
 	"strings"
@@ -58,15 +60,9 @@ func (p Provider) available() []catalog.Model {
 	if signedIn {
 		known = p.Account.models()
 	} else {
-		seen := map[string]bool{}
-		for _, id := range p.Catalogs() {
-			for _, m := range catalog.Provider(id) {
-				if !seen[m.ID] {
-					seen[m.ID] = true
-					known = append(known, m)
-				}
-			}
-		}
+		// read only below: every way out of here returns a new list
+		// (Decorate's, or the one without previews) or none of known
+		known = catalogsOf(p.Catalogs())
 	}
 	if live, _, ok := p.live(); ok && (p.Account == nil || !p.Account.magpieList) {
 		if p.Account != nil && p.Account.unusable != nil {
@@ -125,13 +121,47 @@ func (p Provider) available() []catalog.Model {
 			return ms
 		}
 	}
-	var out []catalog.Model
+	n := 0
 	for _, m := range known {
-		if !strings.Contains(m.ID, "-exp") && !strings.Contains(m.ID, "preview") {
+		if released(m) {
+			n++
+		}
+	}
+	if n == 0 {
+		return nil
+	}
+	out := make([]catalog.Model, 0, n)
+	for _, m := range known {
+		if released(m) {
 			out = append(out, m)
 		}
 	}
 	return out
+}
+
+// released is a catalog's model that is not an experiment or a preview.
+func released(m catalog.Model) bool {
+	return !strings.Contains(m.ID, "-exp") && !strings.Contains(m.ID, "preview")
+}
+
+// catalogsOf are the models of these models.dev catalogs, the first's of
+// an id kept. One catalog's is its shared list, with no copy: the caller
+// only reads it.
+func catalogsOf(ids []string) []catalog.Model {
+	if len(ids) == 1 {
+		return catalog.ProviderShared(ids[0])
+	}
+	var known []catalog.Model
+	seen := map[string]bool{}
+	for _, id := range ids {
+		for _, m := range catalog.ProviderShared(id) {
+			if !seen[m.ID] {
+				seen[m.ID] = true
+				known = append(known, m)
+			}
+		}
+	}
+	return known
 }
 
 func (p Provider) firstCatalog() string {
@@ -956,7 +986,7 @@ func (p Provider) fetchOne(ctx context.Context) (fetched, error) {
 			// list is fetched beside it, and it is saved with the models
 			base = protoBase
 			if proto != Anthropic {
-				base = p.fixV1(base, u)
+				base = p.fixV1(ctx, base, u)
 			}
 			// the base as it will be asked next time, /v1 and all, so
 			// this side is found again by the fetch after this one
@@ -994,6 +1024,7 @@ func (p Provider) fetchOne(ctx context.Context) (fetched, error) {
 	if len(asked) > 1 {
 		parts = sidesOf(sides)
 	}
+	out = p.withOllamaWindows(ctx, base, out)
 	return fetched{
 		catalog.WithDrawers(p.planModels(out), catalog.PublicDrawers(ctx, base)),
 		base,
@@ -1363,12 +1394,53 @@ func (p Provider) planMedia(ids func(*Region) []string, draws, films bool, serve
 // version in its path (Ark's …/api/plan/v3, Zhipu's …/api/paas/v4) is
 // the vendor's API as written and is never given a /v1: no list is asked
 // for under one there (catalog.FetchAt), and none is added here.
-func (p Provider) fixV1(base, at string) string {
+func (p Provider) fixV1(ctx context.Context, base, at string) string {
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	if base == "" || at != base+"/v1/models" && at != catalog.RelayOpenAIList(base) || catalog.Versioned(base) {
 		return base
 	}
+	if p.servesAtBase(ctx, base) {
+		// a URL the user typed is kept as typed: a vendor that lists its
+		// models under /v1 but serves chat at the base has no /v1 to add
+		// (JNDliuliuM on X)
+		return base
+	}
 	return p.setV1(base)
+}
+
+// servesAtBase reports whether p's OpenAI URL that is base has its
+// endpoint there: a POST of an empty body to base/chat/completions (or
+// /responses) that is answered with anything but 404 or 405 — a 400 for the
+// missing model, a 401 for the key — names a route that exists. A request
+// that fails to connect says nothing, and is taken as the URL being right.
+func (p Provider) servesAtBase(ctx context.Context, base string) bool {
+	for _, e := range []struct{ at, end string }{{p.Chat, "/chat/completions"}, {p.Responses, "/responses"}} {
+		if strings.TrimRight(strings.TrimSpace(e.at), "/") != base {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+e.end, strings.NewReader("{}"))
+		if err != nil {
+			cancel()
+			return true
+		}
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range AuthHeaders(p, Chat) {
+			req.Header.Set(k, v)
+		}
+		res, err := p.Do(http.DefaultClient, req)
+		if err != nil {
+			cancel()
+			return true
+		}
+		io.Copy(io.Discard, io.LimitReader(res.Body, 1<<16))
+		res.Body.Close()
+		cancel()
+		if res.StatusCode != http.StatusNotFound && res.StatusCode != http.StatusMethodNotAllowed {
+			return true
+		}
+	}
+	return false
 }
 
 // setV1 is base with the /v1 it was given without, set on p's OpenAI
@@ -3144,14 +3216,14 @@ type Entry struct {
 	Plain string `json:"-"`
 	// By is the provider a remote magpie's list names as serving the
 	// model there, the first in a chain of magpies (catalog.Model's)
-	By         string   `json:"-"`
-	Efforts    []string `json:"efforts,omitempty"`
-	Provider   Provider `json:"-"`                // a group's: its first member's
-	Group      string   `json:"group,omitempty"`  // set on a routing group (group.go)
-	Named      bool     `json:"-"`                // a routing group the user made or changed: its name is theirs (Labels)
-	Icons      []string `json:"-"`                // a group's: its providers' icons, one per provider
-	Images     bool     `json:"images,omitempty"` // takes images as input (a group's: a member does)
-	ImageInput *bool    `json:"-"`                // explicit answer, nil when unknown
+	By         string    `json:"-"`
+	Efforts    []string  `json:"efforts,omitempty"`
+	Provider   *Provider `json:"-"`                // a group's: its first member's; shared, read only
+	Group      string    `json:"group,omitempty"`  // set on a routing group (group.go)
+	Named      bool      `json:"-"`                // a routing group the user made or changed: its name is theirs (Labels)
+	Icons      []string  `json:"-"`                // a group's: its providers' icons, one per provider
+	Images     bool      `json:"images,omitempty"` // takes images as input (a group's: a member does)
+	ImageInput *bool     `json:"-"`                // explicit answer, nil when unknown
 	// Inputs and Outputs are what the model's source listed it takes and
 	// gives (catalog.Model's InputModalities, OutputModalities); see
 	// Modalities
@@ -3454,7 +3526,7 @@ func entriesOf(of func(Provider) bool, off func(pid, model string) bool) []Entry
 				continue
 			}
 			if !p.isDecision(m) && !gone[p.ID+"/"+m.ID] {
-				out = append(out, entryFor(p, m, s))
+				out = append(out, sharedEntry(&p, m, s))
 			}
 		}
 	}
@@ -3465,6 +3537,12 @@ func entriesOf(of func(Provider) bool, off func(pid, model string) bool) []Entry
 // window and the reply limit a request on it is routed and metered against,
 // with what the user set taken over the vendor's list and models.dev.
 func entryFor(p Provider, m catalog.Model, s settings.Settings) Entry {
+	return sharedEntry(&p, m, s)
+}
+
+// sharedEntry is entryFor that keeps p itself in the entry, so every model of
+// one provider shares one Provider (1.3KB each) instead of a copy a model.
+func sharedEntry(p *Provider, m catalog.Model, s settings.Settings) Entry {
 	ctx := p.windowIn(m, s)
 	output := p.replyLimit(m, s)
 	images := m.Images || catalog.SeesImages(m.ID)
@@ -3616,16 +3694,16 @@ func Resolve(id string) (Provider, string, bool) {
 		// poll, every 15s)
 		entries := providerEntries()
 		if e, ok := entryIn(groupEntries(entries), id); ok {
-			return e.Provider, e.Model, true
+			return *e.Provider, e.Model, true
 		}
 		if e, ok := entryIn(Catalog(), id); ok {
-			return e.Provider, e.Model, true
+			return *e.Provider, e.Model, true
 		}
 		// a group renamed from it (Former) answers for it, as routing does
 		if gid, ok := GroupIDOf(id); ok {
 			if g, ok := routedGroupOf(sharedGroupsIn(entries), gid); ok && g.ID != gid {
 				if e, ok := entryIn(groupEntries(entries), "group/"+g.ID); ok {
-					return e.Provider, e.Model, true
+					return *e.Provider, e.Model, true
 				}
 			}
 		}
@@ -3639,7 +3717,7 @@ func resolveIn(entries []Entry, id string) (Provider, string, bool) {
 	// one looked past was most of a group's members resolved (membersIn)
 	for i := range entries {
 		if e := &entries[i]; e.ID == id {
-			return e.Provider, e.Model, true
+			return *e.Provider, e.Model, true
 		}
 	}
 	if pid, model, ok := strings.Cut(id, "/"); ok {
@@ -3651,7 +3729,7 @@ func resolveIn(entries []Entry, id string) (Provider, string, bool) {
 	}
 	for i := range entries {
 		if e := &entries[i]; e.Model == id {
-			return e.Provider, e.Model, true // the first that serves it
+			return *e.Provider, e.Model, true // the first that serves it
 		}
 	}
 	// not exposed, but some provider lists it
@@ -3704,12 +3782,18 @@ func IDs() []string {
 // whose list says none, as Cline's) serves models it knows from others, under
 // the vendor's prefix too: cline-free/mimo-v2.6-flash is mimo-v2.6-flash.
 // A window the vendor lists under catalog.LeastWindow (512, H20 on Discord)
-// is no window: models.dev's answers, else none, and the agent's default.
+// is no window: models.dev's answers, else the one the id's name says
+// ("qwen-3.8-27b-128k", catalog.NameWindow), else none, and the agent's
+// default.
 func ListedWindow(m catalog.Model) int {
 	if n := catalog.Window(m.Context); n > 0 {
 		return n
 	}
-	return catalog.ContextOf(m.ID)
+	if n := catalog.ContextOf(m.ID); n > 0 {
+		return n
+	}
+	// last, what the name says ("qwen-3.8-27b-128k")
+	return catalog.NameWindow(m.ID)
 }
 
 // WindowOf is the window one of the provider's models takes, as agents are
