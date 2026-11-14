@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -660,6 +661,7 @@ func loadGen() (map[string]mdProvider, int) {
 				}
 				var m map[string]mdProvider
 				if json.Unmarshal(b, &m) == nil && len(m) > 0 {
+					shareCatalog(m)
 					mdev = m
 					votes, reasons := map[string]int{}, map[string]int{}
 					named := map[string]map[string]int{}
@@ -828,12 +830,23 @@ func Reset() {
 	loaded = false
 	built = nil
 	gen++
+	resets.Add(1)
 	mdev, images, windows, outputs, efforts, thinks, names, listed, canonical, labs, normal = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
 	loadMu.Unlock()
 	if Forget != nil {
 		Forget()
 	}
 }
+
+// resets counts Reset's calls: a catalog read again because it may have
+// changed, not one let go of while idle.
+var resets atomic.Int64
+
+// Resets is how many times the catalog was forgotten for one that may
+// differ (Reset). What was asked of the catalog before may be answered
+// otherwise after, though the file's key (CacheKey) is the same: Sync
+// writes the file first and resets after.
+func Resets() int64 { return resets.Load() }
 
 // Sync downloads the models.dev catalog into CachePath. It serializes with
 // itself so a background refresh and a manual one cannot interleave writes.
@@ -879,15 +892,21 @@ func syncLock(ctx context.Context, onlyIfMissing bool) error {
 		return fmt.Errorf("models.dev: unexpected payload")
 	}
 	// written whole through a rename: a reader never sees it half
-	// written, and a failed write keeps the last good copy
-	if err := writeWhole(CachePath(), b, time.Time{}); err != nil {
+	// written, and a failed write keeps the last good copy. The same
+	// bytes again are only dated now: a Claude account's list asks for a
+	// fetch every 45 minutes (Asked), and each one forgot the parsed
+	// catalog and rewrote every agent's list for nothing changed.
+	changed, err := keepFetched(CachePath(), b)
+	if err != nil {
 		return err
 	}
 	// the lab catalog beside it is best effort: without it the provider
 	// catalog answers alone, and one kept before is kept
-	_ = syncLabs(ctx)
-	Reset()
-	Touched() // names, reasoning levels and context windows may be others
+	labsChanged, _ := syncLabs(ctx)
+	if changed || labsChanged {
+		Reset()
+		Touched() // names, reasoning levels and context windows may be others
+	}
 	return nil
 }
 
@@ -2192,6 +2211,9 @@ func draws(m mdModel) bool {
 // -fast) draw only, on its images API (lileo0668 on Discord).
 func DrawsID(id string) bool {
 	id = strings.ToLower(id)
+	if FilmsID(id) || namesVideo(id) {
+		return false
+	}
 	for _, w := range []string{"image", "imagen", "imagine", "dall-e", "flux", "seedream", "cogview", "stable-diffusion", "sdxl", "wanx", "kolors", "hidream", "banana", "sensenova-u1"} {
 		if strings.Contains(id, w) {
 			return true
@@ -2206,6 +2228,9 @@ func DrawsID(id string) bool {
 // generators (Hy-Image-3.5-preview) draw on its images API too (#4913).
 func ImagesAPI(id string) bool {
 	id = strings.ToLower(id)
+	if FilmsID(id) || namesVideo(id) {
+		return false
+	}
 	for _, w := range []string{"gpt-image", "chatgpt-image", "dall-e", "imagen", "imagine", "qwen-image", "wanx", "wan2", "seedream", "cogview", "flux", "stable-diffusion", "sdxl", "kolors", "hidream", "sensenova-u1", "hy-image", "h3-image"} {
 		if strings.Contains(id, w) {
 			return true
@@ -2225,6 +2250,20 @@ func ImagesAPI(id string) bool {
 // (video_minimax.go), and a model the user says makes videos (#1399).
 func FilmsID(id string) bool {
 	return strings.Contains(strings.ToLower(id), "sora")
+}
+
+// namesVideo is whether a model's id has the word video, t2v or i2v in
+// it: no image model, whatever else the id says. grok-imagine-video says
+// "imagine", which DrawsID and ImagesAPI read as an image model, so a Grok
+// channel's video models were listed under its Image models, where nothing
+// could mark them Video (iceloon on X); wanx2.1-t2v and wan2.5-i2v were
+// read the same way. It makes no video model of them (#1399: a relay may
+// not serve its videos API): they stay among the models to talk to, where
+// the user marks them Video, unless the list says their kind
+// (xaiFilms for xAI's own). A word, not a substring: cogvideox stays.
+func namesVideo(id string) bool {
+	words := strings.FieldsFunc(strings.ToLower(id), func(r rune) bool { return (r < 'a' || r > 'z') && (r < '0' || r > '9') })
+	return slices.ContainsFunc(words, func(w string) bool { return w == "video" || w == "t2v" || w == "i2v" })
 }
 
 // PointsToImagesAPI is whether a vendor's refusal of a chat request names
@@ -2283,6 +2322,14 @@ func WrongEndpoint(status int, body []byte) bool {
 		// /v1/responses（OpenAI Responses API）。")
 		"不支持 /v1/chat/completions 接口",
 		"改用 /v1/responses",
+		// a relay's refusal of a model on the API it was asked on, in
+		// WandAPI's word for that API, "入口协议" (the entry protocol):
+		// "模型 gpt-6.1-sol 不支持当前入口协议" and, for gpt-6.1-terra,
+		// "当前没有能承接该入口协议的货源，…" (equinox0253 on X, both 404
+		// to Claude Code's /v1/messages). However it is worded, a refusal
+		// that names the entry protocol is about the API, which a 404 for
+		// a wrong base URL or a missing model ("模型 X 不存在") never names.
+		"入口协议",
 	} {
 		if strings.Contains(msg, phrase) {
 			return true

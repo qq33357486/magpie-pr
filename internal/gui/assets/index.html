@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- magpie draws a light and a dark theme of its own: a browser that
+     repaints light pages dark (Chrome's Auto Dark Theme, Safari's Adaptive
+     Dark Mode) leaves it alone (xjp on X); app.css says the same -->
+<meta name="color-scheme" content="light dark">
 <title>magpie</title>
 <link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
 <!-- added to a phone's home screen, magpie web opens as an app of its own,
@@ -173,6 +177,14 @@
         <div class="who"><div class="name" data-t>Appearance</div><div class="sub om-only" data-t>Follows the Omarchy theme, as picked in Omarchy's menu</div></div>
         <div id="themeSegs" class="om-hide"></div><span class="om-only om-theme-name"></span>
       </div>
+      <div class="row pref om-hide" id="accentRow">
+        <div class="who"><div class="name" data-t>Accent color</div></div>
+        <div id="accentPick" class="accent-pick" role="radiogroup"></div>
+      </div>
+      <div class="row pref om-hide" id="wallpaperRow">
+        <div class="who"><div class="name" data-t>Background image</div></div>
+        <div id="wallpaperPick" class="wall-pick"></div>
+      </div>
       <div class="row pref" id="colorblindRow">
         <div class="who"><div class="name" data-t>Colorblind mode</div></div>
         <div id="colorblindSegs"></div>
@@ -318,6 +330,10 @@
         <div class="who"><div class="name" data-t>Currency</div><div class="sub" id="currencySub"></div></div>
         <div id="currencySegs"></div>
       </div>
+      <div class="row pref" id="totalCurrencyRow" hidden>
+        <div class="who"><div class="name" data-t>Totals in</div></div>
+        <div id="totalCurrencySegs"></div>
+      </div>
       <div class="row pref">
         <div class="who"><div class="name" data-t>Day starts at</div></div>
         <div id="dayStartSegs"></div>
@@ -328,6 +344,15 @@
       </div>
       <div id="provPrefLinks"></div>
     </div>
+    <details class="prefs-more app-only" id="usageMore">
+      <summary data-t>Advanced</summary>
+      <div class="list prefs">
+        <div class="row pref" id="trayCurrencyRow">
+          <div class="who"><div class="name" data-t>Menu bar currency</div></div>
+          <div id="trayCurrencySegs"></div>
+        </div>
+      </div>
+    </details>
     <div class="row-head" id="alertHead"><span class="label" data-t>Alerts</span></div>
     <div class="list prefs" id="alertList">
       <div class="row pref" id="usageAlertRow">

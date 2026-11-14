@@ -28,14 +28,14 @@ import (
 // written.
 var Keys = []string{
 	// Appearance
-	"theme", "colorblind", "reduceMotion", "noBird", "lang", "uiFont", "codeFont",
+	"theme", "accent", "colorblind", "reduceMotion", "noBird", "lang", "uiFont", "codeFont",
 	// the tray, the Dock and this computer
 	"tray", "dock", "dockWindow", "dockNever", "lightweight", "keepAwake", "keepAwakeDisplay",
 	"noWSLAgents", "sessionTerminal", "signInLinkOnly", "quitNoAsk", "restoreOnQuit",
 	// the menu bar's allowance cards
 	"trayUsages", "trayUsage", "trayUsageEvery", "trayNoLogos", "trayNoBird", "trayNoNumber", "trayPace", "trayNoCost", "trayWindows",
 	// usage and alerts
-	"currency", "chineseUnits", "dayStart", "usageAlert", "balanceAlert", "resetReminder", "turnDoneAlert", "maskAlert",
+	"currency", "totalCurrency", "trayCurrency", "chineseUnits", "dayStart", "usageAlert", "balanceAlert", "resetReminder", "turnDoneAlert", "maskAlert",
 	// network
 	"proxy", "pluginProxy", "updateProxy", "updateSource",
 	// privacy
@@ -45,7 +45,7 @@ var Keys = []string{
 	"codexWarmup", "claudeWarmup", "codexWarmAt", "claudeWarmAt", "codexWarmAts", "claudeWarmAts",
 	"workbuddyCheckin", "traeCheckin", "minimaxCheckin", "qoderCheckin", "checkinAt",
 	// models: replies, vision, images, search
-	"replyModel", "noLoopGuard", "claudeLeanPrompt", "claudePrintMode", "refusalRetries", "retryAfterCap",
+	"replyModel", "noLoopGuard", "claudeLeanPrompt", "claudeNoExtraUsage", "claudePrintMode", "refusalRetries", "retryAfterCap",
 	"vision", "visionEffort", "imageGen", "videoGen", "imageTimeout", "classifyTimeout",
 	// what every routing group does that says nothing of its own
 	"groupSink", "groupFirstToken", "groupPatience",
@@ -63,6 +63,8 @@ var Choices = map[string][]string{
 	"lang":           settings.Langs,
 	"tray":           settings.Trays,
 	"currency":       settings.Currencies,
+	"totalCurrency":  settings.TotalCurrencies,
+	"trayCurrency":   settings.TotalCurrencies,
 	"codexWarmup":    {"off", "week", "all"},
 	"claudeWarmup":   {"off", "week", "all"},
 	"trayUsageEvery": ints(settings.TrayEvery),
@@ -234,6 +236,10 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	if _, sent := fields["reduceMotion"]; !sent {
 		in.ReduceMotion = cur.ReduceMotion
 	}
+	// nor the accent colour, which pages before it never sent
+	if _, sent := fields["accent"]; !sent {
+		in.Accent = cur.Accent
+	}
 	// nor whether the loading bird is kept off
 	if _, sent := fields["noBird"]; !sent {
 		in.NoBird = cur.NoBird
@@ -287,6 +293,7 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.PluginOptions = cur.PluginOptions     // set on its own (plugin-option)
 	in.CheckinOff = cur.CheckinOff           // set on its own (checkin-account)
 	settings.CarryPerModel(&in, &cur)
+	in.Wallpaper = cur.Wallpaper // set on its own (appearance/wallpaper)
 	in.LAN, in.LANKey = cur.LAN, cur.LANKey
 	in.LANKeyID = cur.LANKeyID
 	// Bark has its own route (bark); the page never sees its key
@@ -362,6 +369,9 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.DesktopLongest = cur.DesktopLongest
 	// and whether it runs in a folder of its own, set there too (#5671)
 	in.DesktopIsolated = cur.DesktopIsolated
+	// and whether its Code tab has a Claude Code folder of its own (#6459)
+	in.DesktopIsolatedClaude = cur.DesktopIsolatedClaude
+	in.DesktopIsolatedClaudeChosen = cur.DesktopIsolatedClaudeChosen
 	// and the Get started card put away, from the card itself
 	in.GuideHidden = cur.GuideHidden
 

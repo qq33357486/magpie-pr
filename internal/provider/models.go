@@ -2208,6 +2208,31 @@ func (p Provider) Known(model string) []string {
 	return p.knownElsewhere(model)
 }
 
+// KnownBorrowed reports whether the model's levels (Known) are not its
+// provider's word but borrowed for its id (borrowedEfforts): its list
+// names none for it — a relay's /v1/models with reasoning_levels: [] or
+// no levels at all — and models.dev has none for that vendor, so it is
+// asked at the levels its maker, or the others serving it, give it
+// (@czhhcz on X: `magpie model efforts` listed five for a relay's Claude
+// model whose list said none, and didn't say where they came from).
+func (p Provider) KnownBorrowed(model string) bool {
+	for _, m := range p.Available() {
+		if m.ID == model {
+			if m.EffortsBorrowed {
+				return len(m.Efforts) > 0
+			}
+			return len(m.Efforts) == 0 && m.Provider == "" && len(borrowedEfforts(m.ID)) > 0
+		}
+	}
+	if p.ID == "devin" && devinEffortOf(model) != "" {
+		return false
+	}
+	if _, ok := catalog.ListedBy(p.Catalogs(), model); ok {
+		return false
+	}
+	return len(borrowedEfforts(model)) > 0
+}
+
 // knownElsewhere are the reasoning levels of a model the provider's list
 // doesn't have — one of the vendor's own its list leaves out (a preview),
 // or typed in: the vendor's word on it, before the others'.
@@ -2384,6 +2409,9 @@ func (p Provider) listPriceIn(c priceCats, model string) (catalog.Price, bool, i
 	if pr, ok := p.remotePrice(model); ok {
 		return pr, true, pricedOwn
 	}
+	if pr, ok := p.copilotListPrice(model); ok {
+		return pr, true, pricedOwn
+	}
 	if p.clineFreeModel(model) || p.kiloFreeModel(model) || p.codexReviewFree(model) {
 		// served at no cost: not at the price of the model it is free of
 		return catalog.Price{}, true, pricedOwn
@@ -2395,6 +2423,9 @@ func (p Provider) listPriceIn(c priceCats, model string) (catalog.Price, bool, i
 		return pr, true, pricedOwn
 	}
 	if pr, ok := p.grokFastPrice(model); ok {
+		return pr, true, pricedOwn
+	}
+	if pr, ok := p.openDesignSamePrice(model); ok {
 		return pr, true, pricedOwn
 	}
 	// the names on the stack: made for each model priced, they were
@@ -2614,6 +2645,31 @@ func (p Provider) grokFastPrice(model string) (catalog.Price, bool) {
 	return pr.Times(GrokFastTimes), true
 }
 
+// openDesignSame are the Open Design plugin's ids of a model it serves
+// under another of its ids too, on another schedule: deepseek-v4.1-flash-eco
+// is DeepSeek V4.1 Flash on the low-priority, high-quota schedule, the same
+// weights ("Yes, same weights as DeepSeek V4.1 Flash", Open Design on X,
+// read 2026-11-13; the plugin's models.mjs seeds it as the same model). No
+// catalog lists the -eco id, so its calls had no estimated cost (#6352,
+// Winnie7572 on X).
+var openDesignSame = map[string]string{"deepseek-v4.1-flash-eco": "deepseek-v4.1-flash"}
+
+// openDesignSamePrice is an Open Design model's price as the model it is
+// the same as (openDesignSame), on the Open Design plugin only: elsewhere
+// an -eco id is another vendor's to price.
+func (p Provider) openDesignSamePrice(model string) (catalog.Price, bool) {
+	if p.PluginProvider() != "opendesign" {
+		return catalog.Price{}, false
+	}
+	m := strings.ToLower(strings.TrimSpace(model))
+	m = strings.TrimPrefix(m, "opendesign/")
+	base, ok := openDesignSame[m]
+	if !ok {
+		return catalog.Price{}, false
+	}
+	return p.ListPrice(base)
+}
+
 // GrokFastTimes is how many times its model's price xAI sells a Grok
 // model's fast variant at (grokFastPrice).
 const GrokFastTimes = 2
@@ -2819,11 +2875,19 @@ func priceIn(s settings.Settings, all []Provider, providerID, model string, at t
 // pricing many records holds both and multiplies the rates itself, as
 // the usage ledger's Pricer does, so one read serves every time of day.
 func BasePriceIn(s settings.Settings, providerID, model string) (catalog.Price, bool, []RateWindow) {
+	return BaseKeyPriceIn(s, providerID, "", model)
+}
+
+// BaseKeyPriceIn is BasePriceIn for a call the provider's key keyID sent:
+// at the key's own price rate when it has one (KeyPriceRates, @tnt12231
+// on X), else the provider's. An empty keyID, or one the provider doesn't
+// rate apart, is BasePriceIn.
+func BaseKeyPriceIn(s settings.Settings, providerID, keyID, model string) (catalog.Price, bool, []RateWindow) {
 	p, known := byIDOrWas(providerID)
 	if !known {
 		p = Provider{ID: providerID}
 	}
-	pr, ok := priceOf(s, p, known, model, time.Time{})
+	pr, ok := priceOf(s, p.atKeyRate(keyID), known, model, time.Time{})
 	return pr, ok, p.RateWindows
 }
 
@@ -2865,12 +2929,16 @@ func priceOf(s settings.Settings, p Provider, known bool, model string, at time.
 
 // PriceAt is what a call to model at p costs when made at at, as Usage
 // counts one made then: EffectivePriceAt for p as the caller holds it (a
-// routing group's member), its Peak still set, for the caller to apply
+// routing group's member, at the rate of the key it holds), its Peak still set, for the caller to apply
 // with Price.In and tell whether it did. A model served at no cost there
 // (FreeModel) costs nothing.
 func (p Provider) PriceAt(s settings.Settings, model string, at time.Time) (catalog.Price, bool) {
 	if p.FreeModel(model) {
 		return catalog.Price{}, true
+	}
+	// a key that bills at its own rate (KeyPriceRates) is priced at it
+	if p.Account == nil && p.Key != "" {
+		p = p.atKeyRate(keyID(p.Key))
 	}
 	return priceOf(s, p, true, model, at)
 }
@@ -3094,12 +3162,39 @@ func byIDOrWasIn(all []Provider, id string) (Provider, bool) {
 	return Provider{}, false
 }
 
-// grokEffort is a reasoning effort a Grok id is named at ("grok-4.7-low",
-// "grok-4.7-xhigh"): the levels Grok's own model list gives grok-4.7, the
-// words Cursor spells its ids in. A fast one ("grok-4.7-low-fast") doesn't
-// match: fast is a model of its own (cursor_models.go), and no catalog
-// prices it.
-var grokEffort = lazyre.New(`^((?:.*/)?grok-[0-9][^/]*?)-(?:minimal|low|medium|high|xhigh|extra-high)$`)
+// effortBase is the model an id is named at a reasoning effort of
+// ("grok-4.7-low", Antigravity's gemini-4-argon-high and
+// claude-opus-5-5-high, Cursor's gpt-5.3-codex-xhigh): the id without
+// its effort, and whether it named one. Only the words an effort is
+// spelled in: -max and -none are not read, as -max names models of their
+// own at prices of their own (gpt-5.1-codex-max, qwen3.8-max). The model
+// left must name a version (a digit in its last part), so a name whose
+// size is a word (mistral-medium, vision-medium) is not taken for an
+// effort of another. A fast one ("grok-4.7-low-fast") doesn't match: fast
+// is a model of its own (cursor_models.go). No regexp, for the same
+// reason as below: every model of every provider's list is priced on
+// each Providers poll.
+func effortBase(l string) (string, bool) {
+	i := strings.LastIndexByte(l, '-')
+	if i <= 0 {
+		return "", false
+	}
+	base, effort := l[:i], l[i+1:]
+	if (effort == "high" || effort == "low") && strings.HasSuffix(base, "-extra") {
+		base = base[:len(base)-len("-extra")] // Antigravity's extra-high, extra-low
+	} else {
+		switch effort {
+		case "minimal", "low", "medium", "high", "xhigh":
+		default:
+			return "", false
+		}
+	}
+	last := base[strings.LastIndexByte(base, '/')+1:]
+	if !strings.ContainsAny(last, "0123456789") {
+		return "", false
+	}
+	return base, true
+}
 
 // grokWindow is a Grok id offered at a context window of its own
 // ("grok-4.7@500k", the grok plugin's windowsOf): the same model, asked for
@@ -3119,9 +3214,10 @@ var modelWindow = lazyre.New(`^([^@]+)@[0-9]+[km]$`)
 // pricedNames are the ids a model is priced by, in order: its own, then,
 // for an id at a window (claude-opus-5-5@300k, grok-4.7@500k), the model
 // it is that window of (modelWindow), so a Cursor account's sized ids are
-// priced as their model and not left without a cost (RyuJeXu on X); for a
-// Grok id named at an effort, the model it is that effort of — the same
-// model, at the same price (#224). Codex Auto Review uses GPT-5.6 Luna
+// priced as their model and not left without a cost (RyuJeXu on X); for an
+// id named at an effort, the model it is that effort of (effortBase) — the
+// same model, at the same price (#224 for Grok's; Antigravity's
+// gemini-4-argon-high, stockAAAAA on X). Codex Auto Review uses GPT-5.6 Luna
 // according to OpenAI's rate card (2026-09-30):
 // https://help.openai.com/en/articles/11481834-chatgpt-rate-card-business-enterpriseedu-credit-based-pricing
 // This is a list-price estimate, not evidence of a response's served model.
@@ -3145,16 +3241,15 @@ func pricedNamesTo(dst []string, model string) []string {
 			out = append(out, m[1])
 		}
 	}
-	// both patterns name grok-, for the same reason
-	if !strings.Contains(l, "grok-") {
-		return out
+	// a Grok window the id names without a k (grok-4.7@131072): the
+	// pattern names grok-, for the same reason
+	if strings.Contains(l, "grok-") {
+		if m := grokWindow.FindStringSubmatch(l); m != nil && !slices.Contains(out, m[1]) {
+			out = append(out, m[1])
+		}
 	}
-	// a Grok window the id names without a k (grok-4.7@131072)
-	if m := grokWindow.FindStringSubmatch(l); m != nil && !slices.Contains(out, m[1]) {
-		out = append(out, m[1])
-	}
-	if m := grokEffort.FindStringSubmatch(l); m != nil {
-		out = append(out, m[1])
+	if base, ok := effortBase(l); ok {
+		out = append(out, base)
 	}
 	return out
 }

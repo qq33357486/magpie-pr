@@ -788,9 +788,75 @@ function usageTokensPick() {
       // the tab it was picked on follows; the pick lives on the Overview's
       // and the Sessions tab's tokens tiles (#2591)
       (usageTab === "sessions" ? renderSessions : renderUsage)();
+      // and the account cards' whole-window estimates (holdsLine)
+      if (usageTab !== "sessions" && quotas) renderQuotas();
     }, "Token totals", "sess-menu");
   };
   return b;
+}
+
+// holdsLine: a window's whole (WindowHolds), how in its tooltip. With a
+// baseCost (#5861, no long-context premium) its figure switches every card.
+let holdsBase = kept("holdsBase", false);
+function holdsCostText(h, prov) {
+  const c = fmtCost({ cost: holdsBase ? h.baseCost : h.cost }, prov);
+  return holdsBase ? t("≈ {cost} base", { cost: c }) : t("≈ {cost} API", { cost: c });
+}
+function holdsLine(h, prov) {
+  const cost = (c) => fmtCost({ cost: c }, prov);
+  const line = el("span", "quota-holds");
+  const r = h.routed || {};
+  // with the tokens tiles' "with cache" pick, the cache's tokens, read and
+  // written, scaled by the same share used (Anotiaww on X)
+  const cache = usageWithCache && h.used > 0 ? Math.round(((r.cacheRead || 0) + (r.cacheWrite || 0)) * 100 / h.used) : 0;
+  const tokens = fmtN(h.tokens + cache);
+  line.append(el("span", "", t(usageWithCache ? "Whole ≈ {n} tokens with cache" : "Whole ≈ {n} tokens", { n: tokens }) + (h.priced ? " ·" : "")));
+  const two = h.priced && h.baseCost > 0;
+  if (two) {
+    const b = el("button", "quota-holds-cost", holdsCostText(h, prov));
+    b.type = "button";
+    b._holds = h;
+    b._prov = prov;
+    b.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      holdsBase = !holdsBase;
+      keep("holdsBase", holdsBase);
+      for (const o of document.querySelectorAll(".quota-holds-cost")) if (o._holds) o.textContent = holdsCostText(o._holds, o._prov);
+    };
+    line.append(" ", b);
+  } else if (h.priced) line.append(" ", el("span", "", "≈ " + cost(h.cost)));
+  line.title = [
+    usageWithCache ? (h.priced ? t("The whole window ≈ {tokens} tokens, cache read and written included, ≈ {cost} at API list prices", { tokens, cost: cost(h.cost) })
+      : t("The whole window ≈ {tokens} tokens, cache read and written included; some of its models have no API price", { tokens }))
+      : h.priced ? t("The whole window ≈ {tokens} tokens of input and output, ≈ {cost} at API list prices", { tokens, cost: cost(h.cost) })
+      : t("The whole window ≈ {tokens} tokens of input and output; some of its models have no API price", { tokens }),
+    ...(two ? [
+      t("≈ {cost} at base rates, without long-context premiums: for comparing cycles", { cost: cost(h.baseCost) }),
+      t("Neither is an official dollar allowance or a fixed quota; click the figure to switch"),
+    ] : []),
+    t("Reckoned from what magpie routed through this account in this window: {tokens} tokens in {calls} calls, {cache} cache reads, over the {used} the vendor says is used", { tokens: fmtN(r.tokens || 0), calls: r.calls || 0, cache: fmtN(r.cacheRead || 0), used: Math.round(h.used) + "%" }),
+    t("Only magpie's calls are counted: if this account is also used elsewhere, this reads low"),
+    t("A heavier model fills a window sooner: this holds for the models used so far"),
+  ].join("\n");
+  return line;
+}
+
+// holdsWhy: why a whole isn't told (provider.Holds*); one not listed says nothing.
+const holdsWhy = {
+  low: () => t("Under {n}% of it is used: a rounded share that small is too coarse to scale up", { n: 5 }),
+  clock: () => t("Its reset time isn't known, so neither is when it began"),
+  log: () => t("It began before magpie's request log, so some of its calls weren't seen"),
+  none: () => t("magpie hasn't routed a call through this account in it yet"),
+  credits: () => t("A call in it may have been paid from credits or extra usage, not from the window"),
+};
+// holdsUnknownLine: a window whose whole the server couldn't reckon
+// (#2045): "not enough data", muted, and why in its tooltip, where it said
+// nothing before and a reader couldn't tell a gap from a fault.
+function holdsUnknownLine(why) {
+  const line = el("span", "quota-holds-why", t("Whole: not enough data"));
+  line.title = t("The whole window can't be estimated from magpie's calls yet") + "\n" + holdsWhy[why]();
+  return line;
 }
 
 function renderUsage() {
@@ -926,7 +992,7 @@ function renderUsage() {
       const hit = g.cache_read && hitRate !== null ? " · " + t("hit rate {p}", { p: hitPct(hitRate) }) : "";
       num.append(el("b", "", fmtN(usageTokens(g))), el("small", "", t("{a} in · {b} out", { a: fmtN(g.input), b: fmtN(g.output) }) + (g.cache_read ? " · " + t("{n} cached", { n: fmtN(g.cache_read) }) : "") + hit));
       r.append(num);
-      r.append(el("div", "cost", fmtCost(g) ? "≈" + fmtCost(g) : ""));
+      r.append(el("div", "cost", fmtCost(g, g.provider) ? "≈" + fmtCost(g, g.provider) : ""));
       if (act) act(r, g);
       box.append(r);
     }
@@ -1328,6 +1394,7 @@ function hiddenQuotas() {
 // renderQuotaHid: the line under the cards saying how many are hidden,
 // opening them, each with Unhide, and Show all
 function renderQuotaHid() {
+  renderQuotaOff();
   const hb = $("#quotaHid");
   const cards = hiddenQuotas(), rowList = hiddenRowList();
   const hidden = [...cards, ...rowList];
@@ -1374,6 +1441,108 @@ function renderQuotaHid() {
     r.append(who, b);
     hl.append(r);
   }
+}
+// The switched-off providers' accounts a daily check-in reaches, in a
+// folded line at the cards' end (wxkwxk666 on X: 禁用的供应商也要能签到):
+// the page leaves their cards out and the daily check-in leaves them
+// alone, so each is checked in here by hand, which switches nothing on.
+// Asked again whenever the cards come in.
+let offCards = [], offFor = null, offOpen = false, ciAllAt = "";
+function loadOffCards() {
+  return api("usage/checkins/off").then((qs) => { offCards = Array.isArray(qs) ? qs : []; renderQuotaOff(); }, () => {});
+}
+// offSay: an off account's check-in, never saying the daily check-in
+// will ask again, which it doesn't for a switched-off provider
+function offSay(q) {
+  if (!checkinDue({ ...q, checkinOff: false })) return checkinRow(q, false, offCards);
+  const r = q.checkin, bad = r?.day === wbToday() && r.outcome === "failed";
+  const row = el("div", "wb-checkin"), say = el("span", "ci-say");
+  say.append(el("i", "ci-dot" + (bad ? " bad" : "")), el("span", "", t(bad ? "Check-in failed" : "Not checked in yet today") + (bad && r.msg ? " · " + r.msg : "")));
+  row.append(say);
+  return row;
+}
+function renderQuotaOff() {
+  if (quotas && quotas !== offFor) { offFor = quotas; loadOffCards(); }
+  const hb = $("#quotaOff");
+  hb.hidden = !offCards.length;
+  if (offCards.length) $("#quotaHead").hidden = false;
+  renderCheckinAll();
+  if (!offCards.length) return;
+  const line = hb.querySelector(".us-hidline"), hl = hb.querySelector(".list");
+  line.replaceChildren(el("span", "", t("Switched off · {n}", { n: offCards.length })), svg(CHEV, 11, 1.6));
+  line.title = t("Providers you switched off: magpie doesn't check them in by itself. Checking in here leaves them off.");
+  line.setAttribute("aria-expanded", String(offOpen));
+  line.onclick = () => { offOpen = !offOpen; renderQuotaOff(); };
+  hl.hidden = !offOpen;
+  hl.replaceChildren();
+  if (!offOpen) return;
+  for (const q of offCards) {
+    const r = el("div", "row stat acts us-offrow");
+    r.dataset.key = q.checkinKey;
+    r.append(icon(q.icon));
+    const who = el("div", "who");
+    who.append(el("div", "name", quotaName(q)), el("div", "sub", q.alias || q.user || ""), offSay(q));
+    r.append(who);
+    if (checkinDue({ ...q, checkinOff: false })) {
+      const b = el("button", "text ci-acct", t("Check in"));
+      b.type = "button";
+      b.onclick = async (e) => {
+        e.stopPropagation();
+        try { window.ciNowSend || await import(new URL("checkinnow.js", document.baseURI).href); } catch (err) { return statusErr(err); }
+        ciNowSend({ key: q.checkinKey, user: q.user }, q.checkinBy || "", (o) => {
+          b.disabled = !!o.busy;
+          b.classList.toggle("busy", !!o.busy);
+          if (!o.busy) loadOffCards();
+        });
+      };
+      r.append(b);
+    }
+    hl.append(r);
+  }
+}
+// renderCheckinAll: Check in all at the allowances' head, for every
+// account any check-in reaches, a switched-off provider's too; it shows
+// how far a press has got
+function renderCheckinAll() {
+  const b = $("#usageCheckinAll");
+  b.hidden = ![...(quotas || []), ...offCards].some((q) => q.checkins && !q.from);
+  b.textContent = ciAllAt || t("Check in all");
+  b.disabled = !!ciAllAt;
+  b.classList.toggle("busy", !!ciAllAt);
+  b.title = t("Check in every account not checked in today, those of switched-off providers too; no provider is switched on");
+  b.onclick = (e) => { e.stopPropagation(); checkinAll(); };
+}
+// checkinAll checks in, three at a time, each account not checked in
+// today, once each, leaving every switch as it is; what came of it is
+// said once all have answered
+async function checkinAll() {
+  if (ciAllAt) return;
+  const seen = new Set(), due = [];
+  for (const q of [...(quotas || []), ...offCards]) {
+    const k = (q.checkinBy || "") + "\0" + q.checkinKey;
+    if (q.from || !q.checkinKey || seen.has(k) || !checkinDue({ ...q, checkinOff: false })) continue;
+    seen.add(k);
+    due.push(q);
+  }
+  if (!due.length) return status(t("Every account is checked in today"), "ok");
+  const rs = [];
+  let n = 0;
+  const step = () => { ciAllAt = t("Checking in {i}/{n}…", { i: rs.length, n: due.length }); renderCheckinAll(); };
+  step();
+  const next = async () => {
+    while (n < due.length) {
+      const q = due[n++];
+      try { rs.push(await api("usage/checkin-account", { by: q.checkinBy || "", key: q.checkinKey })); } catch { rs.push({ outcome: "failed" }); }
+      step();
+    }
+  };
+  await Promise.all([next(), next(), next()]);
+  ciAllAt = "";
+  const said = checkinPressSaid(rs);
+  status(said.text, said.bad ? "err" : "ok");
+  renderCheckinAll();
+  loadQuotas();
+  loadOffCards();
 }
 // hideQuotaRows hides a card's rows from the Overview, or has them back:
 // drawn at once, put back if the save fails
@@ -1839,7 +2008,7 @@ function ledDetail(r) {
   if (r.in || r.out || r.cache_read || r.cache_write || !ledFailed_(r)) {
     add("Tokens", t("{i} in · {o} out · {r} cache read · {w} cache creation", { i: ledNum(r.in || 0), o: ledNum(r.out || 0), r: ledNum(r.cache_read || 0), w: ledNum(r.cache_write || 0) }) + cacheTTLs(r, ledNum) + (r.cache_unknown ? " · " + t("The vendor doesn't count the cache") : ""), "led-tokens");
   }
-  if (r.priced) add("Cost", "≈" + fmtCost({ cost: r.cost, unpriced: 0 }));
+  if (r.priced) add("Cost", "≈" + fmtCost({ cost: r.cost, unpriced: 0 }, r.provider));
   if (r.credits != null) add("Credits", ledCredits({ credits: r.credits, credited: 1 }).textContent);
   if (ledRowSpeed(r)) add("Speed", t("{n} tok/s", { n: ledNum(Math.round(ledRowSpeed(r))) }));
   else if (ledFloorSpeed(r)) add("Speed", "≥" + t("{n} tok/s", { n: ledNum(Math.round(ledFloorSpeed(r))) }));
@@ -2155,7 +2324,7 @@ function renderLedgerDash(l) {
   // an error: not those their agent canceled, which are counted apart
   const settled = l.calls - (l.canceled || 0);
   block("Requests", fmtN(l.calls), l.errors
-    ? jumps(jump(t("{n} failed", { n: fmtN(l.errors) }), "failed", t("Show only the failed requests")), " · " + t("{p} succeeded", { p: (100 * (1 - l.errors / settled)).toFixed(1) + "%" }))
+    ? jumps(jump(t("{n} failed", { n: fmtN(l.errors) }), "failed", t("Show the requests a try failed on, with those a later try answered")), " · " + t("{p} succeeded", { p: (100 * (1 - l.errors / settled)).toFixed(1) + "%" }))
     : line(t("none failed")), "", exactN(l.calls));
   if (l.retried) strip.lastChild.append(jumps(jump(t("{n} answered on a retry", { n: fmtN(l.retried) }), "retried", t("Show only the requests answered on a retry"))));
   if (l.canceled) {
@@ -2944,6 +3113,9 @@ function renderLedger() {
   for (const [on, name] of [["", "All"], ["failed", "Failed"], ["retried", "Retried"]]) {
     const b = el("button", "opt" + (on === shown ? " on" : ""), t(name));
     if (on === "retried") b.title = t("Show only the requests answered on a retry");
+    // a request a later try answered is still one a try failed on, as
+    // Routing shows it (maohy915 on X)
+    if (on === "failed") b.title = t("Show the requests a try failed on, with those a later try answered");
     b.onclick = () => {
       if (on === ledStatusOf()) return;
       for (const x of seg.querySelectorAll(".opt")) x.classList.toggle("on", x === b);
@@ -3194,7 +3366,7 @@ function renderLedger() {
     // (jiabubu on Discord): in place of the dash a plan's model has for a
     // price, or under the price; a reply that said none says nothing
     const credits = r.credits != null ? ledCredits({ credits: r.credits, credited: 1 }).textContent : "";
-    const cost = td(r.priced ? "≈" + fmtCost({ cost: r.cost, unpriced: 0 }) : credits || "—", "n cost" + (r.priced || credits ? "" : " faint"), r.priced ? (r.pricing_model ? t("API price reference") + ": " + r.pricing_model : "") : credits ? t("What it cost in its plan's credits, as the reply said") : t("No known price for this model"));
+    const cost = td(r.priced ? "≈" + fmtCost({ cost: r.cost, unpriced: 0 }, r.provider) : credits || "—", "n cost" + (r.priced || credits ? "" : " faint"), r.priced ? (r.pricing_model ? t("API price reference") + ": " + r.pricing_model : "") : credits ? t("What it cost in its plan's credits, as the reply said") : t("No known price for this model"));
     if (r.priced && r.pricing_model) {
       const reference = el("div", "price-reference", t("Price reference: {model}", { model: r.pricing_model }));
       reference.title = t("Model used for the API price estimate; this is not an observed model forwarding event.");

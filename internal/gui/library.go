@@ -466,6 +466,30 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 		}
 		writeJSON(rw, v)
 	})
+	// billion-context.json's settings the tab changes, with the models
+	// magpie can give its summaries; a change is written and every
+	// running billion-context asked to reload it
+	mux.HandleFunc("GET /api/library/bili/settings", func(rw http.ResponseWriter, r *http.Request) {
+		v, err := library.ReadBiliSettings()
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, biliSettingsView{v, servedModels()})
+	})
+	mux.HandleFunc("POST /api/library/bili/settings", func(rw http.ResponseWriter, r *http.Request) {
+		var c library.BiliChange
+		if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+			fail(rw, err)
+			return
+		}
+		v, err := library.SetBiliSettings(c)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, biliSettingsView{v, servedModels()})
+	})
 	mux.HandleFunc("POST /api/library/bili/install", func(rw http.ResponseWriter, r *http.Request) {
 		v, err := library.InstallBili()
 		if err != nil {
@@ -539,7 +563,7 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, err)
 			return
 		}
-		writeJSON(rw, mcpSignInOpened{st, openError(w, st.URL)})
+		writeJSON(rw, openMCPSignIn(w, st))
 	})
 	mux.HandleFunc("GET /api/library/mcp-signin/{id}", func(rw http.ResponseWriter, r *http.Request) {
 		st, ok := mcpauth.Progress(r.PathValue("id"))
@@ -852,6 +876,8 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.ProjectSkill(in.Dir, in.Name, in.Agents)
 		case "projects/skills":
 			res, err = library.ProjectSkills(in.Dir, in.Names, in.Agents)
+		case "projects/subagents":
+			res, err = library.ProjectSubagents(in.Dir, oneOrMore(in.Name, in.Names), in.Agents)
 		case "projects/server":
 			res, err = library.ProjectServer(in.Dir, in.Name, in.Agents)
 		case "projects/server-off":
@@ -896,4 +922,11 @@ func oneOrMore(name string, names []string) []string {
 		return names
 	}
 	return []string{name}
+}
+
+// biliSettingsView is billion-context.json's settings with the models
+// the tab's picker offers
+type biliSettingsView struct {
+	*library.BiliSettings
+	Models []modelRef `json:"models"`
 }
