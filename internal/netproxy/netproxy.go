@@ -4,10 +4,11 @@
 // that is only reachable through a proxy hangs until the agent gives up.
 //
 // In order: the proxy set in magpie's settings (or "direct" for none), the
-// usual *_PROXY variables, then the system's proxy (macOS network
-// settings, Windows Internet Options). Loopback is never proxied, nor,
-// unless a provider has a proxy of its own, a host on the user's own
-// network (lan.go).
+// usual *_PROXY variables, the system's proxy (macOS network settings,
+// Windows Internet Options, a Linux desktop's GNOME gsettings or KDE
+// kioslaverc), then the login shell's *_PROXY (shell.go). Loopback is
+// never proxied, nor, unless a provider has a proxy of its own, a host on
+// the user's own network (lan.go).
 package netproxy
 
 import (
@@ -152,7 +153,7 @@ func With(ctx context.Context, choice string) context.Context {
 // vendors without). Its "" leaves ctx as it is, so they follow the
 // global proxy as every other request does.
 func Downloads(ctx context.Context) context.Context {
-	if c := strings.TrimSpace(settings.Load().PluginProxy); c != "" {
+	if c := strings.TrimSpace(settings.Shared().PluginProxy); c != "" {
 		return With(ctx, c)
 	}
 	return ctx
@@ -161,7 +162,7 @@ func Downloads(ctx context.Context) context.Context {
 // EnvDownloads is Env for a program magpie starts to download plugins
 // (bun add and update, git): plugin downloads' proxy (Downloads), or,
 // when that names none, Env's.
-func EnvDownloads(env []string) []string { return EnvWith(settings.Load().PluginProxy, env) }
+func EnvDownloads(env []string) []string { return EnvWith(settings.Shared().PluginProxy, env) }
 
 // Choice is the proxy ctx names (With), "" when it names none — for a CLI
 // run on a provider's behalf, whose *_PROXY is set from it (EnvWith).
@@ -379,7 +380,7 @@ func (d *dispatch) CloseIdleConnections() {
 
 // For is the proxy a request to u goes through; nil means direct.
 func For(u *url.URL) (*url.URL, error) {
-	switch s := strings.TrimSpace(settings.Load().Proxy); s {
+	switch s := strings.TrimSpace(settings.Shared().Proxy); s {
 	case "direct":
 		return nil, nil
 	case "":
@@ -390,7 +391,10 @@ func For(u *url.URL) (*url.URL, error) {
 		return p, err
 	}
 	sys := System()
-	if sys.URL == "" || bypassed(u.Hostname(), sys.Bypass) {
+	if sys.URL == "" {
+		return fromShell(u), nil
+	}
+	if bypassed(u.Hostname(), sys.Bypass) {
 		return nil, nil
 	}
 	return Parse(sys.URL)
@@ -416,7 +420,7 @@ func EnvWith(choice string, env []string) []string {
 	var bypass []string
 	s := strings.TrimSpace(choice)
 	if s == "" {
-		s = strings.TrimSpace(settings.Load().Proxy)
+		s = strings.TrimSpace(settings.Shared().Proxy)
 	}
 	if settings.IsProxyRef(s) {
 		// a saved proxy that is gone: the CLI goes nowhere, not direct
@@ -435,10 +439,12 @@ func EnvWith(choice string, env []string) []string {
 			}
 		}
 		sys := System()
-		if sys.URL == "" {
-			return env
-		}
 		p, bypass = sys.URL, sys.Bypass
+		if p == "" {
+			if p, bypass = shellProxy(); p == "" {
+				return env
+			}
+		}
 	default:
 		u, err := Parse(s)
 		if err != nil {
@@ -508,7 +514,7 @@ func Parse(s string) (*url.URL, error) {
 // Describe says, for the settings page, what a request to u would use.
 func Describe() (proxy, source string) {
 	defer func() { proxy = Redact(proxy) }()
-	switch s := strings.TrimSpace(settings.Load().Proxy); s {
+	switch s := strings.TrimSpace(settings.Shared().Proxy); s {
 	case "direct":
 		return "", "off"
 	case "":
@@ -521,6 +527,9 @@ func Describe() (proxy, source string) {
 	}
 	if sys := System(); sys.URL != "" {
 		return sys.URL, "system"
+	}
+	if p := fromShell(u); p != nil {
+		return p.String(), "environment"
 	}
 	return "", "none"
 }

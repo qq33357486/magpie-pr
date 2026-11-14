@@ -826,6 +826,12 @@ type Settings struct {
 	// "codex/gpt-5.6-sol"), for clients moved from another proxy that ask
 	// for bare ids (love1sbug on X; provider.BareEntries). Off by default.
 	BareModelIDs bool `json:"bareModelIDs,omitempty"`
+	// BareModelIDsOnly, with BareModelIDs, has the list give a model its
+	// bare id in place of the provider/model ids it stands for, not beside
+	// them (qQianye on X: a client of a Docker magpie listed every model
+	// twice, and a gateway has no Agents page to pick models on). A
+	// provider/model id the bare one doesn't reach stays (provider.BareOnly).
+	BareModelIDsOnly bool `json:"bareModelIDsOnly,omitempty"`
 	// CodexAgentsV1 has the OpenAI models magpie hands Codex — the ChatGPT
 	// account's own, their codex/ ids, the groups one is in, and those a
 	// provider that seals as that backend does serves (catalog.Model.Seals:
@@ -1042,7 +1048,8 @@ type Settings struct {
 	// PanelUsageHidden are the subscriptions, by provider id, that the tray
 	// panel's Allowances tab leaves out (H20 on Discord). It is what the
 	// panel shows, nothing more: routing, caps, the Usage page and the menu
-	// bar's cells still have them. The panel's order is UsageOrder.
+	// bar's cells still have them. The panel's order is UsageOrder, and it
+	// leaves out what UsageCardsHidden and UsageWindowsHidden do too.
 	PanelUsageHidden []string `json:"panelUsageHidden,omitempty"`
 	// UsageAgentsHidden are the clients, by the id the ledger records them
 	// under ("curl", "Go-http-client", an agent's id), that the Usage page's
@@ -1053,15 +1060,19 @@ type Settings struct {
 	// leaves out (whqtian_07012 on Discord), each as its tray card id (the
 	// provider id, then "|" and the account when there is one) and "|plan"
 	// or "|balance", so StepFun's balance card goes while its plan card
-	// stays. Only what that page shows: routing, caps, counting, the tray
-	// panel (PanelUsageHidden is its own) and the menu bar's cells keep them.
+	// stays. Only what is shown: the tray panel's Allowances tab, the menu
+	// bar's cells, tooltip and Windows' tray figure, and the TUI's Usage
+	// page leave them out too (onkashiko on X; provider.ShownQuotas), while
+	// routing, caps and counting keep them. TrayUsages keeps a hidden
+	// card's cell, which shows again with the card.
 	UsageCardsHidden []string `json:"usageCardsHidden,omitempty"`
 	// UsageWindowsHidden are the quota rows of an allowance card that the
 	// Overview leaves out (wangshaowei39 on X: Antigravity's Claude & GPT
 	// rows unwanted), each as the provider id, "|" and the row's group: a
 	// pool's or a model family's name, else the window's name. Every
 	// account of the provider alike. A card is never left with none: when
-	// every row is named, all show. Only what that page shows.
+	// every row is named, all show. Only what is shown, there, in the tray
+	// panel, the menu bar and the TUI's Usage page.
 	UsageWindowsHidden []string `json:"usageWindowsHidden,omitempty"`
 	// ClientAgents counts a client magpie doesn't know as one of the agents
 	// it does, on the Usage and Sessions pages (#1958, NorethSea): a bridge
@@ -1570,7 +1581,9 @@ var (
 	UpdateEveries = []int{30, 60, 360, 1440}
 	// TextSizes are TextSize's values, in percent. None is under 100: the
 	// webviews' zoom on Windows and Linux (Wails' SetZoom) goes no lower.
-	TextSizes = []int{100, 110, 125, 150}
+	// 115 and 120 are the steps between 110 and 125 (WeltAn_X on X: 110
+	// small, 125 crowded at 4K and 200%).
+	TextSizes = []int{100, 110, 115, 120, 125, 150}
 )
 
 // SearchFirst's values: a provider's search first, saved as "", or the
@@ -2358,6 +2371,24 @@ func SetRouterAllTools(on bool) error {
 	}
 	s.RouterAllTools = on
 	return save(s, true)
+}
+
+// TakeStable puts UpdateChannel on Stable when no channel is set, from
+// what the file holds now: a fresh install of the Stable version (the
+// site's Stable download) stays on Stable. A channel already set is the
+// user's, and is kept. It says whether it changed the channel. A settings
+// file that can't be read is left as it is, with the error.
+func TakeStable() (bool, error) {
+	defer lockFile()()
+	s, err := loadChecked()
+	if err != nil {
+		return false, err
+	}
+	if s.UpdateChannel != "" {
+		return false, nil
+	}
+	s.UpdateChannel = UpdateStable
+	return true, save(s, false)
 }
 
 // EditCheckinOff changes CheckinOff alone, as edit returns it from what the

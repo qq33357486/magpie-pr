@@ -731,6 +731,7 @@ function mountUsageFolds() {
   if (toSet) toSet.onclick = (e) => openSettingsAt(e, "usage", "#quotaLeftRow");
   for (const b of $$("#usagePane .row-head .fold[data-fold]")) {
     b.prepend(svg(CHEV_R, 11, 1.6));
+    b.after(el("span", "grow us-sort-gap"), usageSortPick(b.dataset.fold));
     b.onclick = () => {
       const id = b.dataset.fold;
       if (usageFolded.has(id)) usageFolded.delete(id); else usageFolded.add(id);
@@ -748,8 +749,57 @@ function showUsageFolds() {
     const id = b.dataset.fold, folded = usageFolded.has(id);
     b.setAttribute("aria-expanded", String(!folded));
     b.title = t(USAGE_FOLD_TITLES[id][folded ? 0 : 1]);
+    // a folded list has nothing to order
+    const pick = b.parentElement.querySelector(".us-sort");
+    if (pick) pick.hidden = folded;
     for (const box of USAGE_FOLDS[id]) $("#" + box)?.classList.toggle("folded", folded);
   }
+}
+
+// The Overview's lists are a ranking (onducoder on X: 能为 agent、模型、
+// 网关密钥、账号的消耗量增加一个排序): most tokens first, as the server
+// sends them, or by cost, by calls or by name, a pick at the right of each
+// list's heading, kept across a reload (magpie.usageSort, a list's name to
+// its order). Tokens count as the tokens tile counts them, the cache in or
+// out; an unpriced row's cost is unknown and goes last by cost.
+const USAGE_SORTS = [["tokens", "Tokens"], ["cost", "Cost"], ["calls", "Calls"], ["name", "Name"]];
+let usageSort = {};
+try { usageSort = JSON.parse(localStorage.getItem("magpie.usageSort") || "{}") || {}; } catch {}
+const usageSortOf = (id) => USAGE_SORTS.some(([v]) => v === usageSort[id]) ? usageSort[id] : "tokens";
+function usageSorted(groups, id) {
+  const by = usageSortOf(id);
+  // the server sends each list most tokens first (cache left out)
+  if (by === "tokens" && !usageWithCache) return groups;
+  const name =(g) => g.name || g.id || "";
+  const cost = (g) => typeof g.cost === "number" && !(g.unpriced && !g.cost) ? g.cost : -1;
+  const key = { tokens: (g) => usageTokens(g), cost, calls: (g) => g.calls || 0 }[by];
+  return [...groups].sort((a, b) => {
+    if (by === "name") return !a.name - !b.name || name(a).localeCompare(name(b), intlLang(), { numeric: true, sensitivity: "base" });
+    return key(b) - key(a) || usageTokens(b) - usageTokens(a) || (b.calls || 0) - (a.calls || 0);
+  });
+}
+function usageSortPick(id) {
+  const b = el("button", "us-sort");
+  b.type = "button";
+  b.dataset.sort = id;
+  b.setAttribute("aria-haspopup", "menu");
+  const paint = () => {
+    const by = usageSortOf(id);
+    b.replaceChildren(el("span", "", t(USAGE_SORTS.find(([v]) => v === by)[1])), svg(CHEV, 10, 1.6));
+  };
+  paint();
+  b.title = t("Order this list");
+  b.onclick = (e) => {
+    e.stopPropagation();
+    if (b.classList.contains("open")) return closeProtoMenu();
+    openProtoMenu(b, USAGE_SORTS.map(([v, name]) => ({ v, name, note: "" })), usageSortOf(id), (v) => {
+      if (v === "tokens") delete usageSort[id]; else usageSort[id] = v;
+      try { localStorage.setItem("magpie.usageSort", JSON.stringify(usageSort)); } catch {}
+      paint();
+      if (usage) renderUsage();
+    }, "Order by", "sess-menu", "right");
+  };
+  return b;
 }
 
 // usageParts: a line of counts, each kept whole in a span of its own and
@@ -859,6 +909,42 @@ function holdsUnknownLine(why) {
   return line;
 }
 
+// The Agents list folds the clients that are small and idle into one
+// Other row (WJaunita45604 on X: dozens of randomly named test clients of
+// ~10K tokens each, every one a row laid out again at each refresh, slowed
+// the page down). A client folds when it is past the 5 with the most
+// tokens, under 1% of the period's tokens, and either has made no call in
+// the last 3 days or is past the top 20; two or more fold, or none do.
+// Their sum is the Other row's, so every total stays exact.
+const USAGE_FOLD_TOP = 5, USAGE_FOLD_LONG = 20, USAGE_FOLD_SHARE = 0.01, USAGE_FOLD_IDLE = 3 * 864e5;
+const USAGE_OTHER_PAGE = 100;
+let usageOtherOpen = false, usageOtherShown = USAGE_OTHER_PAGE;
+function usageFoldAgents(groups, total, now = Date.now()) {
+  const rank = new Map([...groups].sort((a, b) => usageTokens(b) - usageTokens(a)).map((g, i) => [g, i]));
+  const idle = (g) => {
+    const at = Date.parse(g.last || "");
+    return at > 0 && now - at >= USAGE_FOLD_IDLE;
+  };
+  const folds = (g) => {
+    const i = rank.get(g);
+    return i >= USAGE_FOLD_TOP && usageTokens(g) < USAGE_FOLD_SHARE * total && (i >= USAGE_FOLD_LONG || idle(g));
+  };
+  const folded = groups.filter(folds);
+  if (folded.length < 2) return { kept: groups, folded: [] };
+  return { kept: groups.filter((g) => !folds(g)), folded };
+}
+// usageSum adds groups' counts up, as one group
+function usageSum(groups) {
+  const add = (s, g) => {
+    for (const [k, v] of Object.entries(g)) {
+      if (typeof v === "number") s[k] = (s[k] || 0) + v;
+      else if (k === "own" && v) s.own = add(s.own || {}, v);
+    }
+    return s;
+  };
+  return groups.reduce(add, {});
+}
+
 function renderUsage() {
   const u = usage;
   const view = $("#view-usage");
@@ -942,69 +1028,75 @@ function renderUsage() {
   fitChartLabels();
 
   const total = Math.max(1, usageTokens(u));
-  const list = (id, groups, act) => {
+  // list draws a list's rows anew; more adds what follows them while the
+  // logos drawn before are still kept
+  const list = (id, groups, act, more) => {
     const box = typeof id === "string" ? $("#" + id) : id;
     keepIcons(box); // a logo made again blinks (keepIcons)
     box.replaceChildren();
-    for (const g of groups) {
-      const r = el("div", "row stat");
-      r.dataset.id = g.id || "";
-      r.append(icon(g.icon || "generic"));
-      const who = el("div", "who");
-      who.append(el("div", "name" + (g.name ? "" : " faint"), g.name || t("account not recorded")));
-      const sub = [];
-      if (g.sub) sub.push(g.sub);
-      sub.push(t(g.calls === 1 ? "{n} call" : "{n} calls", { n: g.calls }));
-      // what the calls cost in their plan's credits, as the replies said
-      // (WorkBuddy's 积分): an account's, a model's, an agent's (lcyksp
-      // on Discord), not only their tokens
-      if (g.credited) sub.push(ledCredits(g).textContent);
-      // magpie's own calls apart from the agents' (#1839): magpie's row
-      // says it is, and a model's, a key's or an account's how many of
-      // its calls were
-      if (id === "usageAgents" && g.id === "magpie") who.firstChild.append(ownBadge());
-      else if (g.own?.calls) sub.push(ownCalls(g.own.calls));
-      if (g.errors) sub.push(t("{n} failed", { n: g.errors }));
-      // of those, the replies magpie ended stuck in a loop (#1858)
-      if (g.loops) sub.push(t("{n} looped", { n: g.loops }));
-      if (g.retried) sub.push(t("{n} answered on a retry", { n: g.retried }));
-      // how long the streamed replies took to begin, and how fast they
-      // wrote after (#196)
-      if (g.timed) {
-        sub.push(t("TTFT {ms}", { ms: ledTook(Math.round(g.ttft_ms / g.timed)) }));
-      }
-      const gs = ledGroupSpeed(g);
-      if (gs) sub.push(gs.text);
-      const subLine = el("div", "sub", sub.join(" · "));
-      if (g.own?.calls) subLine.title = ownWhy();
-      who.append(subLine);
-      r.append(who);
-      const share = el("div", "share");
-      const fill = el("i");
-      fill.style.width = Math.max(1.5, 100 * usageTokens(g) / total).toFixed(1) + "%";
-      share.append(fill);
-      share.title = t("{n}% of tokens", { n: Math.round(100 * usageTokens(g) / total) });
-      r.append(share);
-      const num = el("div", "num");
-      // how much of its prompt came from the cache, counted as the cache
-      // read tile counts it (#925)
-      const hitRate = cacheHitOf(g);
-      const hit = g.cache_read && hitRate !== null ? " · " + t("hit rate {p}", { p: hitPct(hitRate) }) : "";
-      num.append(el("b", "", fmtN(usageTokens(g))), el("small", "", t("{a} in · {b} out", { a: fmtN(g.input), b: fmtN(g.output) }) + (g.cache_read ? " · " + t("{n} cached", { n: fmtN(g.cache_read) }) : "") + hit));
-      r.append(num);
-      r.append(el("div", "cost", fmtCost(g, g.provider) ? "≈" + fmtCost(g, g.provider) : ""));
-      if (act) act(r, g);
-      box.append(r);
-    }
+    for (const g of groups) box.append(row(id, g, act));
+    if (more) more(box);
     keptIcons = null;
+    return box;
+  };
+  const row = (id, g, act) => {
+    const r = el("div", "row stat");
+    r.dataset.id = g.id || "";
+    r.append(icon(g.icon || "generic"));
+    const who = el("div", "who");
+    who.append(el("div", "name" + (g.name ? "" : " faint"), g.name || t("account not recorded")));
+    const sub = [];
+    if (g.sub) sub.push(g.sub);
+    sub.push(t(g.calls === 1 ? "{n} call" : "{n} calls", { n: g.calls }));
+    // what the calls cost in their plan's credits, as the replies said
+    // (WorkBuddy's 积分): an account's, a model's, an agent's (lcyksp
+    // on Discord), not only their tokens
+    if (g.credited) sub.push(ledCredits(g).textContent);
+    // magpie's own calls apart from the agents' (#1839): magpie's row
+    // says it is, and a model's, a key's or an account's how many of
+    // its calls were
+    if (id === "usageAgents" && g.id === "magpie") who.firstChild.append(ownBadge());
+    else if (g.own?.calls) sub.push(ownCalls(g.own.calls));
+    if (g.errors) sub.push(t("{n} failed", { n: g.errors }));
+    // of those, the replies magpie ended stuck in a loop (#1858)
+    if (g.loops) sub.push(t("{n} looped", { n: g.loops }));
+    if (g.retried) sub.push(t("{n} answered on a retry", { n: g.retried }));
+    // how long the streamed replies took to begin, and how fast they
+    // wrote after (#196)
+    if (g.timed) {
+      sub.push(t("TTFT {ms}", { ms: ledTook(Math.round(g.ttft_ms / g.timed)) }));
+    }
+    const gs = ledGroupSpeed(g);
+    if (gs) sub.push(gs.text);
+    const subLine = el("div", "sub", sub.join(" · "));
+    if (g.own?.calls) subLine.title = ownWhy();
+    who.append(subLine);
+    r.append(who);
+    const share = el("div", "share");
+    const fill = el("i");
+    fill.style.width = Math.max(1.5, 100 * usageTokens(g) / total).toFixed(1) + "%";
+    share.append(fill);
+    share.title = t("{n}% of tokens", { n: Math.round(100 * usageTokens(g) / total) });
+    r.append(share);
+    const num = el("div", "num");
+    // how much of its prompt came from the cache, counted as the cache
+    // read tile counts it (#925)
+    const hitRate = cacheHitOf(g);
+    const hit = g.cache_read && hitRate !== null ? " · " + t("hit rate {p}", { p: hitPct(hitRate) }) : "";
+    num.append(el("b", "", fmtN(usageTokens(g))), el("small", "", t("{a} in · {b} out", { a: fmtN(g.input), b: fmtN(g.output) }) + (g.cache_read ? " · " + t("{n} cached", { n: fmtN(g.cache_read) }) : "") + hit));
+    r.append(num);
+    r.append(el("div", "cost", fmtCost(g, g.provider) ? "≈" + fmtCost(g, g.provider) : ""));
+    if (act) act(r, g);
+    return r;
   };
   // a client hidden from the Agents list (ikunbots on X: curl,
   // Go-http-client, python-httpx beside the agents in use) is left out of
   // it, and only of it: the totals, the chart and every share above still
   // count its calls. One line under the list says how many, and opens them.
   const hid = new Set(state.settings?.usageAgentsHidden || []);
-  const hidden = u.agents.filter((g) => hid.has(g.id));
-  list("usageAgents", u.agents.filter((g) => !hid.has(g.id)), (r, g) => {
+  const agents = usageSorted(u.agents, "agents");
+  const hidden = agents.filter((g) => hid.has(g.id));
+  const agentAct = (r, g) => {
     r.classList.add("acts");
     const b = el("button", "icon us-more");
     b.type = "button";
@@ -1033,6 +1125,47 @@ function renderUsage() {
     b.onclick = (e) => { e.stopPropagation(); menu(); };
     r.oncontextmenu = (e) => { e.preventDefault(); menu(); };
     r.querySelector(".share").after(b);
+  };
+  // the small clients idle for days fold into one Other row at the
+  // list's foot (usageFoldAgents), drawn only while it is open
+  const { kept, folded } = usageFoldAgents(agents.filter((g) => !hid.has(g.id)), total);
+  if (!folded.length) usageOtherOpen = false;
+  list("usageAgents", kept, agentAct, (box) => {
+    if (!folded.length) return;
+    // a page at a time: every row drawn is laid out again at each refresh.
+    // The folded rows are made before the Other row, so their logos are
+    // the ones kept from the last draw
+    let inner = null;
+    if (usageOtherOpen) {
+      const shown = folded.slice(0, usageOtherShown);
+      inner = el("div", "us-folded");
+      for (const g of shown) inner.append(row("usageAgents", g, agentAct));
+      if (folded.length > shown.length) {
+        const more = el("button", "text us-folded-more", t("Show {n} more", { n: folded.length - shown.length }));
+        more.type = "button";
+        more.onclick = (e) => { e.stopPropagation(); usageOtherShown += USAGE_OTHER_PAGE; renderUsage(); };
+        inner.append(more);
+      }
+    }
+    const other = row("usageAgents", { ...usageSum(folded), id: "", name: t("Other"), sub: t(folded.length === 1 ? "{n} client" : "{n} clients", { n: folded.length }), icon: "generic" });
+    other.classList.add("us-other");
+    const chev = el("span", "us-other-chev");
+    chev.append(svg(CHEV_R, 11, 1.6));
+    other.firstChild.replaceWith(chev);
+    other.tabIndex = 0;
+    other.setAttribute("role", "button");
+    other.setAttribute("aria-expanded", String(usageOtherOpen));
+    other.title = t("Clients under 1% of the tokens, idle for 3 days or past the top 20. Their calls still count in every total.");
+    const flip = () => {
+      usageOtherOpen = !usageOtherOpen;
+      usageOtherShown = USAGE_OTHER_PAGE;
+      renderUsage();
+      $("#usageAgents .us-other")?.focus({ preventScroll: true });
+    };
+    other.onclick = flip;
+    other.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); flip(); } };
+    box.append(other);
+    if (inner) box.append(inner);
   });
   const hb = $("#usageAgentsHid");
   hb.hidden = !hidden.length;
@@ -1052,7 +1185,7 @@ function renderUsage() {
   });
   // a model's usage cleared (CrazyMouse_TT on X: a local model deployed
   // again, its requests, speed and cache wanted from nothing)
-  list("usageModels", u.models, (r, g) => {
+  list("usageModels", usageSorted(u.models, "models"), (r, g) => {
     if (!g.model) return;
     r.classList.add("acts");
     const b = el("button", "icon us-more");
@@ -1070,8 +1203,8 @@ function renderUsage() {
     r.oncontextmenu = (e) => { e.preventDefault(); menu(); };
     r.querySelector(".share").after(b);
   });
-  list("usageAccounts", u.accounts || []);
-  list("usageKeys", u.callerKeys || []);
+  list("usageAccounts", usageSorted(u.accounts || [], "accounts"));
+  list("usageKeys", usageSorted(u.callerKeys || [], "keys"));
   $("#usageNote").textContent = t("Counted from the providers' own usage reports on every call through the gateway · {path}", { path: u.path });
   const clear = $("#usageClear");
   clear.hidden = false;
@@ -1248,10 +1381,10 @@ async function hideUsageAgent(id, hide) {
 //
 // An allowance card can be hidden from the Overview (whqtian_07012 on
 // Discord: StepFun's plan card wanted, its balance card not), from the
-// card's own menu (quotaCardMenus). Only from this page: routing, caps and
-// the counting never hear of it, the tray panel's Allowances tab has its
-// own (Arrange), and a menu bar cell asking for a hidden card shows it
-// until the page is left. Each is kept by its tray card id and its kind
+// card's own menu (quotaCardMenus). Only from what is shown: routing, caps
+// and the counting never hear of it; the tray panel's Allowances tab
+// (panelPageCut) and the menu bar (trayShown, onkashiko on X) leave it out
+// too. Each is kept by its tray card id and its kind
 // (cardHideKey), in magpie's settings (usageCardsHidden), so every window
 // and magpie web agree; one line at the section's end says how many, and
 // has them back.
@@ -1363,6 +1496,8 @@ function quotaCardMore(card, subs) {
 }
 function quotaCardMenu(target, card, subs, from) {
   let part = [...card.children].find((c) => c.contains(target));
+  // an account's own card in the provider's: its first row names it
+  if (part?.classList.contains("subscription-acct")) part = part.firstElementChild;
   while (part && !part.classList.contains("subscription-account") && !part.classList.contains("subscription-head")) part = part.previousElementSibling;
   const who = part?.classList.contains("subscription-account") && subs.find((q) => trayCardID(q) === part.dataset.card);
   const of = who ? [who] : subs;
@@ -2016,6 +2151,11 @@ function ledDetail(r) {
   // DeepSeek's image files kept out of it (#5407); a row from before has
   // none of them, and says nothing
   if (r.up_bytes > 0) add("Sent upstream", fmtBytes(r.up_bytes));
+  // and what it was made of, for a row whose body magpie read
+  if (r.up_bytes > 0 && r.up_parts) {
+    const p = ledUpParts({ up_bytes: r.up_bytes, up_measured: r.up_bytes, up_system: r.up_parts.system, up_tools: r.up_parts.tools, up_images: r.up_parts.images });
+    add("Made of", LED_UP_PARTS.filter(([k]) => p[k] > 0).map(([k, label]) => t(label) + " " + fmtBytes(p[k])).join(" · "));
+  }
   if (r.down_bytes > 0) add("Received", fmtBytes(r.down_bytes));
   // and how many images they were, for a row that kept it (matrix0487)
   if (r.image_files_saved > 0) add("Saved by image files", r.image_files > 0 ? t(r.image_files === 1 ? "{size} ({n} image)" : "{size} ({n} images)", { size: fmtBytes(r.image_files_saved), n: ledNum(r.image_files) }) : fmtBytes(r.image_files_saved));
@@ -2278,11 +2418,114 @@ function drawLedSpeed(l) {
   box.append(head, scroll);
 }
 
+// ---- what the bytes sent upstream were made of (theforeveriris on X:
+// "8.6 GB up from plain-text projects?"). Every request sends the whole
+// conversation again, so a request's bytes are about its context; the
+// card says so, splits the bytes of the requests whose body magpie read
+// into the system prompt, the tools' definitions, images and the
+// conversation, and lists them by agent and by model, each with its bytes
+// a request. Opened from the ↑ on the Requests card, kept open as left.
+let ledUpOpen = false;
+try { ledUpOpen = localStorage.getItem("magpie.ledUp") === "1"; } catch {}
+const LED_UP_PARTS = [
+  ["conv", "Conversation", "c1"],
+  ["tools", "Tool definitions", "c2"],
+  ["system", "System prompt", "c3"],
+  ["images", "Images", "c4"],
+  ["rest", "Not measured", ""],
+];
+function ledUpParts(x) {
+  const sys = x.up_system || 0, tools = x.up_tools || 0, images = x.up_images || 0;
+  const measured = Math.min(x.up_measured || 0, x.up_bytes || 0);
+  return { conv: Math.max(0, measured - sys - tools - images), tools, system: sys, images, rest: Math.max(0, (x.up_bytes || 0) - measured) };
+}
+const ledUpEach = (x) => (x.up_calls > 0 ? (x.up_bytes || 0) / x.up_calls : 0);
+function drawLedUp(l, entering) {
+  const box = $("#ledUp");
+  box.hidden = !ledUpOpen || !(l.up_bytes > 0);
+  box.replaceChildren();
+  if (box.hidden) return;
+  const head = el("div", "led-bar");
+  head.append(el("b", "led-spd-t", t("Sent upstream")), el("span", "grow"));
+  const each = ledUpEach(l);
+  if (each) head.append(el("span", "led-up-each", t("≈ {size} a request", { size: fmtBytes(each) })));
+  const close = el("button", "text led-up-x", "×");
+  close.type = "button";
+  close.setAttribute("aria-label", t("Close"));
+  close.onclick = () => ledUpToggle(false);
+  head.append(close);
+  const note = el("p", "led-up-note", t("Each request sends the whole conversation again, with the system prompt and the tools' definitions, so a request's bytes grow with its context."));
+  const parts = ledUpParts(l);
+  const bar = el("div", "led-up-bar");
+  bar.setAttribute("role", "img");
+  const legend = el("div", "led-up-legend");
+  const said = [];
+  for (const [key, label, c] of LED_UP_PARTS) {
+    const n = parts[key];
+    if (!(n > 0)) continue;
+    const share = n / l.up_bytes;
+    const seg = el("i", "led-up-seg " + key);
+    if (c) seg.style.background = "var(--" + c + ")";
+    seg.style.flexGrow = String(share);
+    seg.title = t(label) + ": " + fmtBytes(n) + " (" + (100 * share).toFixed(1) + "%)";
+    bar.append(seg);
+    const item = el("span", "led-up-key " + key);
+    const dot = el("i", "dot");
+    if (c) dot.style.background = "var(--" + c + ")";
+    item.append(dot, el("span", "", t(label)), el("b", "", fmtBytes(n)), el("span", "pc", (100 * share < 1 ? "<1" : Math.round(100 * share)) + "%"));
+    if (key === "rest") item.title = t("Requests whose body magpie didn't read: a Responses WebSocket's turns, and bodies it couldn't take apart");
+    legend.append(item);
+    said.push(t(label) + " " + fmtBytes(n));
+  }
+  bar.setAttribute("aria-label", said.join(", "));
+  const lists = el("div", "led-up-lists");
+  for (const [dim, title] of [["agent", "Agent"], ["model", "Model"]]) {
+    const rows = (l.by?.[dim] || []).filter((s) => s.up_bytes > 0).sort((a, b) => b.up_bytes - a.up_bytes);
+    if (!rows.length) continue;
+    const table = el("table", "led-spd led-up-by");
+    const hr = el("tr");
+    hr.append(el("th", "nm", t(title)), el("th", "n", t("Bytes sent")), el("th", "n", t("Per request")));
+    const thead = el("thead");
+    thead.append(hr);
+    const body = el("tbody");
+    const top = rows[0].up_bytes;
+    for (const s of rows.slice(0, 8)) {
+      const tr = el("tr");
+      const nm = el("td", "nm");
+      const name = s.name || s.id || "—";
+      nm.append(el("span", "", dim === "agent" ? t(name) : name));
+      nm.title = name;
+      const meter = el("i", "led-up-meter");
+      meter.style.width = (100 * s.up_bytes / top).toFixed(1) + "%";
+      nm.append(meter);
+      tr.append(nm, el("td", "", fmtBytes(s.up_bytes)), el("td", ledUpEach(s) ? "" : "faint", ledUpEach(s) ? fmtBytes(ledUpEach(s)) : "—"));
+      body.append(tr);
+    }
+    table.append(thead, body);
+    lists.append(table);
+  }
+  box.append(head, note, bar, legend, lists);
+  if (entering && box.animate) {
+    const still = calm();
+    box.animate([{ opacity: 0, transform: still ? "none" : "translateY(-4px)" }, { opacity: 1, transform: "none" }], { duration: 200, easing: "cubic-bezier(.23, 1, .32, 1)" });
+  }
+}
+let ledUpLast = null;
+function ledUpToggle(open) {
+  ledUpOpen = open;
+  try { localStorage.setItem("magpie.ledUp", open ? "1" : "0"); } catch {}
+  for (const b of document.querySelectorAll("#ledKpi .led-up-open")) b.setAttribute("aria-expanded", String(open));
+  if (ledUpLast) drawLedUp(ledUpLast, open);
+  if (!open) $("#ledKpi .led-up-open")?.focus({ preventScroll: true });
+}
+
 function renderLedgerDash(l) {
   const dash = $("#ledDash");
   dash.hidden = !l.total && !l.day;
   if (dash.hidden) return;
   drawLedSpeed(l);
+  ledUpLast = l;
+  drawLedUp(l);
   const total = allTokens(l);
   // of the calls whose vendor counted the cache: none when no call's was (#3464)
   const rate = cacheHitOf(l);
@@ -2340,11 +2583,22 @@ function renderLedgerDash(l) {
     const io = line(...usageParts(["↑ " + fmtBytes(l.up_bytes || 0), "↓ " + fmtBytes(l.down_bytes || 0), ...(l.image_files_saved > 0 ? [t("{n} saved by image files", { n: fmtBytes(l.image_files_saved) })] : [])]));
     io.classList.add("parts", "led-io");
     io.title = t("Sent upstream") + ": " + ledNum(l.up_bytes || 0) + " B\n" + t("Received") + ": " + ledNum(l.down_bytes || 0) + " B";
+    // the ↑ opens what those bytes were made of (drawLedUp)
+    if (l.up_bytes > 0) {
+      const up = io.firstElementChild;
+      const b = el("button", "led-jump led-up-open", up.textContent);
+      b.type = "button";
+      b.title = t("What the bytes sent upstream were made of");
+      b.setAttribute("aria-controls", "ledUp");
+      b.setAttribute("aria-expanded", String(ledUpOpen));
+      b.onclick = () => ledUpToggle(!ledUpOpen);
+      up.replaceChildren(b);
+    }
     strip.lastChild.append(io);
   }
   // and how fast it flows now, while requests are in flight (ledFlow)
   strip.lastChild.append(ledFlowLine());
-  const c = fmtCost(l);
+  const c = fmtCost(l, l.provider);
   // the count in the words the quick panel uses too, the whole sentence on
   // hover (tenacious_eagle on Discord)
   block("Cost", c ? "≈" + c : "—", line(l.unpriced ? unpricedCalls(l.unpriced) : t("effective prices")), c ? "cost" : "", l.unpriced ? unpricedCallsWhy(l.unpriced) : "");
@@ -2624,7 +2878,8 @@ function ledHeatTip(x) {
     return tip;
   }
   const parts = [t("{n} tokens", { n: fmtN(x.tokens) }), t(x.calls === 1 ? "{n} request" : "{n} requests", { n: ledNum(x.calls) })];
-  const c = fmtCost(x);
+  // of one provider's calls, while the filters keep only its
+  const c = fmtCost(x, new URLSearchParams(ledHeat?.want).get("provider") || "");
   if (c) parts.push("≈" + c);
   const order = { tokens: 0, calls: 1, cost: 2 }[ledHeatMetric];
   if (order && parts[order]) parts.unshift(...parts.splice(order, 1)); // the metric shown first
@@ -3089,7 +3344,7 @@ function renderLedger() {
   renderPeriod();
   renderArchive();
 
-  costHead(fmtCost(l), l.unpriced ? unpricedCalls(l.unpriced) : "", unpricedCallsWhy(l.unpriced));
+  costHead(fmtCost(l, l.provider), l.unpriced ? unpricedCalls(l.unpriced) : "", unpricedCallsWhy(l.unpriced));
 
   // the filters: choices seen in the period, and failures alone
   sessPick($("#ledPurpose"), "All purposes", ledPurpose, purposeOptions(l.purposes || [], ledPurpose), "Purpose", (v) => { ledPurpose = v; ledOwn("purpose"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
@@ -5095,4 +5350,32 @@ if (mode === "window" && params.get("view") === "usage") {
   const u = new URL(location.href);
   for (const k of ["tab", "provider", "agent", "computer", "card", "purpose", "via", "period"]) u.searchParams.delete(k);
   history.replaceState(null, "", u);
+}
+
+// The tray panel's Allowances tab leaves out what this page hides
+// (onkashiko on X): cards are the ones it draws from list (the quotas as
+// read), in this page's order, the cards hidden left out before a key's
+// balance is put on its plan's card (keyCards), as the Overview has it, so
+// a plan hidden leaves its balance and a balance hidden leaves its plan's
+// card without it, and their hidden rows gone, but for what peek asks for;
+// gone says whether this page hides a vendor's every card, which the
+// panel's Arrange calls hidden, for list as read or as keyCards puts it;
+// away is the vendors the panel leaves out, those and the ones its own
+// Arrange hid (hidden). Here, not in the core, as page.js is in every
+// window.
+function panelPageCut(list, peek = () => false, hidden = new Set()) {
+  const hid = hiddenCards();
+  list = sharedBalances(list || []).filter((q) => q.balance || q.error || q.windows?.length);
+  const gone = (p) => list.every((q) => q.provider !== p || cardHideKeys(q).every((k) => hid.has(k)));
+  const kept = list.filter((q) => !hid.has(cardHideKey(q)) || peek(q));
+  const cards = byUsageOrder(keyCards(kept)).map(withoutHiddenRows);
+  const peeked = (p) => list.some((q) => q.provider === p && peek(q));
+  const away = new Set(list.map((q) => q.provider).filter((p) => (hidden.has(p) || gone(p)) && !peeked(p)));
+  return { gone, away, cards };
+}
+
+// usageCardsHidden with a vendor's every card shown again, for the panel's
+// Arrange showing one this page hid
+function cardsShownFor(p) {
+  return (state.settings.usageCardsHidden || []).filter((k) => k.split("|")[0] !== p);
 }

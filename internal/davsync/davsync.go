@@ -956,6 +956,11 @@ func hashes(b backup.Bundle) map[string]string {
 		c.Subagents = nil
 		lib = &c
 	}
+	if lib != nil && lib.Commands != nil && len(*lib.Commands) == 0 { // as before them, without one
+		c := *lib
+		c.Commands = nil
+		lib = &c
+	}
 	if lib != nil && lib.Hooks != nil && len(*lib.Hooks) == 0 { // as before them, without one
 		c := *lib
 		c.Hooks = nil
@@ -1029,8 +1034,8 @@ func unset(b backup.Bundle, p string) bool {
 			}
 		}
 		return len(l.MCP) == 0 && len(l.Skills) == 0 &&
-			(l.Subagents == nil || len(*l.Subagents) == 0) && (l.Hooks == nil || len(*l.Hooks) == 0) &&
-			(l.Bili == nil || strings.TrimSpace(*l.Bili) == "")
+			(l.Subagents == nil || len(*l.Subagents) == 0) && (l.Commands == nil || len(*l.Commands) == 0) && (l.Hooks == nil || len(*l.Hooks) == 0) &&
+			(l.Bili == nil || strings.TrimSpace(*l.Bili) == "") && l.ClaudePlugins == nil
 	}
 	return false
 }
@@ -1341,6 +1346,20 @@ func syncOnce(ctx context.Context, c Config, st *state, pv *Plan) error {
 	var rejoin []string
 	for _, p := range st.Off {
 		if slices.Contains(Parts, p) && c.syncs(p) {
+			rejoin = append(rejoin, p)
+		}
+	}
+	// a state written before Off was recorded (#3356): the last sync left
+	// a part out but wrote no mark of it, and all it left of the part here
+	// is the nothing-hash a left-out part carries. One that holds something
+	// of its own now joins like one turned back on, its older content never
+	// taken as a change here over the server's newer one.
+	nothing := hashes(backup.Bundle{})
+	for _, p := range Parts {
+		if !c.syncs(p) || slices.Contains(rejoin, p) || st.Local == nil {
+			continue
+		}
+		if st.Local[p] == nothing[p] && L[p] != st.Local[p] && !unset(local, p) {
 			rejoin = append(rejoin, p)
 		}
 	}

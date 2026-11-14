@@ -683,6 +683,7 @@ magpie gateway-key limit <id> week --tokens 2m --cost 5   # its own limit
 magpie gateway-key limit <id> list     # each limit, used, left and reset
 magpie gateway-key limit <id> 10d --tokens 5m   # every 10 days, from now
 magpie gateway-key limit <id> total --cost 300  # $300 in total, until reset
+magpie gateway-key limit <id> account --account codex/me@example.com --window 5h --tokens 2m   # with that account's 5 hours
 magpie gateway-key limit <id> 5h --tokens 200k  # every 5 hours, from now
 magpie gateway-key limit <id> add week --cost 20   # one more limit; all must pass
 magpie gateway-key limit <id> add month --cost 20 --model openai/*   # a limit of only OpenAI's models
@@ -710,7 +711,16 @@ N from 1 to 3650) or every N hours (#2102; N from 1 to 8760, such as 5 for
 a subscription's 5-hour pace), or **in total** (`total`, @Cyrus_4433 on X):
 a limit that never resets by the clock, counted from when it is set and
 started again only by **Reset usage** (`magpie gateway-key limit <id> total
---cost 300`); its 429 says it stays refused until it is reset or raised. An N-day or N-hour cycle starts when the
+--cost 300`); its 429 says it stays refused until it is reset or raised. Or it follows **an account's window** (`account`, ljayic on X): one
+subscription account's own 5 hours, week or month, starting and resetting
+when that account's last reading says its window does (Gateway keys → the
+key's limit → Window → An account's window, then the account's window; CLI
+`--account <provider>/<account> --window <name>`). When that window can't
+be read (no reading yet, or its reset has passed with none since), the
+limit isn't reset or lifted: it counts from the reset that passed (or from
+when the limit was set), its row says it resets with the account's window,
+and a refused call is told to retry in 5 minutes while magpie reads the
+accounts again. An N-day or N-hour cycle starts when the
 limit is set and runs N×24 or N hours, then the next one starts where it
 ended, so a restart, a time-zone change or a daylight-saving shift doesn't
 move it. Changing only
@@ -1142,16 +1152,24 @@ can't drift:
 | `POST provider/{action}` | `save`, `delete`, `on`, `off`, `name`, `efforts`, `images`, `arrange`, `route`, `affinity`, `sink`, `usefirst`, `test`, `models`, `list`, and each key's or account's setting (`accountcap`, `accountname`, `windowcap`, `accountweight`, `keyspendcap`, `keyexpiring`, …) |
 | `POST keys/{action}`, `POST login/{action}`, `GET login/usage` | a provider's keys, and its signed-in accounts |
 | `POST signin` `{"agent": …}`, `GET signin/{id}`, `POST signin/{id}/cancel`, `POST signin/{id}/callback` | OAuth sign-in: the answer holds the vendor's page and the code to type there. Nothing is opened on this computer and no password is taken |
-| `GET gateway-keys[/models\|/mcp]`, `POST gateway-keys/{action}` | gateway keys: `add-key`, `rename-key`, `rotate-key`, `limit-key`, `models-key`, `accounts-key`, `mcp-key`, `access-key`, `on-key`, `off-key`, `remove-key`, … |
+| `GET gateway-keys[/models\|/mcp\|/account-windows]`, `POST gateway-keys/{action}` | gateway keys: `add-key`, `rename-key`, `rotate-key`, `limit-key`, `models-key`, `accounts-key`, `mcp-key`, `access-key`, `on-key`, `off-key`, `remove-key`, … |
 | `GET account-groups`, `POST account-groups/{action}` | named account groups |
+| `GET routing-groups`, `GET routing-groups/{id}` | the Routing page's groups and combos, as the app shows them; one by its id or `group/<id>` |
+| `POST routing-groups/create`, `POST routing-groups/update` | a group or combo made, or changed: `create` takes the editor's body (`name`, `members`, …) and is 409 for an id in use; `update` takes `id` and only the fields to change, the rest kept (`from` and a new `id` rename it, and the combos naming it follow) |
+| `POST routing-groups/{action}` | the Routing page's own: `save`, `delete` (`id` or `ids`; refused while a combo names it), `copy`, `switch`, `arrange`, `pick`, `defaults`, `template`, `share`, `import`, `show` |
 
-Bodies are the app's own JSON. A route or action not listed is a 404. Never
+Bodies are the app's own JSON, and each is checked as the app checks it (a
+member a provider doesn't serve, an account it doesn't have, a combo of
+itself are 400). A member may name one account, `provider/model#<account>`.
+A route or action not listed is a 404: Routing's `found` and `skip`, which
+set this computer's agents, are not served. Never
 served: a provider's saved key, a gateway key's secret after its `add-key` or
 `rotate-key` answer, exporting sign-ins, and what changes this computer's
 other apps (moving, showing, restarting).
 
 Who may call it: a gateway key set with `magpie gateway-key admin <id>
-local|any`. `local` is from this computer only; `any` also from the network
+local|any`, or in the app from the key's menu, Advanced (Off, From this
+computer, From any computer); such a key says Manages magpie in its row. `local` is from this computer only; `any` also from the network
 when sharing is on. Only a key the user made can have it: a read-only,
 Magpie Browser, issued or expiring key, and the default sharing key, can't,
 and the API can't set the level on any key, so it can't raise its own
@@ -1160,9 +1178,9 @@ caller. A request with no key is 401, a key without the level 403
 any request with `Origin` (`null`, a foreign page, a listed page or
 `*.localhost` among them) or `Sec-Fetch-*` is 403, and so is one that
 reached loopback under another name (a rebound page's GET has neither).
-Answers are `Cache-Control: no-store`. This first part leaves out Routing
-Groups (the Routing page) and the import and export of sign-ins; they are
-tracked in [#6307](https://github.com/yetone/magpie/issues/6307).
+Answers are `Cache-Control: no-store`. The import and export of sign-ins
+is left out on purpose: it would hand a script every account's secrets
+([#6307](https://github.com/yetone/magpie/issues/6307)).
 
 ### Embeddings and rerank
 
@@ -1616,9 +1634,9 @@ with the same JSON: `param-override` (`param_override`), `model-map`
 `think-tags` (strip `<think>…</think>`, or `thinking_to_content`), and
 `antigravity-cloak`, which keeps words Antigravity turns a system prompt
 away for out of what it sends Antigravity alone (magpie itself already
-breaks up the lines it knows of: Codex's, Claude Code's, Hermes' earlier
-persona; `magpie provider set antigravity prompt=as-written` turns that
-off). A
+rewords the lines it knows of: Codex's, Claude Code's, Hermes' earlier
+persona, omp's; `magpie provider set antigravity prompt=as-written` turns
+that off). A
 middleware's entry in the community `registry.json` has
 `"kind": "middleware"` and no `providers`.
 
@@ -1636,7 +1654,7 @@ export const agent = {
   prefix: "openai/",             // written before magpie's model id
   ua: ["aider", "litellm"],
 }
-export function connect({ gateway, model, models }) {
+export function connect({ gateway, model, models, decisionModels }) {
   return { "openai-api-base": gateway.v1, "openai-api-key": gateway.key }
 }
 ```
@@ -1657,6 +1675,20 @@ call costs. Each is left out when it isn't known (a routing group has no
 { "id": "deepseek/pro", "name": "pro · DeepSeek", "context": 0, "output": 0, "images": false, "efforts": [],
   "native_endpoints": ["/v1/chat/completions"],
   "pricing": { "prompt": "0.0000003", "completion": "0.0000012", "input_cache_read": "0.00000003" } }
+```
+
+`connect` also gets `decisionModels`: magpie's decision models (Jev, Clef,
+a vendor's or a plugin's model marked `decides`, as the routing groups'
+pickers offer them), and the routing groups made of them. They are kept
+out of `models`, which an agent offers for a conversation, and out of
+`/v1/models`. Each has `id`, `name`, `provider` (a group has `group: true`
+instead) and `endpoints`, the gateway paths it is asked on: `/v1/systemone`,
+and `/v1/decisions`, which the gateway translates to System One for it.
+It is `[]` when there are none:
+
+```json
+{ "id": "openrouter/~typesafe/jev-latest", "name": "Jev · OpenRouter", "provider": "openrouter",
+  "endpoints": ["/v1/systemone", "/v1/decisions"] }
 ```
 
 An agent that takes the gateway only from how it is started, not from a
@@ -2425,13 +2457,13 @@ to (an account added by setup-token doesn't count), magpie keeps it and
 says so. Add another account first, or sign out in Claude Code itself,
 then remove it.
 
-With more than one Codex account on, magpie also sets `openai_base_url`
-in Codex's config.toml, so a request the signed-in account has no
-allowance for goes on to the others through the gateway. *Only switch
-Codex's sign-in* under Providers › Codex (or `magpie accounts switch-only
-codex on`) leaves that out: magpie only moves Codex's own sign-in
-(`auth.json`) as above, and Codex's requests go straight to OpenAI, never
-through magpie (#1907). An `openai_base_url` you wrote yourself stays. The
+A Codex that isn't connected to magpie goes straight to OpenAI on its own
+sign-in, however many of its accounts are on: magpie only moves Codex's
+sign-in (`auth.json`) as above. Connected, a request the signed-in account
+has no allowance for goes on to the others through the gateway. *Only
+switch Codex's sign-in* under Providers › Codex (or `magpie accounts
+switch-only codex on`) keeps Codex's requests off magpie even then
+(#1907). An `openai_base_url` you wrote yourself stays. The
 Codex app and a running `codex app-server` read the sign-in when they
 start, so one already open stays on its account until it is opened again;
 a new `codex` session takes the new one. Connected to magpie, Codex's
@@ -3206,7 +3238,11 @@ press *Arrange* at the foot of the panel's tab and move the rows there. The
 same *Arrange* hides a subscription from the panel's tab (*Hide*, *Show*
 puts it back), and the tab's foot says how many are hidden. Hiding is the
 panel's only: routing, caps, the Usage page and the menu bar's own cells
-still have it, and a menu bar cell for it still opens its card. Both are
+still have it, and a menu bar cell for it still opens its card. A card or
+quota row hidden on the Usage page (its card's *Hide from Overview*) is left
+out of the panel's tab too, and of `magpie tui`'s Usage page; a
+subscription hidden there whole shows as hidden in the panel's *Arrange*,
+whose *Show* brings it back on the Usage page too. Both are
 kept in magpie's settings (`usageOrder`, `panelUsageHidden`). Which
 allowances the menu bar itself shows beside its icon is picked in Settings.
 The same list has *Tokens and cost today* and *Tokens and cost, last 7
@@ -3512,6 +3548,14 @@ A version installed from the site can be newer than Stable's; the app
 keeps it and waits until Stable passes it. While it waits, the Version
 row says *Up to date on Stable*, names the newest version out on Every
 version, and offers to switch to Every version.
+
+The site's downloads offer Stable's version beside the newest
+(`usemagpie.ai/download/stable/<platform>`). A fresh install of it (no
+magpie run on this computer before) takes Stable before its first update
+check, so it isn't offered the newest at once: it asks the feed for
+Stable's version and the newest, and when it is Stable's and a newer one
+is out, sets `"updateChannel": "stable"`. A channel you set is kept, and a
+version that is both Stable's and the newest stays on Every version.
 
 The update feed works this out from the release list
 (`https://usemagpie.ai/api/latest?channel=stable`); nothing is promoted
@@ -3834,6 +3878,7 @@ application:
     - /alpha/search
     - /mcp
     - /me
+    - /deepseek-chat
     - /join
     - /magpie-ca.crt
 services:

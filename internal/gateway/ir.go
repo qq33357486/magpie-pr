@@ -58,6 +58,12 @@ type Part struct {
 	IsError    bool
 	Images     []Part         // the images the tool returned beside its text
 	Standalone map[string]any // native Responses notification with no call ID
+	// Audio is the recordings the tool returned (a Chat tool message's
+	// input_audio parts), as File parts with an audio/* type: a Gemini
+	// upstream is given them inline after the response, as its images;
+	// every other upstream is told of them in the result's text, which
+	// toolOutput already ends with a note for each
+	Audio []Part
 	// Loads are the tools a tool's result loads, by name: Claude Code's
 	// ToolSearch answers with tool_reference blocks naming the deferred
 	// tools it found (#2660)
@@ -244,6 +250,11 @@ type Request struct {
 	// such prompts, with the interactive mode on all the same
 	// (thirdPartyPrint)
 	tuiRefused bool
+	// unpasted, for the Claude bridge, is a request whose message Claude
+	// Code's interactive mode didn't take, or one with images on a
+	// machine where it didn't take an image (ok123now on X): its run is
+	// claude -p, with the interactive mode on all the same
+	unpasted bool
 	// hourMarks has the cache marks magpie adds on Anthropic's Messages
 	// (anthropicBody) last an hour: a Responses client's (Codex's), whose
 	// turns are often more than five minutes apart and whose own vendor
@@ -255,6 +266,10 @@ type Request struct {
 	// video (videoInput): a video of an earlier turn is told of in words
 	// (attachmentText) where it would go as a video block (video_input.go)
 	videoOff bool
+	// signer, on a request built for chat completions, is the provider
+	// it goes to: a tool call's Gemini signature that provider gave goes
+	// back to it in extra_content, whatever its host (buildChat)
+	signer string
 	// draws asks the model for images beside text: a drawing asked on
 	// Gemini's API of a model not named for images (drawCodeAssist).
 	draws bool
@@ -296,6 +311,15 @@ type Request struct {
 	ThinkOff  bool
 	Parallel  *bool // parallel tool calls allowed
 	WebSearch bool  // the client offered its provider's own web search
+	// GoogleTools are Gemini's own tools other than googleSearch (which
+	// is WebSearch) that the client offered, each one tool object as
+	// Google spells it — {"urlContext":{}}, {"codeExecution":{}},
+	// {"googleMaps":{}} — for an upstream that speaks Gemini, inside
+	// Code Assist's envelope too (buildCodeAssistSent). A Gemini client's
+	// tools, or the same objects in a Chat request's tools. Left out, a
+	// client's URL context and code execution were dropped on every
+	// translated route (daoche_wuzui on X). No other API runs them.
+	GoogleTools []json.RawMessage
 	// Advisor is the model of Claude Code's advisor that magpie runs
 	// itself (advisor_serve.go), "" when it doesn't: its calls and results
 	// in the conversation are ToolCall and ToolResult parts then
@@ -959,11 +983,15 @@ func stringOrText(raw json.RawMessage) string {
 }
 
 // toolOutput reads a tool's result: its text, as stringOrText reads it,
-// and the images in it. Anthropic's tool_result holds image blocks, a
-// Responses function_call_output input_image parts and a Chat tool message,
-// from clients that send them, image_url parts. An image named only by a
-// vendor's file id has nothing to carry and is left out.
-func toolOutput(raw json.RawMessage) (string, []Part) {
+// the images in it and the recordings. Anthropic's tool_result holds image
+// blocks, a Responses function_call_output input_image parts and a Chat
+// tool message, from clients that send them, image_url and input_audio
+// parts. An image named only by a vendor's file id has nothing to carry and
+// is left out. Each recording is also told of at the end of the text
+// ("[attachment audio/wav]", as a Chat user's input_audio is told of to an
+// upstream that can't hear it), so an upstream given the text alone knows
+// the tool returned one; a Gemini upstream is given the recording too.
+func toolOutput(raw json.RawMessage) (string, []Part, []Part) {
 	text := stringOrText(raw)
 	var blocks []struct {
 		Type   string `json:"type"`
@@ -972,13 +1000,17 @@ func toolOutput(raw json.RawMessage) (string, []Part) {
 			Data      string `json:"data"`
 			URL       string `json:"url"`
 		} `json:"source"`
-		ImageURL json.RawMessage `json:"image_url"`
-		Detail   string          `json:"detail"` // a Responses input_image's
+		ImageURL   json.RawMessage `json:"image_url"`
+		Detail     string          `json:"detail"` // a Responses input_image's
+		InputAudio struct {
+			Data   string `json:"data"`
+			Format string `json:"format"`
+		} `json:"input_audio"`
 	}
 	if len(raw) == 0 || raw[0] != '[' || decodeJSON(raw, &blocks) != nil {
-		return text, nil
+		return text, nil, nil
 	}
-	var images []Part
+	var images, audio []Part
 	for _, b := range blocks {
 		switch b.Type {
 		case "image":
@@ -1003,9 +1035,22 @@ func toolOutput(raw json.RawMessage) (string, []Part) {
 				im.Detail = detail
 				images = append(images, im)
 			}
+		case "input_audio":
+			// a tool's recording, as a Chat user's input_audio is read
+			// (chatParts): left out before, so Gemini answered without
+			// it (Parlevent_ on X)
+			if b.InputAudio.Data != "" {
+				audio = append(audio, Part{Kind: File, MediaType: audioType(b.InputAudio.Format), Data: b.InputAudio.Data})
+			}
 		}
 	}
-	return text, images
+	for _, a := range audio {
+		if text != "" {
+			text += "\n"
+		}
+		text += attachmentText(a)
+	}
+	return text, images, audio
 }
 
 // effortOf normalises the reasoning effort names the APIs use.

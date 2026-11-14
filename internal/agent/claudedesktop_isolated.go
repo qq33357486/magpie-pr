@@ -29,7 +29,7 @@ const desktopIsolatedKey = ".isolated"
 
 // desktopIsolatedOn says the user turned the isolated Desktop on; a var so
 // a test needs no settings file.
-var desktopIsolatedOn = func() bool { return settings.Load().DesktopIsolated }
+var desktopIsolatedOn = func() bool { return settings.Shared().DesktopIsolated }
 
 // desktopIsolatedSet is the isolated Desktop's folders on goos: its
 // userData and its 3p folder are one, Claude-Magpie-3p. The language and
@@ -65,11 +65,11 @@ func desktopIsolatedSet(goos, home string, getenv func(string) string) (desktopP
 
 // desktopIsolatedClaudeOn says the user gave the isolated Desktop's Code
 // tab a folder of its own; a var so a test needs no settings file.
-var desktopIsolatedClaudeOn = func() bool { return settings.Load().DesktopIsolatedClaude }
+var desktopIsolatedClaudeOn = func() bool { return settings.Shared().DesktopIsolatedClaude }
 
 // desktopIsolatedClaudeChosen says the user set that themselves; a var
 // so a test needs no settings file.
-var desktopIsolatedClaudeChosen = func() bool { return settings.Load().DesktopIsolatedClaudeChosen }
+var desktopIsolatedClaudeChosen = func() bool { return settings.Shared().DesktopIsolatedClaudeChosen }
 
 // saveDesktopIsolatedClaude keeps that folder on or off, and chosen when
 // the user set it; a var for tests.
@@ -119,6 +119,27 @@ func desktopCodeDir(home string) string {
 		return ""
 	}
 	return desktopIsolatedClaudeDir(home)
+}
+
+// DesktopTwinCode says a is the Claude Code row of Claude Magpie's Code
+// tab folder (#6459) while Claude Magpie is on magpie. That tab runs its
+// Claude Code with the provider managed by the host, so its requests go
+// to magpie through Claude Magpie's own gateway whatever the row's
+// settings.json says: the row isn't "not connected, on its own settings"
+// then (xMopf7RF on X, 0.1.4111: right after Use Claude Magpie it read so,
+// as if Claude Magpie had been left off).
+func DesktopTwinCode(a *Agent) bool {
+	// the settings read only for a claude# row: asked of every row
+	if a.WSL != "" || !strings.HasPrefix(a.ID, "claude#") {
+		return false
+	}
+	home, _ := os.UserHomeDir()
+	d := desktopCodeDir(home)
+	if d == "" || a.ID != "claude#"+claudeDirName(filepath.Base(d)) {
+		return false
+	}
+	iso, ok := desktopIsolatedSet(desktopdir.OS, home, os.Getenv)
+	return ok && desktopWired(iso)
 }
 
 // desktopIsoClaudeArg is the folder Claude Magpie.app is made with: its

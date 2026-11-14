@@ -40,6 +40,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"html"
 	"io"
 	"io/fs"
 	"log"
@@ -61,6 +62,7 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/bridgesid"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/claudecode"
 	"github.com/yetone/magpie/internal/claudetui"
@@ -102,6 +104,10 @@ type subscriptionBridge struct {
 	// refused in the interactive mode as a third-party app's, and when:
 	// their turns run as claude -p until thirdPartyFor has passed (#4503)
 	thirdParty sync.Map
+	// unpasted is when, in unix nanoseconds, this machine's interactive
+	// Claude Code last didn't take an image pasted into it: turns with
+	// images run as claude -p until unpastedFor has passed (ok123now)
+	unpasted atomic.Int64
 }
 
 // untrustedFor is how long a caller's folder Claude Code asked to trust
@@ -606,7 +612,7 @@ func clientNamedWorkPlace(req *Request) (dir string, inTurns bool) {
 		}
 		for _, m := range re.FindAllStringSubmatch(t, -1) {
 			for _, g := range m[1:] {
-				g = strings.Trim(strings.TrimSpace(g), "`'\"")
+				g = strings.Trim(strings.TrimSpace(html.UnescapeString(g)), "`'\"")
 				if g = wasDir.ReplaceAllString(g, ""); g != "" {
 					dir, inTurns = g, turn
 				}
@@ -648,8 +654,12 @@ func clientNamedWorkPlace(req *Request) (dir string, inTurns bool) {
 // is, on a line of its own: Claude Code's, in its instructions (" - Primary
 // working directory: /x", a moved folder as "Primary working directory: /y
 // (was /x)"), on a --bare run just "CWD: /x"; OpenCode's, in its <env>;
-// pi's ("Current working directory:"); Codex's and pi's <cwd>.
-var clientSaidWorkDir = lazyre.New(`(?m)^\s*(?:-\s*)?(?:Primary working directory|Working directory|Current working directory|CWD): *([^\r\n]+)$|<cwd>([^<\r\n]+)</cwd>`)
+// pi's ("Current working directory:"); Codex's <cwd> on its line, and
+// pi 1.x's, whose <cwd> holds the folder on a line of its own
+// ("<cwd>\n/x\n</cwd>"): read only on one line, pi's runs started in
+// magpie's temp folder and its model was told both (fysly on X). The
+// path's &, < and > come as entities (workDirIn reads them the same way).
+var clientSaidWorkDir = lazyre.New(`(?m)^\s*(?:-\s*)?(?:Primary working directory|Working directory|Current working directory|CWD): *([^\r\n]+)$|<cwd>\s*([^<\r\n]+?)\s*</cwd>`)
 
 // clientTurnWorkDir is where a caller says its working directory is in a
 // turn of the conversation, on a line of its own: Codex's
@@ -658,7 +668,7 @@ var clientSaidWorkDir = lazyre.New(`(?m)^\s*(?:-\s*)?(?:Primary working director
 // message of its own, and --bare's "CWD:" is its whole system prompt, so
 // their forms are not read in a turn: a line a user message quotes —
 // Claude Code's or anyone's — is no caller's word.
-var clientTurnWorkDir = lazyre.New(`(?m)^\s*(?:-\s*)?(?:Working directory|Current working directory): *([^\r\n]+)$|<cwd>([^<\r\n]+)</cwd>`)
+var clientTurnWorkDir = lazyre.New(`(?m)^\s*(?:-\s*)?(?:Working directory|Current working directory): *([^\r\n]+)$|<cwd>\s*([^<\r\n]+?)\s*</cwd>`)
 
 func evalSymlinks(path string) string {
 	if p, err := filepath.EvalSymlinks(path); err == nil {
@@ -1162,7 +1172,14 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	if from != nil {
 		args = append(args, "--resume", from.session)
 		fromLen = from.size()
-	} else if hasReply(req.Messages) {
+	} else {
+		// a session of the bridge's names itself so (bridgesid): the
+		// local-session readers leave it out, as the gateway counts its
+		// calls already (iwinux on X: each call listed twice, once as
+		// Claude Code's local session)
+		args = append(args, "--session-id", bridgesid.New())
+	}
+	if from == nil && hasReply(req.Messages) {
 		// no run had the conversation: this one is told it whole, in one
 		// message, its earlier turns marked as such (renderClaudePrompt)
 		log.Printf("claude: a new Claude Code is told the whole conversation: %d messages, %d images, the last turn marked as the one to answer", len(req.Messages), countImages(req.Messages))
@@ -1210,7 +1227,7 @@ func (b *subscriptionBridge) startRun(ctx context.Context, req *Request, model, 
 	// runs them interactively. A run it can't take is refused, never made
 	// -p: a refused request never ran, and isn't the last run
 	tui, code := claudeTUI(req, binary)
-	if !tui && code != "off" && code != "no-shim" && code != thirdPartyCode && code != cacheMarksCode {
+	if !tui && code != "off" && code != "no-shim" && code != thirdPartyCode && code != unpastedCode && code != cacheMarksCode {
 		cleanup()
 		return nil, nil, &tuiRefusal{claudeTUIErr(claudeNotTUIWhy(req, binary))}
 	}
@@ -1524,6 +1541,7 @@ func claudePrint(req *Request, binary claudeCLI) (code, why string) {
 	}{
 		{urlImages(req.Messages) > 0, "image", "an image known by its URL"},
 		{req.tuiRefused, thirdPartyCode, "Anthropic refused this agent's system prompt in the interactive mode as a third-party app's"},
+		{req.unpasted, unpastedCode, "Claude Code's interactive mode here didn't take this message, or an image pasted into it; the plan counts a -p run at about twice the interactive mode's, and it starts without the interactive run's cache"},
 		{req.clientCache.keptAsPrint(), cacheMarksCode, fmt.Sprintf("the client's cache marks keep %dKB of history, which a fresh interactive run writes again each call", markedHistory(req)>>10)},
 	} {
 		if c.is {
@@ -1544,7 +1562,7 @@ func claudeMachineWhy(binary claudeCLI) (code, why string) {
 		{!claudeTUIRuns, "no-shim", "no shim"},
 		{runtime.GOOS != "darwin" && runtime.GOOS != "linux" && runtime.GOOS != "windows", "os", runtime.GOOS},
 		{binary.wsl == nil && binary.path == "", "missing", "no Claude Code path"},
-		{settings.Load().ClaudePrintMode, "off", "the interactive mode is turned off"},
+		{settings.Shared().ClaudePrintMode, "off", "the interactive mode is turned off"},
 	} {
 		if c.is {
 			return c.code, c.why
@@ -1825,7 +1843,7 @@ func (c claudeCLI) tuiEnv(env []string, configDir string) []string {
 // Claude Code's interactive mode, and never as -p: the user hasn't turned
 // it off (ClaudePrintMode), and magpie has its shim (claudeTUIRuns).
 func claudeTUIOn() bool {
-	return claudeTUIRuns && !settings.Load().ClaudePrintMode
+	return claudeTUIRuns && !settings.Shared().ClaudePrintMode
 }
 
 // wantTUI is whether req's run is to be the interactive mode: it is on,
@@ -1833,7 +1851,7 @@ func claudeTUIOn() bool {
 // A -p run made for such a prompt goes on with its turns, as a -p run
 // from before the interactive mode was turned on doesn't.
 func wantTUI(req *Request) bool {
-	return claudeTUIOn() && !req.tuiRefused && !req.clientCache.keptAsPrint()
+	return claudeTUIOn() && !req.tuiRefused && !req.unpasted && !req.clientCache.keptAsPrint()
 }
 
 // claudeNotTUIWhy is why a run isn't the interactive mode.
@@ -3179,7 +3197,7 @@ func cutSessionWhere(dirs []string, sid, what string, at func(b []byte, last boo
 			if end <= 0 {
 				continue
 			}
-			id := newUUID()
+			id := bridgesid.New() // the copy is the bridge's too
 			lines := bytes.ReplaceAll(b[:end], []byte(`"sessionId":"`+sid+`"`), []byte(`"sessionId":"`+id+`"`))
 			// a name no one has: nothing reads it before the run starts
 			path := filepath.Join(dir, id+".jsonl")
@@ -7072,14 +7090,15 @@ var ratelimitWindows = map[string]string{
 // on them.
 func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from provider.Protocol, name, model, owner string, body []byte, usage *Usage,
 	start func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error)) (int, string) {
-	return s.serveSubscriptionAs(w, r, from, name, model, owner, body, usage, start, false)
+	return s.serveSubscriptionAs(w, r, from, name, model, owner, body, usage, start, "")
 }
 
-// serveSubscriptionAs is serveSubscription, asPrint for the turn asked
-// again as claude -p after the interactive mode's run was refused as a
-// third-party app's with nothing of the reply said (redoAsPrint).
+// serveSubscriptionAs is serveSubscription, redo the code of a turn asked
+// again as claude -p after the interactive mode's run failed with nothing
+// of the reply said (redoAsPrint): thirdPartyCode, refused as a
+// third-party app's, or unpastedCode, its message not taken there.
 func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, from provider.Protocol, name, model, owner string, body []byte, usage *Usage,
-	start func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error), asPrint bool) (int, string) {
+	start func(ctx context.Context, req *Request) (*subscriptionRun, <-chan Event, error), redo string) (int, string) {
 	var req *Request
 	var err error
 	if name == "Claude Code" && wantsClientCache(r, from) {
@@ -7117,7 +7136,7 @@ func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, fro
 	}
 	// a client that places its own cache marks keeps Claude Code's prompt:
 	// its system marks are placed in the run's first message (#1717)
-	req.leanPrompt = name == "Claude Code" && req.clientCache == nil && settings.Load().ClaudeLeanPrompt
+	req.leanPrompt = name == "Claude Code" && req.clientCache == nil && settings.Shared().ClaudeLeanPrompt
 	// the tools of a caller on another computer run there, not where
 	// Claude Code runs (envUnknownNote)
 	req.remoteCaller = !local(r)
@@ -7142,13 +7161,25 @@ func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, fro
 	// interactive mode as a third-party app's runs as claude -p, which is
 	// served it: asked again after the refusal, or of a prompt refused
 	// within thirdPartyFor (#4503)
-	if name == "Claude Code" && claudeTUIOn() && (asPrint || s.subscription.tuiRefused(req)) {
+	if name == "Claude Code" && claudeTUIOn() && (redo == thirdPartyCode || s.subscription.tuiRefused(req)) {
 		req.tuiRefused = true
 		if req.clientCache != nil {
 			req.clientCache.print = true
 		}
 	}
-	if name == "Claude Code" && claudeTUIOn() && !req.tuiRefused && keptByPrint(req) {
+	// a turn whose message the interactive mode didn't take runs as
+	// claude -p, which is sent it whole: asked again after that failure,
+	// or, with images, on a machine whose interactive Claude Code didn't
+	// take an image pasted into it within unpastedFor (ok123now on X:
+	// Windows 10 LTSC, every image turn a 502 the client asked again)
+	if name == "Claude Code" && claudeTUIOn() && !req.tuiRefused &&
+		(redo == unpastedCode || countImages(req.Messages) > 0 && s.subscription.imagesUnpasted()) {
+		req.unpasted = true
+		if req.clientCache != nil {
+			req.clientCache.print = true
+		}
+	}
+	if name == "Claude Code" && claudeTUIOn() && !req.tuiRefused && !req.unpasted && keptByPrint(req) {
 		// the classifier's marks keep more than its fresh interactive
 		// run would write again each call: claude -p keeps them
 		req.clientCache.print, req.clientCache.kept = true, true
@@ -7375,10 +7406,18 @@ func (s *Server) serveSubscriptionAs(w http.ResponseWriter, r *http.Request, fro
 	if req.interactive && thirdPartyIn(msg) {
 		s.subscription.refusedTUI(req)
 	}
+	if req.interactive && strings.Contains(msg, claudetui.ImageNotTaken) {
+		s.subscription.unpasted.Store(time.Now().UnixNano())
+	}
+	if code == redoAsPrint && unpastedSaid(name, msg) {
+		gone()
+		log.Printf("claude: the interactive mode didn't take a turn's message on %s, with nothing of the reply said: asked again as claude -p, which the plan counts at about twice the interactive mode's, with none of its cache (%.200s)", req.Model, msg)
+		return s.serveSubscriptionAs(w, r, from, name, model, owner, body, usage, start, unpastedCode)
+	}
 	if code == redoAsPrint {
 		gone()
 		log.Printf("claude: Anthropic refused an interactive-mode turn on %s as a third-party app's, with nothing of the reply said: asked again as claude -p (#4503)", req.Model)
-		return s.serveSubscriptionAs(w, r, from, name, model, owner, body, usage, start, true)
+		return s.serveSubscriptionAs(w, r, from, name, model, owner, body, usage, start, thirdPartyCode)
 	}
 	return code, msg
 }
@@ -7410,6 +7449,10 @@ func bridgeFailed(name, msg string, status int) (int, string) {
 		return status, msg
 	case quotaSaid(msg):
 		return 429, msg
+	case unpastedSaid(name, msg):
+		// the same message fails the same way on every account and on
+		// every try: a 502 was asked again and again (ok123now on X)
+		return 400, msg
 	case name == "Claude Code" && tooLong(400, msg):
 		return 400, msg + " (Claude Code's own check, before Anthropic was asked: it holds a conversation to its own limit for the account, " +
 			"200K once Anthropic has said the account needs extra usage for long context. " +
@@ -7497,8 +7540,39 @@ const redoAsPrint = -4503
 // code and msg, back as redoAsPrint: Anthropic's third-party refusal, the
 // user's interactive mode still on (Off, every run is -p already), and the
 // client still waiting.
+//
+// So is a message the interactive mode didn't take (unpastedSaid): an
+// image whose pasted path Claude Code left as words, as a console that
+// doesn't pass pasting through leaves it, or a block it doesn't paste.
+// claude -p is sent the message whole.
 func redoable(r *http.Request, name string, req *Request, code int, msg string) bool {
-	return req.interactive && !req.tuiRefused && thirdPartySaid(name, code, msg) && claudeTUIOn() && r.Context().Err() == nil
+	return req.interactive && !req.tuiRefused && !req.unpasted && (thirdPartySaid(name, code, msg) || unpastedSaid(name, msg)) &&
+		claudeTUIOn() && r.Context().Err() == nil
+}
+
+// unpastedSaid is whether a Claude Code run's failure is the interactive
+// mode's helper not getting the turn's message into Claude Code
+// (claudetui.Unpastable).
+func unpastedSaid(name, msg string) bool {
+	return name == "Claude Code" && strings.Contains(msg, claudetui.Unpastable)
+}
+
+// unpastedCode is claudePrint's code for a run that is claude -p because
+// the interactive mode didn't take its message, or, with images, an image
+// on this machine within unpastedFor.
+const unpastedCode = "unpasted"
+
+// unpastedFor is how long turns with images run as claude -p after this
+// machine's interactive Claude Code didn't take an image pasted into it:
+// a console that doesn't pass pasting through stays so, and each try
+// costs a Claude Code's start and pasteWait.
+const unpastedFor = 12 * time.Hour
+
+// imagesUnpasted is whether this machine's interactive Claude Code didn't
+// take an image pasted into it within unpastedFor.
+func (b *subscriptionBridge) imagesUnpasted() bool {
+	at := b.unpasted.Load()
+	return at != 0 && time.Since(time.Unix(0, at)) < unpastedFor
 }
 
 // thirdPartyFor is how long an agent's system prompt Anthropic refused in

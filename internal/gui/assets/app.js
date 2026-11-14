@@ -366,7 +366,7 @@ function toneCheck(img) {
     swap();
   }, { once: true });
 }
-const pngIcons = new Set(["crush", "zcode", "alma", "hanako", "cindy", "lody", "typesafe", "atomcode", "snow", "mlx-serve", "gpustack", "mothx", "zoo-code", "kimi-code-desktop", "openbot", "avibe", "kun"]);
+const pngIcons = new Set(["aigocode", "crush", "zcode", "alma", "hanako", "cindy", "lody", "typesafe", "atomcode", "snow", "mlx-serve", "gpustack", "mothx", "zoo-code", "kimi-code-desktop", "openbot", "avibe", "kun"]);
 
 // lazy: a picture in a long list (Plugins' rows) is asked for near the
 // screen: each SVG an <img> draws is a ~0.6 MB webview document, kept (#909)
@@ -1405,6 +1405,8 @@ function connectLine(a, kind) {
     else if (sw?.p.switchOnly) say(t("Not connected · switching accounts only"));
     // with Claude Magpie made, connecting wires it, not the user's own Desktop (desktopSets; xMopf7RF on X)
     else if (a.isolated?.on) say(t("Not connected · connecting puts Claude Magpie on magpie; your own Claude Desktop stays signed in with Anthropic"));
+    // Claude Magpie's Code tab folder, the tab on magpie through Claude Magpie (agent.DesktopTwinCode; xMopf7RF on X)
+    else if (a.twinCode) say(t("On magpie through Claude Magpie"), "on");
     else if (CONNECT_BEFORE[kindOf(a)]) say(t(CONNECT_BEFORE[kindOf(a)]));
     else if (src === "sub") say(t("Not connected · now on its Claude subscription"));
     else if (src === "chatgpt") say(t("Not connected · now signed in with ChatGPT · OpenAI's models stay available once connected"));
@@ -1653,7 +1655,7 @@ function switchEntry(a) {
     openProtoMenu(b, opts, "u:" + cur, (v) => {
       const l = ls.find((x) => "u:" + x.user === v);
       if (v === "only") accountAction("provider/switchonly", { id: p.id, switchOnly: !p.switchOnly }, !p.switchOnly ? on
-        : cx ? t("{agent}'s requests go through magpie to fail over to your other accounts again", ag) : t("magpie serves requests on these accounts again"));
+        : cx ? t("A connected {agent} fails over to your other accounts through magpie again", ag) : t("magpie serves requests on these accounts again"));
       else if (v === "manage" || l?.lapsed) pn ? api("window/main?view=providers", {}).catch(statusErr) : openProvider(a.id);
       else if (l && l.user !== cur) switchAccountTo(a, p, l.user);
     }, "Switch accounts only", "sess-menu", "right");
@@ -4412,9 +4414,9 @@ for (const k of "pointerdown keydown input wheel".split(" ")) addEventListener(k
 }, true);
 
 // renderUpdateBadge shows the header's Update pill once a newer magpie is
-// downloaded or out and has been for a while (u.quiet: releases come every
-// few minutes, so a pill lit for each is never out; an urgent one lights it
-// at once); Settings or its × keeps it away.
+// downloaded or out; Settings or its × keeps it away (u.quiet: the × holds
+// for 3 days, not only until the next release, minutes later; an urgent
+// release lights it through that).
 
 async function renderUpdateBadge() {
   const b = $("#update"), label = b.querySelector("span");
@@ -4432,7 +4434,7 @@ async function renderUpdateBadge() {
   if (b.hidden !== !on) b.hidden = !on;
   if (!on) return;
   const hide = $("#updateHide");
-  hide.setAttribute("aria-label", t("Hide until the next version"));
+  hide.setAttribute("aria-label", t("Hide for 3 days"));
   hide.onclick = b.oncontextmenu = (e) => {
     e.preventDefault();
     skipUpdate(u.latest);
@@ -4530,7 +4532,7 @@ async function skipUpdate(v) {
     const ns = await writingPrefs(api("settings/update-skip", { version: v }));
     prefs = ns;
     if (state) state.settings = ns;
-    if (v) status(t("Update hidden until the next version; Settings still has it"), "ok", 3000);
+    if (v) status(t("Update hidden for 3 days; Settings still has it"), "ok", 3000);
   } catch (e) {
     statusErr(e);
   }
@@ -6236,6 +6238,9 @@ function renderProviders(quiet) {
     if (open) dialog = renderEditor(p);
   }
   findProviders();
+  // while picking (pvpick.js), its rows and bar take the place of these
+  $("#pvSelect").hidden = !!pvSel || providers.providers.length < 2;
+  if (pvSel) pvSelBar();
   renderExcluded();
   renderFileError();
   renderMovable();
@@ -6311,6 +6316,13 @@ function openProviderMenu(anchor, p, at) {
     ...magpie.actions?.("provider", { provider: { id: p.id, name: p.name } }) || [],
   ], at);
 }
+
+// Select (eiyuuzaki2333 on X: many providers added, removed one at a
+// time), by the search box: the rows, the bar and the removal are in
+// pvpick.js, imported when Select is first clicked, so they weigh nothing
+// on the core. pvSel is the ids picked while picking, null otherwise.
+let pvSel = null, pvSelLast = null;
+$("#pvSelect").onclick = async () => (!providerDirty() || await confirmDiscard()) && import("./pvpick.js").then(() => startPicking(), statusErr);
 
 // Providers' search (#1614): the rows saying every word, on and off, by their
 // text, ids, addresses, users and keys; a word they don't say is a model's
@@ -8229,8 +8241,9 @@ function accountProxiesOfDraft() {
   return { map: out };
 }
 
-// a key's own price rate (@tnt12231 on X), in keyrates.js
-const keyRateField = (p, at = el("span")) => p?.keyList?.length > 1 ? (import("./keyrates.js").then(() => at.replaceWith(...keyPriceRateField(p)), () => {}), [at]) : [];
+// a key's own price rate (@tnt12231 on X), in keyrates.js, and any other
+// part keyrates.js draws for a provider with two or more keys (f)
+const keyRateField = (p, f = "keyPriceRateField", at = el("span")) => p?.keyList?.length > 1 ? (import("./keyrates.js").then(() => at.replaceWith(...window[f](p)), () => {}), [at]) : [];
 
 // headers as ordered [name, value, json?] rows that survive a redraw; headersOf folds them back
 function headerRows(obj) {
@@ -9753,7 +9766,8 @@ function drawEditor(p, presetID) {
         took.push(t("Base URL") + " (" + t(API_NAMES[api]) + ")");
       }
     }
-    if (c.key) { key.value = draft.key = c.key; countKeys(); took.push(t("API key")); }
+    // no key box when keys are Accounts: none taken unseen
+    if (c.key && key.isConnected) { key.value = draft.key = c.key; countKeys(); took.push(t("API key")); }
     if (curlModel && c.model) { curlModel(c.model); took.push(t("model {model}", { model: c.model })); }
     if (took.length) notes.push(env ? t("Filled in from the pasted text: {what}.", { what: took.join(" · ") }) : t("Filled in from the curl command: {what}.", { what: took.join(" · ") }));
     if (curlBase && !c.api) notes.push(t("Its URL isn't an address ending in /chat/completions, /messages or /responses: type the base URL."));
@@ -10035,6 +10049,8 @@ function drawEditor(p, presetID) {
 
   // a Step Plan's windows are told only to a StepFun sign-in
   if (p?.stepPlan) ed.append(...field(t("Step Plan allowances"), renderStepPlan(p.stepPlan, p.id), t("A key tells only the balance. The Step Plan's 5-hour, weekly and credit windows are told only to a StepFun sign-in: bring yours here once and magpie keeps it (for 30 days), used for nothing else.")));
+  // and a Qwen AI platform plan's to a sign-in there, in qianwenplan.js
+  if (p?.qianwenPlan) { const at = el("span"); ed.append(at); import("./qianwenplan.js").then(() => at.replaceWith(...qianwenPlanField(p)), () => {}); }
 
   // a team's GLM Coding Plan windows need its org and project (#236)
   const team = p ? !!p.zhipuTeam : !!pr?.zhipuTeam;
@@ -11477,6 +11493,8 @@ function renderModels(p) {
       c.append(el("span", "", m.name && m.name !== m.id ? m.name : m.id));
       const tell = tellTag(tells.get(m.id));
       if (tell) c.append(tell);
+      // which keys list it, when not all do (keysTag, in keyrates.js)
+      if (m.keys) import("./keyrates.js").then(() => c.append(keysTag(p, m)), () => {});
       // one the plan serves at no cost to it (WorkBuddy's x0.00 credits)
       // or one its vendor names free (#185), or lists at $0
       const free = m.free || m.zero || namedFree(m.id, m.name);
@@ -13705,7 +13723,7 @@ function renderAccounts(a, p) {
   const cx = a.agent === "codex", ag = { agent: a.agentName };
   if (p && (cx && several || a.agent === "claude")) {
     const [only, cb] = tick(t("Only switch {agent}'s sign-in", ag), p.switchOnly);
-    const [tip, on, off] = cx ? [t("When an account is used up, magpie signs {agent} in to the next one, and requests go straight to OpenAI. Open {agent} sessions keep their account until reopened.", ag), t("magpie only switches {agent}'s sign-in; its requests go straight to OpenAI", ag), t("{agent}'s requests go through magpie to fail over to your other accounts again", ag)]
+    const [tip, on, off] = cx ? [t("When an account is used up, magpie signs {agent} in to the next one, and requests go straight to OpenAI. Open {agent} sessions keep their account until reopened.", ag), t("magpie only switches {agent}'s sign-in; its requests go straight to OpenAI", ag), t("A connected {agent} fails over to your other accounts through magpie again", ag)]
       : [t("When an account is used up, magpie signs {agent} in to the next one. Requests on these accounts don't go through magpie.", ag), t("magpie serves no requests on these accounts"), t("magpie serves requests on these accounts again")];
     only.title = tip;
     cb.onchange = () => accountAction("provider/switchonly", { id: p.id, switchOnly: cb.checked }, cb.checked ? on : off);
@@ -14002,6 +14020,8 @@ function quotaError(err, q) {
   // a Volcengine or Tencent plan with no access key (#1821)
   if (/^this plan's usage is read with the account's access key: give its SecretId/.test(err)) return t("This plan's usage needs the account's SecretId and SecretKey — give them in the provider's settings");
   if (/^this plan's usage is read with the account's access key/.test(err)) return t("This plan's usage needs the account's AccessKey ID and Secret — give them in the provider's settings");
+  // a Qwen AI platform plan (qianwen_plan.go)
+  if (/^(this plan's usage is told only to a sign-in on|signed out of) the Qwen AI platform/.test(err)) return t("This plan's usage needs a sign-in to the Qwen AI platform — sign in in the provider's settings");
   // ZCode with no plan left, not a failed read (#1001)
   if (/^this account has no GLM Coding Plan, and ZCode's Start Plan has ended or was never started$/.test(err)) return t("ZCode: no GLM Coding Plan, and no free Start Plan — subscribe to a GLM Coding Plan to use this account");
   // an OpenCode Go key's windows (planquota.go)
@@ -15128,6 +15148,9 @@ function renderKeyAccounts(p) {
     queueMicrotask(() => key.focus());
   } else {
     list.append(addRow(t("Add another key"), () => { addingKey = { id: p.id, name: "", key: "" }; renderProviders(); }));
+    // every key at once, one a line, for another magpie's Paste several
+    // (@emilochen on X): the row is drawn by keyrates.js (copyAllKeysRow)
+    list.append(...keyRateField(p, "copyAllKeysRow"));
   }
   // rows folded away keep their places when the shown ones are dragged
   if (fold.folded) list.accountOrder = p.keyList.map((k) => k.id);
@@ -16207,6 +16230,10 @@ function renderQuotas(lazy) {
       const history = !brief && quotaHistoryView(sub);
       const shownSub = history ? quotaHistoryCard(sub, history) : sub;
       const [meters, every] = history ? [quotaWindows(shownSub), null] : familyQuota(sub);
+      // of several, each account a card of its own in the provider's
+      // (normalcoder_ on X: a hairline between them didn't tell them
+      // apart); a provider's keys, a balance a line, stay lines
+      const box = several && !keys ? card.appendChild(el("div", "subscription-acct")) : card;
       if (sub.user) {
         const who = el("div", "subscription-account" + (brief ? " brief" : ""));
         who.dataset.card = trayCardID(sub);
@@ -16220,41 +16247,41 @@ function renderQuotas(lazy) {
         if (sub.plan || sub.until) who.append(planSpan(sub));
         if (every) who.append(every);
         if (several) who.append(usageAcctFold(sub, !brief));
-        card.append(who);
+        box.append(who);
       } else if (every) head.append(every);
       // in brief: each window's name, figure and bar, when it resets in
       // its tooltip; the curve and the rest only in full
       if (brief) meters.classList.add("brief");
-      card.append(meters);
+      box.append(meters);
       // a remote magpie's gateway key: what its windows don't say (#1547)
       const keyLine = !brief && !history && keyLimitLine(sub);
-      if (keyLine) card.append(keyLine);
+      if (keyLine) box.append(keyLine);
       // how many of the period's requests to it magpie made itself (#1839)
       const own = !brief && !history && ownLine(sub);
-      if (own) card.append(own);
+      if (own) box.append(own);
       // WorkBuddy's, Trae CN's or MiniMax Code's daily check-in, how this account's went,
       // and the switch for it, on the card rather than only in Settings
       // (#694); the switch on the first card of each vendor's
-      if (sub.checkins && !history) card.append(checkinRow(sub, sub === subs.find((x) => x.checkins && (x.checkinBy || "") === (sub.checkinBy || "")), subs));
+      if (sub.checkins && !history) box.append(checkinRow(sub, sub === subs.find((x) => x.checkins && (x.checkinBy || "") === (sub.checkinBy || "")), subs));
       // what was left over time, against an even burn (#651)
       const curve = !brief && !sub.error && quotaCurve(sub);
-      if (curve) card.append(curve);
+      if (curve) box.append(curve);
       // the account's credits, day by day, as magpie counted them (#568):
       // each pool on its own, named when there are several (#3321)
       if (!brief && !history && sub.daily && !sub.error) {
         const pools = [sub.daily, ...(sub.moreDaily || [])];
-        for (const d of pools) card.append(creditDays(d, pools.length > 1));
+        for (const d of pools) box.append(creditDays(d, pools.length > 1));
       }
       // what is left besides the windows, under them
-      if (!history && sub.balance && sub.windows?.length && !sub.error) card.append(balanceRow(sub, "What is left on the account besides its windows", false));
+      if (!history && sub.balance && sub.windows?.length && !sub.error) box.append(balanceRow(sub, "What is left on the account besides its windows", false));
       // the balance over time, and when it runs out at that pace
       const spend = !brief && !history && !sub.error && balanceCurve(sub);
-      if (spend) card.append(spend);
+      if (spend) box.append(spend);
       // when the windows were read: "Updated 3 min ago", or the time of
       // ones standing in for a reading that failed just now (#802; a
       // balance alone says it in its row)
       const read = !brief && sub.windows?.length && !sub.error && readWhen(shownSub, true);
-      if (read) card.append(read);
+      if (read) box.append(read);
       if (!brief && !history && sub.resets?.count) {
         const r = el("div", "quota-resets");
         r.append(resetsWords(sub.resets, sub));
@@ -16266,14 +16293,14 @@ function renderQuotas(lazy) {
           use.onclick = () => askReset(sub);
           r.append(use);
         }
-        card.append(r);
+        box.append(r);
       }
       // the account's standing say on its resets, held or not (#719)
       const policy = !brief && !history && autoResetRow(sub, "quota-autoreset");
-      if (policy) card.append(policy);
+      if (policy) box.append(policy);
       // and on its credits, when its windows run out
       const credits = !brief && !history && creditsRow(sub, "quota-credits");
-      if (credits) card.append(credits);
+      if (credits) box.append(credits);
     }
     // in the head, of the keys in sight (the foot's has the folded)
     if (several) {
@@ -17557,7 +17584,7 @@ function renderPanelUse() {
     const cached = l.cache_read + l.cache_write;
     blk("Tokens", fmtN(allTokens(l)), t("{a} in · {b} out", { a: fmtN(l.input), b: fmtN(l.output) }) + (cached ? " · " + t("{n} cached", { n: fmtN(cached) }) : ""), "", "", ledNum(allTokens(l)));
     blk("Requests", fmtN(l.calls), [l.errors ? t("{n} failed", { n: fmtN(l.errors) }) : t("none failed"), l.retried ? t("{n} answered on a retry", { n: fmtN(l.retried) }) : ""].filter(Boolean).join(" · "), "", l.errors ? "bad" : "", ledNum(l.calls));
-    const c = fmtCost(l);
+    const c = fmtCost(l, l.provider);
     const u = l.unpriced, one = u === 1;
     blk("Cost", c ? "≈" + c : "—", u ? t(one ? "{n} call unpriced" : "{n} calls unpriced", { n: u }) : t("effective prices"), c ? "cost" : "", "", u ? t(one ? "{n} call had no known price and is not counted" : "{n} calls had no known price and are not counted", { n: u }) : "");
     blk("Cache hit rate", hitRate === null ? "—" : hitPct(hitRate), cacheLeftOut(l) || t("of the prompt"));
@@ -17655,17 +17682,18 @@ function renderPanelQuota(lazy) {
     fit();
     return;
   }
-  // what the arranging hid is left out, but for the one a menu bar cell
+  // what the arranging hid is left out, and what the Usage page hid, its
+  // cards and their rows (onkashiko on X), but for the one a menu bar cell
   // was clicked for
   const hidden = new Set(state.settings?.panelUsageHidden || []);
   const peek = (q) => !!panelPeek && (trayCardID(q) === panelPeek || q.balanceCard === panelPeek || q.provider === panelPeek);
-  const away = new Set(subs.filter((q) => hidden.has(q.provider) && !peek(q)).map((q) => q.provider));
+  const { cards, away } = panelPageCut(quotas, peek, hidden);
   // a balance, or a vendor's every account, at 0: behind the foot's button
-  const zero = new Set(subs.filter((q) => quotaAtZero(q) && !peek(q)));
+  const zero = new Set(cards.filter((q) => quotaAtZero(q) && !peek(q)));
   let atZero = 0;
   // the sections in order: a vendor's accounts, or a run of balances
   const parts = [], groups = new Map();
-  for (const q of subs) {
+  for (const q of cards) {
     if (away.has(q.provider)) continue;
     // a balance with windows (Command Code's credits beside its 5-hour and
     // weekly windows) is the windows' card; a balance alone, a figure
@@ -17863,7 +17891,8 @@ function panelQuotaCard(q, first = false) {
   // a pool's 5-hour and weekly rings, every pool's (a third pool once left
   // Claude's out: 01huadalang on Discord), else three
   const fam = familyWindows(q.windows.filter((w) => !w.unlimited && !quotaNoShare(w)));
-  const tx = q.windows.filter((w) => quotaNoShare(w)).map((w) => t(w.name) + " " + quotaText(w)).join(" · ");
+  const says = (f) => q.windows.filter(f).map((w) => t(w.name) + " " + quotaText(w)).join(" · ");
+  const tx = says(quotaNoShare), wallets = says((w) => w.balance != null);
   if (!fam.length && (tx || q.windows.some((w) => w.unlimited))) {
     card.append(pqLine(tx || t("Unlimited"), q));
     if (balance) card.append(balance);
@@ -17910,6 +17939,9 @@ function panelQuotaCard(q, first = false) {
     rings.append(r);
   }
   card.append(rings);
+  // a wallet beside the rings (Kimi Code's booster, "Extra usage"): what
+  // is left on it, not only on the Usage page (apple_test_src on X)
+  if (wallets) card.append(el("span", "pq-sub", wallets));
   if (balance) card.append(balance);
   // the first window's cycle, a thin line under the card (#651)
   const spark = ws[0] && !ws[0].tiers ? quotaSpark(q, ws[0]) : null;
@@ -18925,8 +18957,17 @@ const ledRankValue = (m, x) => m === "speed" ? ledGroupSpeed(x)?.v || 0 : ledVal
 const ledPart = (m, x) => m === "speed" ? ledSpeed(x) : m === "traffic" ? ledBytes(x) : m === "cost" ? +x.cost || 0 : m === "calls" ? +x.calls || 0 : +x.tokens || 0;
 // a metric as its axis and its values say it: bytes as "2.5 MB", an
 // axis's round "4 MB" without its ".0"
-const ledFormat = (m, v) => m === "cost" ? ledMoney(v) : m === "traffic" ? fmtBytes(Math.round(v)).replace(/\.0 /, " ") : (m === "speed" ? ledNum : fmtN)(Math.round(v));
-const ledFormatLong = (m, v) => m === "speed" ? (v > 0 ? t("{n} tok/s", { n: ledNum(Math.round(v)) }) : "—") : m === "cost" ? (fmtCost({ cost: v, unpriced: 0 }) || "—") : m === "traffic" ? fmtBytes(Math.round(v)) : ledNum(Math.round(v));
+const ledFormat = (m, v, p) => m === "cost" ? ledMoney(v, p) : m === "traffic" ? fmtBytes(Math.round(v)).replace(/\.0 /, " ") : (m === "speed" ? ledNum : fmtN)(Math.round(v));
+const ledFormatLong = (m, v, p) => m === "speed" ? (v > 0 ? t("{n} tok/s", { n: ledNum(Math.round(v)) }) : "—") : m === "cost" ? (fmtCost({ cost: v, unpriced: 0 }, p) || "—") : m === "traffic" ? fmtBytes(Math.round(v)) : ledNum(Math.round(v));
+
+// ledProv is the provider whose currency a cost of share id (by split) of
+// l shows in: the one provider l is filtered to, the share's own (a
+// provider, or a model at one), or a model's when every provider that
+// served it sells in one currency; "" (a sum: Totals in) otherwise
+function ledProv(l, s, id) {
+  const at = (x) => x.split("/")[0], ps = s == "model" ? ((l.chartBy || l.by)?.modelAt || []).filter((x) => x.id.slice(at(x.id).length + 1) == id).map((x) => at(x.id)) : [s == "provider" ? id : s == "modelAt" && at(id)];
+  return l.provider || (id?.[0] > "\0" && ps[0] && ps.every((p) => costInYuan(p) == costInYuan(ps[0])) ? ps[0] : "");
+}
 
 // an axis's top with four steps under it: round numbers, the top at least the largest value
 function ledAxis(max) {
@@ -18998,7 +19039,7 @@ function drawLedColumns(box, l, split, metric, compact, chooseDay, focusDay) {
   plot.append(g);
   const labs = [0, 1, 2, 3, 4].map((i) => {
     const lab = sv("text", { "text-anchor": "end", class: "axis" });
-    lab.textContent = ledFormat(metric, topV * (1 - i / 4));
+    lab.textContent = ledFormat(metric, topV * (1 - i / 4), l.provider);
     g.append(lab);
     return lab;
   });
@@ -19074,7 +19115,7 @@ function drawLedColumns(box, l, split, metric, compact, chooseDay, focusDay) {
   plot.append(g, tip);
   const name = (c) => t(c.name || c.id || "—");
   // counts short, as the axis says them (skyhuang1994)
-  const val = (v) => speed || metric === "cost" || metric === "traffic" ? ledFormatLong(metric, v) : ledFormat(metric, v);
+  const val = (v, id) => speed || metric === "cost" || metric === "traffic" ? ledFormatLong(metric, v, ledProv(l, split, id)) : ledFormat(metric, v);
   const at = (e) => {
     const r = g.getBoundingClientRect();
     const i = Math.max(0, Math.min(n - 1, Math.floor(((e.clientX - r.left) / r.width * W - M.l) / slot)));
@@ -19086,13 +19127,13 @@ function drawLedColumns(box, l, split, metric, compact, chooseDay, focusDay) {
     // first token each in a column of their own (#2343)
     tip.classList.toggle("speed", speed);
     const by = p.by?.[split] || {};
-    const rows = [...top, ...(speed ? ledOthers(by, top, list) : [])].map((c) => [name(c), c.color, ledPart(metric, by[c.id] || {}), by[c.id]]);
+    const rows = [...top, ...(speed ? ledOthers(by, top, list) : [])].map((c) => [name(c), c.color, ledPart(metric, by[c.id] || {}), by[c.id], c.id]);
     if (!speed) rows.push([t("Other"), "var(--faint)", Math.max(0, totals[i] - rows.reduce((a, x) => a + x[2], 0))]);
-    for (const [nm, color, v, part] of rows.filter((x) => x[2] > 0).sort((a, b) => b[2] - a[2])) {
+    for (const [nm, color, v, part, id] of rows.filter((x) => x[2] > 0).sort((a, b) => b[2] - a[2])) {
       const row = el("div");
       const sw = el("i");
       sw.style.background = color;
-      row.append(sw, el("span", "", nm), el("em", "", val(v)));
+      row.append(sw, el("span", "", nm), el("em", "", val(v, id)));
       if (speed) row.append(el("em", "ttft", ledTTFT(part) ? t("TTFT {ms}", { ms: ledTook(ledTTFT(part)) }) : ""));
       tip.append(row);
     }
@@ -19160,7 +19201,7 @@ function drawLedRank(box, l, split, metric, picked, choose, compact) {
     if (x.icon && split !== "model") l1.append(icon(x.icon));
     const nm = el("span", "rk-nm", t(x.name || x.id || "—"));
     nm.title = t(x.name || x.id || "");
-    const long = ledFormatLong(metric, v), val = el("span", "rk-val", metric == "speed" ? gs?.text || "—" : metric == "cost" || metric == "traffic" ? long : ledFormat(metric, v));
+    const prov = ledProv(l, split, x.id), long = ledFormatLong(metric, v, prov), val = el("span", "rk-val", metric == "speed" ? gs?.text || "—" : metric == "cost" || metric == "traffic" ? long : ledFormat(metric, v));
     val.title = metric == "speed" ? gs?.title || "" : long;
     l1.append(nm, val);
     const bar = el("div", "rk-bar"), fill = el("i");
@@ -19171,7 +19212,7 @@ function drawLedRank(box, l, split, metric, picked, choose, compact) {
     if (metric === "traffic") more.push("↑ " + fmtBytes(x.up_bytes || 0) + " · ↓ " + fmtBytes(x.down_bytes || 0));
     if (metric !== "calls") more.push(t(x.calls === 1 ? "{n} request" : "{n} requests", { n: fmtN(x.calls) }));
     if (metric !== "tokens") more.push(t("{n} tokens", { n: fmtN(allTokens(x)) }));
-    if (metric !== "cost" && x.cost) more.push("≈" + fmtCost(x));
+    if (metric !== "cost" && x.cost) more.push("≈" + fmtCost(x, prov));
     if (x.credited) more.push(ledCredits(x));
     // how fast its replies came, beside what they cost (#860)
     if (metric !== "speed" && gs) more.push(Object.assign(el("span", "rk-speed", gs.text), { title: gs.title }));
@@ -19343,8 +19384,10 @@ const CURRENCIES = [["usd", "$ USD"], ["cny", "¥ CNY"], ["provider", "By provid
 // The text size is the windows' own zoom, as a browser's Ctrl/Cmd +: the
 // page is laid out again in larger CSS pixels, so everything it measures is
 // as at 100%, and magpie sizes the windows around it (textsize.go). None is
-// under 100%: WebView2 and WebKitGTK zoom no smaller through Wails.
-const TEXT_SIZES = [100, 110, 125, 150];
+// under 100%: WebView2 and WebKitGTK zoom no smaller through Wails. 115 and
+// 120 sit between 110 and 125, where 110 read small and 125 crowded on a 4K
+// screen at 200% (WeltAn_X on X).
+const TEXT_SIZES = [100, 110, 115, 120, 125, 150];
 const textSizeKeys = () => /^Mac/.test(navigator.platform) ? "⌘+ ⌘− ⌘0" : "Ctrl+ Ctrl− Ctrl+0";
 // --zoom is the text size for what is placed against the window's own
 // drawing, which does not grow with the page: the Mac's traffic lights.
@@ -20011,6 +20054,8 @@ function setUpdateMirror(mirror) {
   return writingPrefs(api("settings/update-mirror", { mirror }))
     .then((ns) => { prefs = ns; mirrorEditing = false; mirrorDraft = mirrorErr = ""; renderSettings(); status(t("Saved"), "ok", 1500); return ns; });
 }
+// Use a mirror… and Change open the field from mirroredit.js
+const editMirror = (r, s, v) => import("./mirroredit.js").then(() => { mirrorEditing = true; mirrorDraft = v; renderUpdateMirror(r, s); }, statusErr);
 function renderUpdateMirror(r, s) {
   r.classList.add("update-mirror-row");
   const who = r.querySelector(".who"), val = r.querySelector(".val");
@@ -20021,37 +20066,24 @@ function renderUpdateMirror(r, s) {
   const m = s.updateMirror || "";
   sub.textContent = mirrorErr || (m ? t("Updates are downloaded from usemagpie.ai, and through this mirror when that fails, each checked against usemagpie.ai's checksum")
     : t("Updates are downloaded from usemagpie.ai, and from GitHub when that fails; a mirror can stand in for GitHub where it is slow"));
+  // the docs' Mirrors page says which mirror and how (WeltAn_X on X)
+  const more = el("button", "sub-more", t("How mirrors work"));
+  more.onclick = () => api("open", { url: "https://usemagpie.ai/docs/" + ({ zh: "zh/", "zh-TW": "zh/", ja: "ja/" }[locale] || "") + "mirrors#settings" }).catch(() => {});
+  sub.append(" ", more);
   sub.classList.toggle("err", !!mirrorErr);
   sub.title = t("The update and its checksum always come from usemagpie.ai; a file from the mirror that doesn't match it is not installed.");
-  if (!mirrorEditing) {
-    if (m) {
-      const official = el("button", "text", t("Remove mirror"));
-      official.onclick = () => setUpdateMirror("").catch(statusTErr);
-      const change = el("button", "text", t("Change"));
-      change.onclick = () => { mirrorEditing = true; mirrorDraft = m; renderUpdateMirror(r, s); };
-      val.append(el("code", "", m), change, official);
-    } else {
-      const add = el("button", "text", t("Use a mirror…"));
-      add.onclick = () => { mirrorEditing = true; mirrorDraft = ""; renderUpdateMirror(r, s); };
-      val.append(el("code", "", "usemagpie.ai"), add);
-    }
-    return;
+  if (mirrorEditing) return mirrorEdit(r, s, sub, val);
+  if (m) {
+    const official = el("button", "text", t("Remove mirror"));
+    official.onclick = () => setUpdateMirror("").catch(statusTErr);
+    const change = el("button", "text", t("Change"));
+    change.onclick = () => editMirror(r, s, m);
+    val.append(el("code", "", m), change, official);
+  } else {
+    const add = el("button", "text", t("Use a mirror…"));
+    add.onclick = () => editMirror(r, s, "");
+    val.append(el("code", "", "usemagpie.ai"), add);
   }
-  const i = input(mirrorDraft, "https://mirror.example/");
-  i.className = "words update-mirror-input";
-  i.setAttribute("aria-label", t("Mirror address"));
-  i.oninput = () => { mirrorDraft = i.value; };
-  const save = el("button", "text", t("Save"));
-  save.onclick = () => {
-    const v = i.value.trim();
-    if (!v) return i.focus(NO_SCROLL);
-    setUpdateMirror(v).catch((e) => { mirrorErr = t(e.message); statusTErr(e); renderSettings(); });
-  };
-  const cancel = el("button", "text", t("Cancel"));
-  cancel.onclick = () => { mirrorEditing = false; mirrorDraft = mirrorErr = ""; renderUpdateMirror(r, s); };
-  i.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") save.onclick(); else if (e.key === "Escape") cancel.onclick(); };
-  val.append(i, cancel, save);
-  queueMicrotask(() => { if (i.isConnected && document.activeElement !== i) i.focus(NO_SCROLL); });
 }
 
 function renderSettings() {
@@ -20199,10 +20231,11 @@ function renderSettings() {
   const pill = row(t("Update button"), t("Shows in the header when a newer magpie is out"),
     "", segs([["off", t("Off")], ["on", t("On")]], s.noUpdatePill ? "off" : "on", (v) => savePrefs({ ...keep, noUpdatePill: v === "off" }).then(renderUpdateBadge)));
   pill.classList.add("update-pill-row");
-  if (s.updateSkip && !s.noUpdatePill) {
+  // hidden by its × for 3 days, across the releases out meanwhile (u.quiet)
+  if (!s.noUpdatePill) {
     api(updatePath("update")).then((u) => {
-      if (!pill.isConnected || !u || u.latest !== s.updateSkip) return;
-      pill.querySelector(".sub").textContent = t("Hidden for {v} until a newer version is out", { v: u.latest });
+      if (!pill.isConnected || !u?.quiet) return;
+      pill.querySelector(".sub").textContent = t("Hidden for 3 days");
       const back = el("button", "text", t("Show again"));
       back.onclick = () => skipUpdate("");
       pill.querySelector(".val").prepend(back);
@@ -24288,7 +24321,10 @@ function loadBack() {
   loadBack.flight = flight;
   return flight.done;
 }
-document.addEventListener("visibilitychange", () => { if (!document.hidden) { loadBack(); wag(); refreshLanes(); } });
+// and one gone from view, hidden or closed (which hides it first), says
+// so: what its Sessions and Usage pages keep goes 30 s later unless a page
+// asks again (pageAwayFor)
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { loadBack(); wag(); refreshLanes(); } else fetch("/api/page-away", { method: "POST", keepalive: true }).catch(() => {}); });
 // an agent's config can be rewritten, or the agent run round magpie, while the
 // window is up: ask what drifted now and then, and redraw only on a change —
 // never under an open menu

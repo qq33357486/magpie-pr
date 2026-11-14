@@ -295,6 +295,18 @@ call magpie had routed was counted again as a local session's whatever
 provider id ZCode wrote beside it (nori_tsukiji on X). Verification:
 `TestZCodeCallsPairWithTheGatewaysRecords`.
 
+The Claude subscription bridge's own Claude Code runs save their sessions
+in a Claude folder the readers list (the user's own, or a saved account's
+under `claude-accounts`), often in the caller's project. They aren't the
+user's: the gateway recorded each call under the agent that asked, and
+nothing paired the session file's call with that record, so every call was
+counted twice, once as "Claude Code · Local session" (iwinux on X). Their
+ids are the bridge's (`bridgesid`, see
+[the bridge](claude-subscription-bridge.md#the-runs-working-folder-clientworkdir)),
+and `listCCFiles` leaves such a session and its sub-agents' files out of
+every listing: calls, the ledger, the Sessions page, traces and WSL.
+Verification: `TestBridgeSessionsAreNotLocal`.
+
 A ZCode session's name is the app's: its task index
 (`v2/tasks-index.sqlite` in the data folder, `tasks.title` by `task_id`,
 the session's id) holds what the app shows and what the user renamed it to,
@@ -771,6 +783,28 @@ a large body shows as a burst. `TestTrafficCountsWhatRowsCount`,
 `TestTrafficCountsAStreamAsItFlows`, `TestSeriesPartsKeepBytes`,
 `TestUsageTrafficSaysWhatTheGatewayCounted` and `usage-traffic.test.cjs`
 cover it.
+
+What the bytes up were made of (theforeveriris on X: 8.6 GB up over 8169
+requests). Every request resends the whole conversation, so ~1 MB a request
+is a long context, not a leak. The prompt reader (`promptOf`, already run off
+the request path by `inspectPrompt`) adds each piece's length as it reads it
+into `Prompt.sent`: the system prompt (with skills and memory), the tools'
+definitions, images, and everything read (`all`). A tool result shared by the
+files it read counts once (`again`). `upParts` scales those to the bytes
+that went on the wire into the row's `UpParts`. A row gets none when its
+bytes up aren't its body's: a Responses WebSocket delta, a body whose images
+went as files, or a body not read. The request page keeps the parts in
+255ths of `UpBytes` in the packed row (`upMix`, flag `rowUpParts`, still 152
+bytes). `Totals` sum `UpCalls` (requests that sent any bytes), `UpMeasured`
+(the bytes of those with parts) and the three parts, per period and per
+agent, model or provider. The Requests card's ↑ opens `#ledUp`. It shows the
+bytes a request, a bar of the conversation, tools, system prompt, images and
+what wasn't measured, and the bytes of each agent and model. A request's
+details say "Made of". `TestPromptKnowsWhatItsBytesWere` (fails if a shared
+tool result is counted per file), `TestUpPartsScaleToTheWire`,
+`TestLedgerKeepsUpParts`, `TestRowUpPartsKept`, `TestTotalsSumUpParts` and
+`usage-upload.test.cjs` cover it. `BenchmarkPromptOfLargeBody` times the
+reader on a 1.2 MB body.
 
 ### Calls read from the agents' own files
 

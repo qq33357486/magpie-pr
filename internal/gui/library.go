@@ -264,6 +264,21 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 		}
 		writeJSON(rw, p)
 	})
+	// the subagents at an address: a repository, a folder in one, a file,
+	// a folder here (subagent_import.go); nothing is written
+	mux.HandleFunc("POST /api/library/subagents/probe", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Source string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		p, err := library.ProbeSubagents(in.Source)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, p)
+	})
 	// which skills GitHub has changed: the page as it is, each skill from
 	// there carrying what the check found of it
 	mux.HandleFunc("POST /api/library/skills/check", func(rw http.ResponseWriter, r *http.Request) {
@@ -687,6 +702,7 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			Env         library.EnvVar // a variable saved
 			// a subagent saved (#2283)
 			Subagent library.Subagent
+			Command  library.Command
 			Agent    string            // the agent whose own skill is in the library's way
 			App      string            // the app the MCP hub is added to (servers/hub-open)
 			Note     string            // what the MCP router says of itself (servers/hub-note), or a skill's note (skills/note)
@@ -795,6 +811,14 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.SubagentAgentsSet(in.Name, in.Agents)
 		case "subagents/remove":
 			res, err = library.RemoveSubagents([]string{in.Name})
+		case "commands/save":
+			res, err = library.SaveCommand(in.Old, in.Command)
+		case "commands/agents":
+			res, err = library.CommandAgentsSet(in.Name, in.Agents)
+		case "commands/remove":
+			res, err = library.RemoveCommands([]string{in.Name})
+		case "subagents/import":
+			res, err = library.ImportSubagents(in.Source, in.Paths, in.Agents)
 		case "skills/install":
 			res, err = library.InstallSkills(in.Source, in.Paths, in.Agents)
 		case "skills/create":
@@ -856,6 +880,9 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 		case "skills/where":
 			// each agent's own folder, or ~/.agents/skills too (skills_shared.go)
 			res, err = library.SetSkillsWhere(in.How)
+		case "skills/auto-update":
+			// fetched again by themselves when changed there (skill_autoupdate.go)
+			res, err = library.SetAutoUpdateSkills(in.On)
 		case "skills/router":
 			// magpie's one skill listing the rest (skill_router.go)
 			res, err = library.SetSkillRouter(in.On)

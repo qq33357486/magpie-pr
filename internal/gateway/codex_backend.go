@@ -1093,8 +1093,9 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	captureTitle := false
 	effort := "" // the reasoning Codex asked for, which goes on as it is
 	end := func(status int, msg string, tokens, out int) {}
-	var tools *toolScan // whether the reply calls a tool, for a turn's end
-	var live *liveRow   // the reply counted as it reaches Codex (live.go)
+	var sentPrompt *Prompt // what the body was made of, read at end (upParts)
+	var tools *toolScan    // whether the reply calls a tool, for a turn's end
+	var live *liveRow      // the reply counted as it reaches Codex (live.go)
 	if rest != "/responses" {
 		// no route of its own (a compaction, a memory): recorded alone
 		noteMasked(r, "chat", maskedHits, sentOf(maskedHits, body), 0, "openai", modelOf(body))
@@ -1131,6 +1132,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 		window := cmp.Or(provider.CodexWindow(user, model), catalog.ContextOf(model))
 		tr = s.trace.beginFor(r, Route{turn: turn, window: window, dirOf: dirOf(provider.Responses, body), tools: tools, imageTurn: drawingTurnID(metadata.Turn), imageCaller: codexTurnKey(r, callerOf(r).agent), imageProvider: imageProvider, TitleLink: link, Time: start, Agent: callerOf(r).agent, Session: sessionOf(r.Header), Conv: convOf(r.Header, body), ParentSession: titleParentSession(r.Header, metadata, kind), Kind: kind, Model: model, Effort: effort, Tier: tier, Provider: "openai", Subagent: subagentPickOf(r),
 			Order: []Weighed{seat}, Tries: []Try{{ID: seat.ID, Model: model, Effort: effort, Tier: tier, Start: start}}})
+		noteChecked(r, sentWhole, maskedHits)
 		if m := noteMasked(r, "chat", maskedHits, sentOf(maskedHits, body), tr.ID, "openai", model); m != nil {
 			s.trace.update(tr, func(t *Route) { t.Masked = m })
 		}
@@ -1146,6 +1148,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 				replyDigest = titleReplyDigest(titleReply.buf.Bytes(), nil)
 			}
 			prompt := promptRead() // outside the trace's lock, which reading it takes
+			sentPrompt = prompt
 			s.trace.update(tr, func(t *Route) {
 				// what masking took: magpie's own time isn't split here
 				t.Masking = maskingMs(r.Context(), 0)
@@ -1684,6 +1687,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	if up := upBytesOf(r.Context()); up != nil {
 		rec.UpBytes, rec.PlainBytes, rec.Socket = up.wire, up.plain, up.socket
 		rec.DownBytes = up.downOf()
+		rec.UpParts = upParts(sentPrompt, up)
 	}
 	appendUsage(r, rec)
 }
@@ -2394,10 +2398,52 @@ func (s *Server) askCodexList(rctx context.Context, h http.Header, query string,
 	}
 }
 
+// codexListAuth keeps the client's ChatGPT sign-in apart from the gateway
+// key identifyCaller replaces with its internal token (#5197).
+type codexListAuth struct{}
+
+func keepCodexListAuth(r *http.Request, identified bool) *http.Request {
+	if r.Method != http.MethodGet || r.URL.Path != CodexPath+"/models" {
+		return r
+	}
+	auth := ""
+	if identified {
+		auth = r.Header.Get("Authorization")
+	}
+	a := strings.TrimSpace(auth)
+	if len(a) <= 7 || !strings.EqualFold(a[:7], "Bearer ") {
+		auth = ""
+	} else {
+		token := strings.TrimSpace(a[7:])
+		if token == "" || token == Token || strings.HasPrefix(token, Token+"-") || access.Named(token) || access.Default(token) {
+			auth = ""
+		}
+	}
+	return r.WithContext(context.WithValue(r.Context(), codexListAuth{}, auth))
+}
+
 // codexModels is the ChatGPT backend's model list for this sign-in, with
 // magpie's models after it. Should the backend not answer, or not in
 // time, Codex's last list of its own stands in.
 func (s *Server) codexModels(w http.ResponseWriter, r *http.Request) {
+	if auth, kept := r.Context().Value(codexListAuth{}).(string); kept {
+		if auth == "" {
+			writeError(w, provider.Responses, http.StatusUnauthorized, "a ChatGPT sign-in is required for the Codex backend model list")
+			return
+		}
+		// Both the cache key and the backend ask use the client's sign-in,
+		// after the gateway's guards have judged its key. No gateway key
+		// or internal token belongs in the request to ChatGPT.
+		r = r.Clone(r.Context())
+		r.Header.Set("Authorization", auth)
+		for _, h := range []string{"x-api-key", "x-goog-api-key", "x-openai-actor-authorization"} {
+			r.Header.Del(h)
+		}
+		if q := r.URL.Query(); q.Has("key") {
+			q.Del("key")
+			r.URL.RawQuery = q.Encode()
+		}
+	}
 	var own []any
 	body, etag, deny, denyBody := s.codexBackendList(r)
 	// A sign-in the backend calls revoked (401 token_revoked, "Encountered

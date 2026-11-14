@@ -52,6 +52,9 @@ type Result struct {
 	// weren't GitHub's, kept with the backups
 	Linked     []string `json:"linked,omitempty"`
 	LinkedKept []string `json:"linkedKept,omitempty"`
+	// Subagents is, for subagents imported from a repository, what was
+	// added, updated, had already, and left as changed here
+	Subagents *SubagentsImported `json:"subagents,omitempty"`
 	// dropped are the servers taken out of an agent's config, as it had
 	// them, whose processes go once no agent runs them (mcp_reap.go)
 	dropped []*Server
@@ -113,6 +116,7 @@ func syncSteps(all, gone []*Target, b *backups, res *Result) []func(*Library) {
 			l.syncHooks(t, b, res)
 			l.syncEnv(t, b, res)
 			l.syncSubagents(t, b, res)
+			l.syncCommands(t, b, res)
 		})
 	}
 	// an edit made in an agent's copy of a skill goes to the library first,
@@ -523,7 +527,11 @@ type View struct {
 	// each agent on this computer makes of them (subagents.go)
 	Subagents      []SubagentView      `json:"subagents"`
 	SubagentAgents []SubagentAgentView `json:"subagentAgents"`
-	FoundServers   []Found             `json:"foundServers"`
+	// Commands are the library's slash commands, and CommandAgents what
+	// the agents that can take them do with them
+	Commands      []CommandView      `json:"commands"`
+	CommandAgents []CommandAgentView `json:"commandAgents"`
+	FoundServers  []Found            `json:"foundServers"`
 	// Plugins are the plugins kept as one item each (plugin.go)
 	Plugins     []PluginView `json:"plugins"`
 	Skills      []SkillView  `json:"skills"`
@@ -545,6 +553,9 @@ type View struct {
 	// (skills_shared.go), at SharedDir
 	SharedSkills bool   `json:"sharedSkills"`
 	SharedDir    string `json:"sharedDir"`
+	// AutoUpdateSkills: the skills from GitHub and git repositories are
+	// updated by themselves (skill_autoupdate.go)
+	AutoUpdateSkills bool `json:"autoUpdateSkills"`
 	// MCPHub: the agents are given magpie's one MCP server in place of
 	// the library's (#2679), at HubPath<agent> on the gateway
 	MCPHub  bool   `json:"mcpHub"`
@@ -623,7 +634,7 @@ func readView(problems []Problem, glance bool) (*View, error) {
 	// the agents are found once for the whole read: finding them looks
 	// through every agent's folders, in WSL too (#1624)
 	targets, asleep := targetsAsleep(false)
-	v := &View{Agents: []AgentView{}, Servers: []ServerView{}, Skills: []SkillView{}, FoundSkills: []FoundSkill{}, Instructions: l.instructionsView(targets, asleep), Dir: Dir(), Backups: BackupDir(), CopySkills: l.CopySkills, SharedSkills: l.SharedSkills, SharedDir: sharedSkillsDir(), MCPHub: l.MCPHub, SkillRouter: l.SkillRouter, HubPath: gateway.HubMCPPath, HubNote: settings.Shared().RouterNote, HubName: gateway.HostName(), HubAllTools: settings.Shared().RouterAllTools, Partial: glance}
+	v := &View{Agents: []AgentView{}, Servers: []ServerView{}, Skills: []SkillView{}, FoundSkills: []FoundSkill{}, Instructions: l.instructionsView(targets, asleep), Dir: Dir(), Backups: BackupDir(), CopySkills: l.CopySkills, SharedSkills: l.SharedSkills, SharedDir: sharedSkillsDir(), AutoUpdateSkills: l.AutoUpdateSkills, MCPHub: l.MCPHub, SkillRouter: l.SkillRouter, HubPath: gateway.HubMCPPath, HubNote: settings.Shared().RouterNote, HubName: gateway.HostName(), HubAllTools: settings.Shared().RouterAllTools, Partial: glance}
 	for _, t := range targets {
 		av := AgentView{ID: t.Agent.ID, Name: t.Agent.Name, Icon: t.Agent.Icon, Instructions: t.Instructions, Skills: t.Skills,
 			SkillsAlso: t.SkillsAlso, Note: t.Note, MCPVia: t.MCPVia, ProjectSkills: ProjectSkillsDir(t.Agent.ID), ProjectMCP: ProjectMCPFile(t.Agent.ID), ProjectSubagents: ProjectSubagentsDir(t.Agent.ID),
@@ -724,6 +735,7 @@ func readView(problems []Problem, glance bool) (*View, error) {
 	v.Hooks, v.HookAgents = l.hooksView(append(slices.Clone(targets), gone...), asleep, of)
 	v.Env, v.EnvAgents = l.envView(append(slices.Clone(targets), gone...), of)
 	v.Subagents, v.SubagentAgents = l.subagentsView(targets, asleep, of)
+	v.Commands, v.CommandAgents = l.commandsView(targets, asleep, of)
 	v.Plugins = l.pluginsView()
 	tr := &tracer{}
 	for _, s := range l.Skills {
