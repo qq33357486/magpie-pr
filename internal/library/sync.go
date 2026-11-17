@@ -55,6 +55,9 @@ type Result struct {
 	// Subagents is, for subagents imported from a repository, what was
 	// added, updated, had already, and left as changed here
 	Subagents *SubagentsImported `json:"subagents,omitempty"`
+	// Commands is, for slash commands imported from the agents, what was
+	// added and the library's own given to more agents
+	Commands *CommandsImported `json:"commands,omitempty"`
 	// dropped are the servers taken out of an agent's config, as it had
 	// them, whose processes go once no agent runs them (mcp_reap.go)
 	dropped []*Server
@@ -111,7 +114,7 @@ func syncSteps(all, gone []*Target, b *backups, res *Result) []func(*Library) {
 	steps := []func(*Library){func(l *Library) { l.followMovedSkills() }}
 	for _, t := range all {
 		steps = append(steps, func(l *Library) {
-			l.syncInstructions(t, b, res, true)
+			l.syncInstructions(t, all, b, res, true)
 			l.syncMCP(t, b, res)
 			l.syncHooks(t, b, res)
 			l.syncEnv(t, b, res)
@@ -407,6 +410,9 @@ type AgentView struct {
 	ProjectMCP string `json:"projectMCP,omitempty"`
 	// ProjectSubagents is the folder in a project it reads subagents from
 	ProjectSubagents string `json:"projectSubagents,omitempty"`
+	// ProjectInstructions is the file in a project it reads the
+	// project's instructions from, when there is none yet
+	ProjectInstructions string `json:"projectInstructions,omitempty"`
 	// ProjectNoSSE: its project file can't take a server over SSE
 	ProjectNoSSE bool `json:"projectNoSSE,omitempty"`
 	// ProjectOff and ProjectSkillOff: a server, or a skill, it has from
@@ -497,6 +503,9 @@ type SkillView struct {
 	// in the library or in an agent's copy: an update replaces that, so
 	// the page asks first (#1449)
 	Edited bool `json:"edited,omitempty"`
+	// Pending is one a sync brought by its source and not yet fetched
+	// from there on this computer (Skill.Pending): Update tries again
+	Pending bool `json:"pending,omitempty"`
 	// Gone is when its source was found without it: removed there, the
 	// page offers to take it out (skill_gone.go)
 	Gone string `json:"gone,omitempty"`
@@ -509,6 +518,9 @@ type SkillView struct {
 	Manual bool `json:"manual,omitempty"`
 	// Router is "direct" for one the skill router leaves out (Skill.Router)
 	Router string `json:"router,omitempty"`
+	// Back are the agents it was brought in from: Remove gives it back
+	// to them as they had it (Skill.Home)
+	Back []string `json:"back,omitempty"`
 }
 
 // View is the Library page.
@@ -618,6 +630,26 @@ func readView(problems []Problem, glance bool) (*View, error) {
 			return nil, err
 		}
 	}
+	// a skill that went in beside itself before magpie told the two
+	// apart (skill_beside.go) is folded back on the next read, not only on
+	// the next change: upgrading alone left blog-team beside blog (Refeccd
+	// on X). The agents' links follow at once, as after a change: a
+	// folded copy's folder is gone, and theirs would point at nothing.
+	if slices.ContainsFunc(l.Skills, func(s *Skill) bool { return s.Called != "" && s.Source.remote() }) {
+		if folded := l.foldBeside(); len(folded) > 0 {
+			forget()
+			forget = func() {}
+			if err := l.save(); err != nil {
+				return nil, err
+			}
+			res := l.sync()
+			if err := l.save(); err != nil {
+				return nil, err
+			}
+			problems = append(slices.Clone(problems), res.Problems...)
+			forget = readParts()
+		}
+	}
 	// a plugin's tools, a server of their own (plugin_tools.go), and a
 	// Remote magpie's router (bridge_mcp.go): saved, and given to the
 	// agents by a sync of their own
@@ -638,7 +670,8 @@ func readView(problems []Problem, glance bool) (*View, error) {
 	for _, t := range targets {
 		av := AgentView{ID: t.Agent.ID, Name: t.Agent.Name, Icon: t.Agent.Icon, Instructions: t.Instructions, Skills: t.Skills,
 			SkillsAlso: t.SkillsAlso, Note: t.Note, MCPVia: t.MCPVia, ProjectSkills: ProjectSkillsDir(t.Agent.ID), ProjectMCP: ProjectMCPFile(t.Agent.ID), ProjectSubagents: ProjectSubagentsDir(t.Agent.ID),
-			ProjectOff: slices.Contains(projectOffAgents, t.Agent.ID), ProjectSkillOff: slices.Contains(projectSkillOffAgents, t.Agent.ID),
+			ProjectInstructions: ProjectInstrFile(t.Agent.ID),
+			ProjectOff:          slices.Contains(projectOffAgents, t.Agent.ID), ProjectSkillOff: slices.Contains(projectSkillOffAgents, t.Agent.ID),
 			ProjectNoSSE: ProjectNoSSE(t.Agent.ID)}
 		if t.Skills != "" {
 			_, av.HowOwn = l.SkillHow[t.Agent.ID]
@@ -739,9 +772,16 @@ func readView(problems []Problem, glance bool) (*View, error) {
 	v.Plugins = l.pluginsView()
 	tr := &tracer{}
 	for _, s := range l.Skills {
-		sv := SkillView{Name: s.Name, Bundle: s.Bundle, Agents: append([]string{}, s.Agents...), Icon: skillIcon(s), Problems: of("skill:" + s.Name), Repo: tr.repoOf(s), OffHere: s.OffHere, Note: s.Note, Router: s.Router}
+		sv := SkillView{Name: s.Name, Bundle: s.Bundle, Agents: append([]string{}, s.Agents...), Icon: skillIcon(s), Problems: of("skill:" + s.Name), Repo: tr.repoOf(s), OffHere: s.OffHere, Note: s.Note, Router: s.Router, Pending: s.Pending}
 		if s.Source != nil {
 			sv.Source, sv.Kind = s.Source.String(), s.Source.Kind
+		}
+		if canPutBack(s) {
+			for _, e := range s.Home.Entries {
+				if !slices.Contains(sv.Back, e.Agent) {
+					sv.Back = append(sv.Back, e.Agent)
+				}
+			}
 		}
 		// linked from a folder elsewhere is what the library's entry is, not
 		// what was written down when it came in: a linked folder moved in by
