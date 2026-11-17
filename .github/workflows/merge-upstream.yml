@@ -48,16 +48,25 @@ jobs:
             git rm -q -rf .github/workflows
             git checkout ORIG_HEAD -- .github/workflows
             git diff --cached --quiet || git commit -m "keep the fork's workflows"
-            if [ "$(git rev-parse HEAD)" = "$before" ]; then
-              echo "changed=false" >> "$GITHUB_OUTPUT"
-            else
-              echo "changed=true" >> "$GITHUB_OUTPUT"
-            fi
+          elif [ -z "$(git diff --name-only --diff-filter=U | grep -v '^\.github/workflows/')" ]; then
+            # the conflicts live only under .github/workflows — the fork owns
+            # that path whole (its four files, upstream's discarded), so the
+            # same wipe-and-restore settles it and the merge stands (2026-11-18:
+            # two nightly runs went red on exactly this). Any conflict outside
+            # the path still aborts red for a hand, per docs/fork-merging.md.
+            git rm -q -rf .github/workflows
+            git checkout ORIG_HEAD -- .github/workflows
+            git commit -m "Merge upstream/main: conflicts were workflows-only, keep the fork's workflows"
           else
             git merge --abort || true
             echo "conflict=true" >> "$GITHUB_OUTPUT"
             echo "::error::upstream conflicts with codex-images — merge upstream/main by hand, resolve, push"
             exit 1
+          fi
+          if [ "$(git rev-parse HEAD)" = "$before" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
       # A merge that doesn't compile must not be pushed: one cheap build,
