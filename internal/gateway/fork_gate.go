@@ -61,7 +61,7 @@ func forkChainGate(w http.ResponseWriter, r *http.Request, from provider.Protoco
 		// instructions。都直接截给 glm, 失败才落回上游压缩。
 		return forkChainCompact(w, r, body)
 	}
-	key := chainOf(r.Header, body)
+	key := forkChainOf(r.Header, body)
 	e := chainTouch(key)
 	log.Printf("fork chain gate: key=%s why=%s kept=%v last=%s entry=%+v cands=%d",
 		firstWord(key), affWhyOf(aff), affKeptOf(aff), affLastOf(aff), entryFmt(e), len(*cands))
@@ -141,11 +141,11 @@ func forkChainGate(w http.ResponseWriter, r *http.Request, from provider.Protoco
 // glm, moving the chain to ready. False lets magpie's own compaction
 // routing take the request (the fallback when glm is down).
 func forkChainCompact(w http.ResponseWriter, r *http.Request, body []byte) bool {
-	log.Printf("fork chain compact: request arrived key=%s", firstWord(chainOf(r.Header, body)))
+	log.Printf("fork chain compact: request arrived key=%s", firstWord(forkChainOf(r.Header, body)))
 	if forkChainOff || testing.Testing() {
 		return false
 	}
-	key := chainOf(r.Header, body)
+	key := forkChainOf(r.Header, body)
 	sum, err := forkGLMSummarize(r.Context(), body)
 	if err != nil {
 		log.Printf("fork chain: glm summary for %s failed: %s; compaction goes on as magpie routes it", firstWord(key), err)

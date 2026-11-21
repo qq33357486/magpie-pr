@@ -20,17 +20,27 @@ func ForkEncrypted(summary string) string {
 	return ForkMark + base64.StdEncoding.EncodeToString([]byte(summary))
 }
 
+// ForkSummary is Summary for either mark: this fork's first, then
+// upstream's.
+func ForkSummary(encrypted string) (summary string, ours, ok bool) {
+	if b64, isOurs := strings.CutPrefix(encrypted, ForkMark); isOurs {
+		b, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return "", true, false
+		}
+		return string(b), true, true
+	}
+	return Summary(encrypted)
+}
+
 // ForkMessage is Message for either mark: this fork's first, then
 // upstream's.
 func ForkMessage(encrypted string) (msg map[string]any, ours bool) {
-	if b64, ok := strings.CutPrefix(encrypted, ForkMark); ok {
-		b, err := base64.StdEncoding.DecodeString(b64)
-		if err != nil {
-			return nil, true
-		}
-		return UserMessage(Prefix + "\n" + string(b)), true
+	summary, ours, ok := ForkSummary(encrypted)
+	if !ok {
+		return nil, ours
 	}
-	return Message(encrypted)
+	return UserMessage(Prefix + "\n" + summary), true
 }
 
 // ForkWritten says whether encrypted_content carries either mark: what

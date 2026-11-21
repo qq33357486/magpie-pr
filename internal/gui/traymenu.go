@@ -11,6 +11,7 @@ import (
 // (i18n.js), and these few are all the menu and the icon's tooltip show
 // (#301).
 var trayZh = map[string]string{
+	"Restart magpie":                       "重启 magpie",
 	"Open magpie":                          "打开 magpie",
 	"Version %s":                           "版本 %s",
 	"Restart to Update":                    "重启以更新",
@@ -42,10 +43,13 @@ var trayZh = map[string]string{
 	"%s tokens (%s)":                      "%s token（%s）",
 	"Today: no requests yet":              "今天：还没有请求",
 	"Today: %s":                           "今天：%s",
+	// the tooltip's warning (trayEgressTip)
+	"Claude's way out to the internet is in %s, outside Anthropic's supported regions": "Claude 的网络出口在 %s，不在 Anthropic 支持的地区内",
 }
 
 // trayZhTW is the tray menu in Traditional Chinese, with Taiwan's words.
 var trayZhTW = map[string]string{
+	"Restart magpie":                       "重新啟動 magpie",
 	"Open magpie":                          "開啟 magpie",
 	"Version %s":                           "版本 %s",
 	"Restart to Update":                    "重新啟動以更新",
@@ -77,10 +81,13 @@ var trayZhTW = map[string]string{
 	"%s tokens (%s)":                      "%s token（%s）",
 	"Today: no requests yet":              "今天：還沒有請求",
 	"Today: %s":                           "今天：%s",
+	// the tooltip's warning (trayEgressTip)
+	"Claude's way out to the internet is in %s, outside Anthropic's supported regions": "Claude 的網路出口在 %s，不在 Anthropic 支援的地區內",
 }
 
 // trayJa is the tray menu in Japanese.
 var trayJa = map[string]string{
+	"Restart magpie":                       "magpie を再起動",
 	"Open magpie":                          "magpie を開く",
 	"Version %s":                           "バージョン %s",
 	"Restart to Update":                    "再起動してアップデート",
@@ -112,10 +119,13 @@ var trayJa = map[string]string{
 	"%s tokens (%s)":                      "%s トークン（%s）",
 	"Today: no requests yet":              "今日：まだリクエストはありません",
 	"Today: %s":                           "今日：%s",
+	// the tooltip's warning (trayEgressTip)
+	"Claude's way out to the internet is in %s, outside Anthropic's supported regions": "Claude のネットワーク出口が %s にあり、Anthropic のサポート対象地域外です",
 }
 
 // trayDe is the tray menu in German.
 var trayDe = map[string]string{
+	"Restart magpie":                       "magpie neu starten",
 	"Open magpie":                          "magpie öffnen",
 	"Version %s":                           "Version %s",
 	"Restart to Update":                    "Zum Aktualisieren neu starten",
@@ -147,6 +157,8 @@ var trayDe = map[string]string{
 	"%s tokens (%s)":                      "%s Token (%s)",
 	"Today: no requests yet":              "Heute: noch keine Anfragen",
 	"Today: %s":                           "Heute: %s",
+	// the tooltip's warning (trayEgressTip)
+	"Claude's way out to the internet is in %s, outside Anthropic's supported regions": "Claudes Weg ins Internet führt über %s, außerhalb der von Anthropic unterstützten Regionen",
 }
 
 // trayWords are the tray menu's and the tray icon's tooltip's
@@ -199,7 +211,8 @@ func trayMenuLabels(lang, version, update string, paused bool) trayLabels {
 		open:    trayText(lang, "Open magpie"),
 		pause:   trayText(lang, "Pause Gateway"),
 		version: trayText(lang, "Version %s", version),
-		restart: trayText(lang, "Restart to Update"),
+		// no update waiting: magpie restarts as it is (restart.go)
+		restart: trayText(lang, "Restart magpie"),
 		quit:    trayText(lang, "Quit magpie"),
 	}
 	if update != "" {

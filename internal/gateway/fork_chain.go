@@ -118,8 +118,8 @@ func chainSave() {
 	}
 }
 
-// chainOf is this request's conversation as the chain knows it.
-func chainOf(in http.Header, body []byte) string {
+// forkChainOf is this request's conversation as the chain knows it.
+func forkChainOf(in http.Header, body []byte) string {
 	return conversationID(in, body)
 }
 
@@ -236,7 +236,7 @@ func forkChainIdentity(in http.Header, body []byte, account string) []byte {
 	if forkChainOff || testing.Testing() || account == "" {
 		return body
 	}
-	key := chainOf(in, body)
+	key := forkChainOf(in, body)
 	e := chainTouch(key)
 	if e == nil || e.Phase != chainPinned || e.Key == "" || e.Account != account {
 		return body

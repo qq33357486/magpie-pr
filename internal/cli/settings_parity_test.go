@@ -212,6 +212,7 @@ var cliForRoute = map[string]string{
 	"POST /api/settings/mtls/issue":        "magpie mtls issue",
 	"POST /api/settings/mtls/revoke":       "magpie mtls revoke",
 	"GET /api/library":                     "magpie library",
+	"GET /api/library/native":              "magpie library native",
 	"POST /api/library/{what}/{action}":    "magpie library",
 	"GET /api/plugins":                     "magpie plugin",
 	"POST /api/plugins/{op}":               "magpie plugin",
@@ -258,6 +259,7 @@ var notYet = map[string]string{
 	"POST /api/appearance/wallpaper":             W,  // appearance.go: the picture comes from the window's file picker
 	"GET /api/quit":                              W,  // api.go: the window's Quit question
 	"POST /api/quit/disconnect":                  W,  // api.go: the Quit question's Disconnect and quit, which quits the app
+	"POST /api/restart":                          W,  // restart.go: the app starting itself again, as the tray's Restart magpie does
 	"POST /api/page-away":                        W,  // api.go: the page says it went from view, so its caches can go
 	"GET /api/remote":                            W,  // remote.go: another magpie opened in a window of the app
 	"POST /api/remote":                           W,  // remote.go
@@ -277,6 +279,7 @@ var notYet = map[string]string{
 	"POST /api/gateway/held/reveal":              W,  // api.go
 	"POST /api/profile/{action}":                 A,  // api.go
 	"POST /api/proxy/check":                      S2, // api.go
+	"POST /api/egress/check":                     P,  // proxycheck.go: the Providers list's Check again, where the Claude accounts' way out is
 	"POST /api/pipelines/check":                  S2, // pipecheck.go: Settings › Models' Quick check, one real call a pipeline
 	"POST /api/relay-check":                      S2, // pipecheck.go: the Usage speed card by provider, its check button: a few small real calls to one model on one provider
 	"POST /api/proxies/save":                     S2, // proxies.go: Settings › Network's saved proxies
@@ -515,6 +518,7 @@ var notYet = map[string]string{
 	"GET /api/sessions/progress":                 U,  // sessions.go
 	"GET /api/sessions/stats":                    U,  // sessions.go
 	"POST /api/agents/open":                      W,  // sessions.go
+	"POST /api/agents/reveal":                    W,  // sessions.go
 	"POST /api/sessions/carry":                   U,  // sessions.go
 	"POST /api/sessions/export":                  U,  // sessions.go
 	"POST /api/sessions/terminal":                W,  // sessions.go

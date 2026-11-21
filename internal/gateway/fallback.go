@@ -699,7 +699,7 @@ func planFallbackGroup(g provider.Group, ms []provider.Member, from provider.Pro
 // too, within its own order (#2255), before g's Sink orders the whole.
 // A member's fallbacks are not the group's.
 func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider.Protocol) ([]candidate, planned) {
-	var pl planned
+	pl := planned{routing: g.Routing, grouped: true}
 	var asides []candidate
 	var wAsides []Weighed
 	out := planLevel(g, ms, 0, from, &pl, &asides, &wAsides, nil)
@@ -1616,6 +1616,10 @@ var restingUntil = struct {
 	// found, from whichever page lifted it (zoecats on Discord: Try now
 	// in the provider's editor left Routing at 429 until a restart)
 	lifted map[string]time.Time
+	// renewAsked is, by the key it rests by, the end of a rest the vendor
+	// timed that a reading's renewal had asked again once
+	// (askOnRenewalLocked): not asked so again till another time is named
+	renewAsked map[string]time.Time
 }{m: map[string]time.Time{}, note: map[string]Rest{}, lifted: map[string]time.Time{}}
 
 // liftedLocked notes that the rest by key was lifted now, with
@@ -1627,6 +1631,11 @@ func liftedLocked(key string, now time.Time) {
 		}
 	}
 	restingUntil.lifted[key] = now
+	// the limit it was shown for is over too (limit_notice.go): written
+	// by saveDropped once the lock is let go
+	if dropNotice(key) {
+		noticesDropped.Store(true)
+	}
 }
 
 // liftedRests is when each rest lifted before its time was lifted, by
@@ -2010,9 +2019,14 @@ func elsewhere(left []candidate, c candidate) []candidate {
 // Google's suspension of an account for its terms (googleSuspended): it
 // says the service was disabled in this account before the request came,
 // a ruling on the account, not on what was sent, so the provider's other
-// accounts are asked (bestony on Discord).
+// accounts are asked (bestony on Discord). Nor does Anthropic's disabling
+// of a Claude account or organization (claudeAccountOff): the same.
 func riskRefused(c candidate, status int, header http.Header, body []byte) bool {
-	return failureOf(c, status, body) == failRestricted && !remoteModelRest(c, failRestricted, header) && !googleSuspended(c.p, carriedStatus(status, body), body)
+	if failureOf(c, status, body) != failRestricted || remoteModelRest(c, failRestricted, header) {
+		return false
+	}
+	status = carriedStatus(status, body)
+	return !googleSuspended(c.p, status, body) && !claudeAccountOff(c.p, status, body)
 }
 
 // elsewhereWeighed is elsewhere on a list of candidates beside their
@@ -2065,6 +2079,11 @@ func retryable(status int, body []byte) bool {
 		// quotaWords' is in it, so a group never asked the account with
 		// 6,467 points and the empty one was never rested (#4095,
 		// mycf_711)
+		return true
+	case status >= 400 && status < 500 && claudeOffWords.Match(body):
+		// the account turned off (its organization disabled, on hold):
+		// nothing about the request, which another member may serve. A
+		// 400, it ended the group at the disabled account (Ramon317317)
 		return true
 	case status >= 400 && status < 500 && refusedWords.Match(body):
 		// the vendor turning the agent's prompt away, at whatever 4xx it
@@ -2717,6 +2736,12 @@ type holdWriter struct {
 	// takes; slow says it took longer, and was let go with nothing sent
 	firstWait time.Duration
 	slow      bool
+	// stuck says the vendor said nothing for translatedQuietLongest
+	// while the agent was kept alive (keepQuiet), and the try was let go:
+	// the agent is told so as an error, never left with silence
+	stuck string
+	// name is the provider's, for what stuck tells the agent
+	name string
 	// budgeted says firstWait was cut to what was left of the walk's
 	// total time (groupBudget), so its running out is the budget's end,
 	// not this member being slow (#5113)
@@ -2769,6 +2794,11 @@ type holdWriter struct {
 	// one in the same stream (refusalHandover); handedOver says it was
 	over       *refusalHandover
 	handedOver bool
+
+	// retold is how the vendor's error the try wrote is told to the
+	// agent (retell): the held bytes keep magpie's reading of it, which
+	// the rest, the rate hold and the retired model are read from
+	retold []retelling
 }
 
 // onLoop sets what is told of a loop before it ends the reply (reask),
@@ -2863,7 +2893,7 @@ func (h *holdWriter) Write(b []byte) (int, error) {
 	if h.slow {
 		return 0, errSlowStart
 	}
-	if h.looped != "" || h.relooped {
+	if h.looped != "" || h.relooped || h.stuck != "" {
 		return 0, errLooped
 	}
 	if h.handedOver {
@@ -2916,7 +2946,10 @@ func (h *holdWriter) Write(b []byte) (int, error) {
 	}
 	if h.passing {
 		h.sent(b)
-		return h.w.Write(b)
+		if n, err := h.w.Write(retell(h.retold, b)); err != nil {
+			return n, err
+		}
+		return len(b), nil
 	}
 	n, err := h.held.Write(b)
 	if h.stream && h.failure == 0 {
@@ -3714,7 +3747,7 @@ func (h *holdWriter) release() {
 			streamError(h.w, h.alive.proto, h.alive.model, h.failure, who+" "+h.failMsg)
 		case h.status >= 400:
 			// an error status, once the agent has a stream: told as its error
-			streamError(h.w, h.alive.proto, h.alive.model, h.status, provider.APIError(h.held.Bytes(), http.StatusText(h.status)))
+			streamError(h.w, h.alive.proto, h.alive.model, h.status, retellText(h.retold, provider.APIError(h.held.Bytes(), http.StatusText(h.status))))
 		default:
 			// a reply given whole by a vendor that ignored stream:true,
 			// after the agent was kept alive: sent as the stream it asked
@@ -3724,7 +3757,7 @@ func (h *holdWriter) release() {
 		return
 	}
 	h.pass()
-	h.w.Write(h.held.Bytes())
+	h.w.Write(retell(h.retold, h.held.Bytes()))
 	h.flush()
 }
 
@@ -3850,8 +3883,13 @@ func (h *holdWriter) watch() func() {
 }
 
 // keepQuiet keeps the agent of a stream alive with SSE comments while the
-// vendor says nothing, every keepaliveEvery for up to keepaliveLongest
-// since it last did: a vendor that sent its 200 and response.created, then
+// vendor says nothing, every keepaliveEvery for up to translatedQuietLongest
+// since it last did, as a translated reply's client is kept
+// (keepThroughSilence), and then ends the try with an error the agent is
+// told (endStuck). It stopped at keepaliveLongest (5 minutes) and left the
+// agent with nothing: a Claude relay that took longer than that before its
+// headers, or quiet mid-reply, had pi's 300s idle timeout end the request
+// with no word of why (Wing8Aqua on X). A vendor that sent its 200 and response.created, then
 // nothing while it reasoned, had the stream held with none of it sent,
 // and Cloudflare in front of a remote magpie ended the request at 125s
 // (524) with the agent sent nothing at all; one quiet mid-reply was reset
@@ -3859,11 +3897,12 @@ func (h *holdWriter) watch() func() {
 // comments only (keepAlive), none of the try, which another account may
 // still answer instead; passed, a comment goes between two lines of it.
 func (h *holdWriter) keepQuiet() {
-	if h.slow || h.relooped || h.ended || h.alive == nil || h.alive.proto == provider.Gemini || h.ctx != nil && h.ctx.Err() != nil {
+	if h.slow || h.relooped || h.ended || h.stuck != "" || h.alive == nil || h.alive.proto == provider.Gemini || h.ctx != nil && h.ctx.Err() != nil {
 		return
 	}
-	if !h.heard.IsZero() && time.Since(h.heard) >= keepaliveLongest {
-		return // a stream stuck this long is left for a timeout to end
+	if !h.heard.IsZero() && time.Since(h.heard) >= translatedQuietLongest {
+		h.endStuck(time.Since(h.heard))
+		return
 	}
 	if !h.passing && h.stream && h.failure == 0 && !h.whole && !h.wantWhole && h.held.Len() > 0 && h.alive.tooQuiet(0) {
 		// a stream held while its vendor is quiet: Codex would hang up
@@ -3888,6 +3927,37 @@ func (h *holdWriter) keepQuiet() {
 	h.wrote = time.Now()
 	if f, ok := h.w.(http.Flusher); ok {
 		f.Flush()
+	}
+}
+
+// endStuck lets a try go whose vendor said nothing for quiet
+// (translatedQuietLongest), its agent kept alive all that time. Passing,
+// the agent's stream ends with the error as its own event, after a blank
+// line, as cutLoop ends one; held, the gateway tells it (stuck, failTo),
+// and nobody else is asked: the agent has waited that long already.
+func (h *holdWriter) endStuck(quiet time.Duration) {
+	name := h.name
+	if name == "" {
+		name = "the provider"
+	}
+	d := quiet.Round(time.Second)
+	if d == 0 {
+		d = quiet.Round(time.Millisecond)
+	}
+	h.stuck = fmt.Sprintf("%s sent nothing for %s; the request was ended", name, d)
+	if h.passing && strings.HasPrefix(h.w.Header().Get("Content-Type"), "text/event-stream") {
+		proto := h.alive.proto
+		if h.atLine {
+			io.WriteString(h.w, "\n")
+		} else {
+			io.WriteString(h.w, "\n\n")
+		}
+		streamError(h.w, proto, "", http.StatusGatewayTimeout, h.stuck)
+		h.ended = true
+		h.flush()
+	}
+	if h.stop != nil {
+		h.stop()
 	}
 }
 
@@ -4899,14 +4969,17 @@ func streamStatus(msg string) int {
 // percent-encoded (pinnedName), and matches as written or decoded.
 func pinTo(raw string, cands []candidate, pl planned) ([]candidate, planned, int, string) {
 	want := pinnedName(raw)
-	match := func(w Weighed) bool {
-		return strings.EqualFold(want, w.Who) || want == w.ID || strings.EqualFold(raw, w.Who) || raw == w.ID
+	// by its stable id too, as AccountsPath lists it: "<provider>/<id>",
+	// or the id alone; a key so, whatever it is named
+	targets := pinTargets(want, append(slices.Clone(pl.order), pl.left...))
+	match := func(w Weighed, c *candidate) bool {
+		return strings.EqualFold(want, w.Who) || want == w.ID || strings.EqualFold(raw, w.Who) || raw == w.ID || pinnedBy(targets, w, c)
 	}
 	var out []candidate
 	var order []Weighed
 	var rests []string
 	for i, c := range cands {
-		if i >= len(pl.order) || !match(pl.order[i]) {
+		if i >= len(pl.order) || !match(pl.order[i], &c) {
 			continue
 		}
 		r, ok := restOf(c.restKey())
@@ -4926,20 +4999,20 @@ func pinTo(raw string, cands []candidate, pl planned) ([]candidate, planned, int
 		return nil, pl, http.StatusTooManyRequests, AccountHeader + ": " + strings.Join(rests, "; ") + "; no other account is tried in its place"
 	}
 	for _, w := range pl.left {
-		if match(w) && w.Held {
+		if match(w, nil) && w.Held {
 			return nil, pl, http.StatusForbidden, fmt.Sprintf("%s: the gateway key may not use %s's account", AccountHeader, w.Who)
 		}
-		if match(w) && w.Capped > 0 {
+		if match(w, nil) && w.Capped > 0 {
 			msg, _ := cappedError(w.Model, []Weighed{w}, time.Now())
 			return nil, pl, http.StatusTooManyRequests, AccountHeader + ": " + msg + "; no other account is tried in its place"
 		}
-		if match(w) {
+		if match(w, nil) {
 			return nil, pl, http.StatusBadRequest, fmt.Sprintf("%s: %s's plan doesn't list %s", AccountHeader, w.Who, w.Model)
 		}
 	}
 	var have []string
 	for _, w := range append(slices.Clone(pl.order), pl.left...) {
-		if w.Kind == "account" && !slices.Contains(have, w.Who) {
+		if (w.Kind == "account" || w.Kind == "key") && w.Who != "" && !slices.Contains(have, w.Who) {
 			have = append(have, w.Who)
 		}
 	}

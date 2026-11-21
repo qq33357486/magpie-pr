@@ -126,7 +126,7 @@ func TestHubMCPListsAndRoutes(t *testing.T) {
 			t.Errorf("%q is past 64 characters", x.Name)
 		}
 	}
-	want := []string{"github__create_issue", "my-server__do-it", "my-server__do-it_2", "fs__" + strings.Repeat("x", 60)}
+	want := []string{"github__create_issue", "my-server__do-it", "my-server__do-it_2", "fs__" + strings.Repeat("x", 60), hubCodeTool}
 	if strings.Join(names, " ") != strings.Join(want, " ") {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}
@@ -228,7 +228,7 @@ func TestHubMCPForAnyApp(t *testing.T) {
 	for _, x := range readMCP(t, hubPostAt(h, HubMCPAll, here, toolsList)).Result.Tools {
 		names = append(names, x.Name)
 	}
-	if strings.Join(names, " ") != "github__create_issue notes__find" {
+	if strings.Join(names, " ") != "github__create_issue notes__find "+hubCodeTool {
 		t.Fatalf("another app's tools %v", names)
 	}
 	m := readMCP(t, hubPostAt(h, HubMCPAll, here, toolsCall("notes__find", `{"q":"x"}`)))
@@ -390,7 +390,7 @@ func TestHubMCPHeldToKeyLimit(t *testing.T) {
 	r := httptest.NewRequest("POST", HubMCPPath+"claude", nil).WithContext(access.WithIdentity(t.Context(), capped))
 	res, rpcErr := s.hubMCPCall(r, "claude", mcpMessage{ID: json.RawMessage("1"), Method: "tools/call", Params: json.RawMessage(`{"name":"fs__read","arguments":{}}`)})
 	b, _ := json.Marshal(res)
-	if rpcErr != nil || !strings.Contains(string(b), `"isError":true`) || !strings.Contains(string(b), "Key limits plugin") {
+	if rpcErr != nil || !strings.Contains(string(b), `"isError":true`) || !strings.Contains(string(b), "Key limits built-in") {
 		t.Errorf("a limited key with limits off: %s %v", b, rpcErr)
 	}
 	if len(f.ran()) != 0 {
@@ -480,14 +480,16 @@ func whereReply(t *testing.T, h http.Handler, addr string, hdr ...string) (instr
 	}
 	var list struct {
 		Result struct {
-			Tools []struct{ Description string }
+			Tools []struct{ Name, Description string }
 		}
 	}
 	if err := json.Unmarshal(hubPost(h, "claude", addr, toolsList, hdr...).Body.Bytes(), &list); err != nil {
 		t.Fatal(err)
 	}
 	for _, x := range list.Result.Tools {
-		descs = append(descs, x.Description)
+		if x.Name != hubCodeTool { // the servers' tools; run_code is the router's own
+			descs = append(descs, x.Description)
+		}
 	}
 	return init.Result.Instructions, init.Result.ServerInfo.Title, descs
 }

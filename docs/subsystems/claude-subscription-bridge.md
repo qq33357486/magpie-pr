@@ -510,6 +510,13 @@ machine's turns with an image anywhere in their messages start as `-p`
 then, and text alone is still the interactive mode's. When the redo can't
 run (Off meanwhile, the client gone) the failure is a 400, not a 502
 (`bridgeFailed`), so neither the client nor the fallback asks it again.
+An account Anthropic turned off (its organization disabled, a 400 or
+403; on hold, which Claude Code says with no status and `bridgeFailed`
+gives a 403; subscription sign-in turned off for the organization; a
+flagged account that "can't receive replies from Claude", a 403) is
+read as restricted (`claudeAccountOff`, gateway-routing): it rests until
+an appeal and the request goes on to the next account or member
+(`TestClaudeAccountOffMovesToNextAccount`).
 `claude_tui_unpasted_test.go` holds each case, and
 `TestShimPaddedImageTakenWithoutMarks` the padded paste on a console that
 drops the marks.
@@ -754,6 +761,28 @@ does not call), and only Anthropic decides whether a request spends it
 (X, Shinji_Zl). Tried against fakes only; the owner's account has extra
 usage off.
 
+The text draws the session and the weeks from the endpoint's `five_hour`
+and `seven_day` fields, and from `limits[]` only the rows of kind
+`weekly_scoped` with a model. The same `usage_report.rate_limits.limits`
+carries every row as the server sent it (`kind` `session`, `weekly_all`
+or `weekly_scoped`, `percent` 0-100, `resets_at` ISO 8601). When the text
+drew no window, `claudeExtraUsage` adds each such row as /usage's own
+line (the reset as written, which `claudeResetTime` reads), and an empty
+`limits` (the server reported no meters) as
+`provider.ClaudeNoLimitsLine`, read as a text row "5-hour and weekly
+limits: None on this plan". `limits: null`, or `rate_limits: null` (the
+fetch failed, or the token lacks the profile scope), adds nothing, and
+the subscription line alone still reads as "temporarily unavailable"
+(`errClaudeUsageUnavailable`), unless what Claude Code saved of the
+account's organization (`.claude.json` `oauthAccount`) names a seat it
+holds no rate limits for: `seatTier` `enterprise_usage_based` or
+`billingType` `usage_based` (Claude Code's `vmr` and `fD`,
+`claudeUsageBased`). A Claude Enterprise seat read as "temporarily
+unavailable" before (@andy_chen1997 on X). Built from Claude Code
+2.1.328's schema and handling; no Enterprise account was tried
+(`TestClaudeUsageRows`, `TestClaudeEnterpriseUsage`,
+`TestClaudeUsageBasedSeat`).
+
 A turn's run (`claudeRunEnv`) is not given
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, which the one-off runs above
 keep (`cleanClaudeEnv`). With it, or `DISABLE_TELEMETRY` or
@@ -772,6 +801,40 @@ a quiet variable set in magpie's environment or in their Claude Code's
 `settings.json` env is given to the run as they set it, and the run then
 reads no flags. An interactive run sends Claude Code's quota request as it
 starts, right before the turn's own. `TestClaudeRunReadsItsFlags` holds it.
+
+A turn's run also waits on magpie's MCP calls for as long as the caller's
+tool takes (`claudeToolWaitVars`): `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0`
+and `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=0`. The caller runs the tools and
+has its own timeouts. Interactive Claude Code 2.1.322 otherwise moves a call
+still running after 120s to the background ("is still running after 120s.
+It was moved to the background as task …") and its model goes on without
+the result. The result then reaches the run while the model's next step is
+being written, and the caller's turn got a reply with `finish_reason:
+tool_calls` and no calls in it. The run went on making calls no client was
+shown, each moved to the background 120s later, until it was killed (Pi:
+29 such replies in 1341 turns after a tool of over 120s, none in 38735
+after a shorter one). Claude Code also aborts a call that sent nothing for
+30 minutes ("sent no response or progress for 1800s"). Measured on
+`claude -p` 2.1.322 with a stdio tool that sleeps (`-p` backgrounds only
+with `CLAUDE_AUTO_BACKGROUND_TASKS=1`, interactive mode always): a 4s
+background limit moves a 15s call to the background, `0` gets its result;
+a 5s idle limit aborts a 70s call at the 30s check, `0` gets its result. A
+value set in magpie's environment stays. `TestClaudeRunWaitsOnToolCalls`
+holds it, by -p and by the interactive mode, and
+`TestClaudeToolWaitVarsReachWSL` that a run in WSL is handed them.
+
+The same move delayed an answer. Pi's `ask_user_question` waited on its
+user past 120s, was moved to the background, and the model wrote a bash
+call past it that no client runs. The user's answer reached the run at once
+but the model only once the bash call was moved to the background too, its
+own 120s later (~113s after the answer, FunnyPartMent on X). Measured on
+2.1.316 against a fake Anthropic API and a stdio tool that takes 10s: with
+a 3s limit (interactive mode) or 8s (`-p`) the second call was written and
+the result came only as a task notification once that call was moved too;
+with `0` the model had the call's own result at 10.0s, by both, and no
+second call was made. `0` also turns off the move Claude Code makes to hand over a message
+that arrived mid-call (`isMcpCallMovableWithoutTimer` reads the same
+value).
 
 The helper still takes a typed `/usage`, and nothing of magpie's sends it
 now: it is told `{"type":"command","command":"/usage"}`, types it, waits for the
@@ -1868,8 +1931,17 @@ hold it.
   turn](#a-run-that-ended-during-a-turn-6528)), and when a saved session
   is discarded (`removeSession`).
   `sweepSessions` removes those a stopped gateway left in magpie's own
-  work folder's project, once older than `idleLongest`; a caller's folder
+  work folder's project, once older than `idleLongest` plus a minute; a caller's folder
   is never swept (`clientWorkDir`).
+  A session still in the persisted shelf, the in-memory shelf, an active run,
+  or the transfer from shelf to run (`resuming`) is protected. This includes
+  quota waits longer than an hour. `loadShelf` removes the file and publishes
+  its entries under `shelfFileMu`, which the sweep's snapshot holds too;
+  the bridge lock is taken for the shelf alone, never across the file's
+  reads. An
+  unreadable or unknown-version shelf skips the destructive sweep.
+  `TestClaudeSweepKeepsQuotaSessions`, `TestClaudeSweepUnknownShelfLeavesFiles`.
+
 - Claude Code's temp files for the session, the images it was given:
   `<CLAUDE_CODE_TMPDIR or /tmp>/claude-<uid>/<work project>/<session>`
   (`claudeTempDir`, not on Windows). They are removed with the session
@@ -2180,6 +2252,61 @@ claude-hud shows. One that signs in to magpie with magpie's key
 headers only for a claude.ai subscriber. A reply another provider answered
 carries none.
 
+## The way out's region (`internal/egress`, `claudeRegionHold`)
+
+@alterxyz4 on X asked for a "canary": a warning when this computer's way
+out to the internet is in a region Anthropic doesn't list in its Supported
+Regions Policy, before Claude subscription requests go out from there.
+
+- **The list.** `egress.Supported` is the policy's list (effective
+  2026-11-12, 185 entries) by ISO 3166-1 code, and
+  `TestSupportedIsThePolicysList` holds it to the page's text in
+  `internal/egress/testdata/supported-regions.txt`. A listed country's
+  territories count as supported (`territories`: Puerto Rico, Guam,
+  Gibraltar, Réunion, Greenland…). Hong Kong and Macao are China's, which
+  isn't listed. Ukraine is listed except for five regions a country code
+  can't tell apart, so a way out in Ukraine always reads as supported.
+- **The lookup.** `egress.Check` asks Cloudflare's
+  `https://www.cloudflare.com/cdn-cgi/trace` for its `loc=` through the
+  same proxy choice the Claude accounts' requests use (`ProxyOfLogin` over
+  the Claude logins, `provider.ClaudeProxies`; `""` is magpie's own proxy
+  setting), once per distinct choice. `XX`, `T1` (Tor), an empty or
+  malformed code, a non-200 or a failed request are **Unknown**, which is
+  neither fine nor unsupported: it draws nothing and holds nothing.
+- **When.** Never per request. `egress.Keep` (started by the gateway's
+  `ListenAndServe`) looks up at the start, again when the network or the
+  set of proxy choices changes (a fingerprint of the interfaces' addresses
+  and the choices, polled every 20s), every 15 minutes otherwise, and
+  when the GUI's Check again or a never-looked-up choice asks
+  (`egress.Again`). No Claude account, no lookup. A node switched inside
+  a proxy app changes nothing magpie can see, so it shows at the next
+  15-minute lookup, or at once with Check again.
+- **What is shown.** `/api/providers` gives the Claude row `egress`, the
+  worst result over its choices (`egress.Worst`: Unsupported over Unknown
+  over OK). Unsupported draws a line over the Providers list
+  (`egress.js`, imported only then) naming the region in the reader's
+  language, with Check again (`POST /api/egress/check`), and the tray's
+  tooltip begins with a warning (`trayEgressTip`). Neither says anything
+  of bans or of keeping an account safe: the policy is Anthropic's, and
+  magpie can only say where the way out is.
+- **The hold** (Claude editor → Advanced → Hold requests outside supported
+  regions, `claudeRegionHold`, off by default). On, `egress.Hold` refuses
+  a Claude subscription request whose choice last read Unsupported, before
+  any Claude Code starts: in the gateway's `attempt` (a 502 whose text
+  starts `magpie held this Claude request`, `egress.HeldWords`) and in
+  `proxied` (warm-ups and usage reads through Claude Code). An Unsupported
+  older than 30s is looked up again first, so a proxy turned back on lets
+  the request go. `failure` reads a held reply as `failProxy`: nobody
+  rests, and the next account or member is asked. A choice not looked up
+  yet goes, and asks for a lookup.
+  - It is off by default because Cloudflare's `loc` can differ from what
+    Anthropic sees: a rule-based proxy (Clash and the like) can send
+    cloudflare.com and anthropic.com through different nodes, or one of
+    them direct. A wrong Unsupported must not stop anyone's requests; the
+    warning says it, and the user decides.
+  - Not held: the provider's own HTTP paths (token refresh, the usage
+    endpoint), which aren't Claude Code runs.
+
 ## A restart to update
 
 A run is a Claude Code process of this magpie's, so a restart to update
@@ -2209,6 +2336,25 @@ and the turn is told whole to a new run, as after a crash (no file is
 written then). A conversation a client rewrote (`looseTurn`) is not kept,
 and a run in a turn or parked on tool results at the stop is not either.
 `TestClaudeIdleRunSurvivesARestart`, `TestClaudeShelfFileUnreadableFallsBackToReplay`.
+
+The successor can accept before the old gateway saves this file. Before
+starting a Claude subscription turn, `awaitPredecessorSessions` waits for
+`GET /_magpie/claude-ready` on the private callback socket. The old gateway
+answers only after `abortAll` has saved and ended its runs, which follows
+every request it holds, of any provider. The wait is bounded by
+`predecessorWait` (90s, inside Claude Code's ten minutes for a reply): past
+it, or on a failed wait, the turn goes on as it did before the wait, a
+replay, and no later turn waits (`errPredecessorSlow`,
+`TestClaudeHandoverWaitIsBounded`); `loadShelf` still reads a shelf written
+later, at the next turn no session is found for. Only a caller gone
+returns an error. Other providers and MCP callbacks continue. A removed socket means the old
+process has finished; a 404 permits older versions without this endpoint,
+whose handover retains the previous race.
+`TestClaudeHandoverWaitsForSavedSession` checks the resumed turn;
+`TestClaudeHandoverReadiness` and `TestClaudeHandoverReadinessCompatibility`
+check readiness, cancellation and older predecessors. Web/serve signal
+exits and desktop shutdown now wait for this gateway shutdown too (see
+[GUI shell](gui-shell.md#a-restart-to-update-hands-the-gateway-over)).
 
 ### A turn refused for the account's limit
 
