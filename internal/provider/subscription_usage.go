@@ -136,6 +136,11 @@ type QuotaWindow struct {
 	// (WithWindowStarts): with ResetsAt it places an even pace through the
 	// window, which the card's Pace number is measured from (fflake33).
 	StartsAt *time.Time `json:"startsAt,omitempty"`
+	// Period is, for the GUI only (WithWindowPeriods), how long the window
+	// runs in seconds, as magpie knows it (Length): the Usage table puts
+	// a window in the column of its length, whatever its name (LotusDecoder
+	// on X). 0 when not known.
+	Period int64 `json:"period,omitempty"`
 	// TrayKind is, for the GUI only, how Settings names the window among
 	// those the menu bar can show (gui.withTrayKinds): "5h", "7d",
 	// "month", "7d:grok bot"; empty on one the menu bar can't say as a
@@ -1103,7 +1108,7 @@ func claudeWindows(ctx context.Context, user string, active bool) ([]QuotaWindow
 	}
 	c.m[key] = claudeUsageEntry{at: now, ws: ws, heard: e.heard, tried: now, asked: asked, wait: e.wait, whole: true}
 	c.Unlock()
-	clearClaudeSaid(user) // read well: the reading decides (claude_said_out.go)
+	clearClaudeSaid(user, ws) // read well: the reading decides (claude_said_out.go)
 	// as of now, as a kept reading is: /usage gives a reset to the minute
 	// and can lag it, so a window it still counts full may have started
 	// again already

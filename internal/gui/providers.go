@@ -2839,6 +2839,16 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					in.ID = to
 				}
 			}
+			// the models ticked here that weren't before are ticked for the
+			// agents shown only their picks that take a provider's in
+			// (eiyuuzaki2333 on X), so a model isn't ticked twice; before
+			// the list is fetched, so a model its vendor adds stays out
+			if p, err := provider.Find(in.ID); err == nil {
+				if _, err := provider.JoinPicks(*p, old); err != nil {
+					fail(rw, err)
+					return
+				}
+			}
 			if len(moreKeys) > 0 {
 				// those it has already are passed over, not an error
 				if added, had, err := provider.AddKeys(in.ID, moreKeys, in.KeyProtocol); err != nil && !(added == 0 && had > 0) {
@@ -3387,14 +3397,19 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				out = append(out, x)
 			}
 			// embedding and rerank models need no pick: they are served
-			// on /v1/embeddings and /v1/rerank as listed (heatonz)
-			retrieval := 0
+			// on /v1/embeddings and /v1/rerank as listed (heatonz), and
+			// the form lists them by kind, as a saved provider's editor
+			// does (solider1394 on X: a count alone read as no models)
+			var embed, rerank []string
 			for _, m := range all {
-				if m.Serves == catalog.ServesEmbedding || m.Serves == catalog.ServesRerank {
-					retrieval++
+				switch m.Serves {
+				case catalog.ServesEmbedding:
+					embed = append(embed, m.ID)
+				case catalog.ServesRerank:
+					rerank = append(rerank, m.ID)
 				}
 			}
-			writeJSON(rw, map[string]any{"models": out, "retrieval": retrieval})
+			writeJSON(rw, map[string]any{"models": out, "embedIds": embed, "rerankIds": rerank})
 			return
 		case "models":
 			p, err := provider.Find(in.ID)
@@ -3885,6 +3900,33 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			return
 		}
 		writeProvidersJSON(rw, providersState())
+	})
+	// a Mistral Vibe plan's key: a sign-in to Mistral in the user's
+	// browser, as Vibe's own, traded for the key the editor then saves
+	mux.HandleFunc("POST /api/mistral/signin", func(rw http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		id, u, err := provider.StartMistralSignIn(ctx)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, struct {
+			ID  string `json:"id"`
+			URL string `json:"url"`
+		}{id, u})
+	})
+	mux.HandleFunc("GET /api/mistral/signin/{id}", func(rw http.ResponseWriter, r *http.Request) {
+		state, why, key := provider.MistralSignInState(r.PathValue("id"))
+		writeJSON(rw, struct {
+			State string `json:"state"`
+			Error string `json:"error,omitempty"`
+			Key   string `json:"key,omitempty"`
+		}{state, why, key})
+	})
+	mux.HandleFunc("POST /api/mistral/signin/{id}/cancel", func(rw http.ResponseWriter, r *http.Request) {
+		provider.CancelMistralSignIn(r.PathValue("id"))
+		rw.WriteHeader(http.StatusNoContent)
 	})
 	// the Qwen AI platform's Token Plan windows: a sign-in to the
 	// platform, approved in the user's browser, the provider's own

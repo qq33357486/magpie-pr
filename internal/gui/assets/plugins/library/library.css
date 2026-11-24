@@ -30,7 +30,10 @@ body.window .lib-head { top: -2px; margin: -2px 0 0; padding: 8px 0 4px; }
     margin: -2px 0 0; padding: 8px 0 4px;
   }
   body.web .lib-tabs { max-width: 100%; flex-wrap: wrap; }
-  body.web .lib-more, body.web .lib-discover, body.web .lib-backups { flex: none; }
+  body.web .lib-more, body.web .lib-discover, body.web .lib-backups, body.web .lib-toart { flex: none; }
+  /* Artifacts by its glyph alone: the name stays its aria-label, and the
+     line keeps room for Library folder and Backups */
+  body.web .lib-toart > span:not(.lib-mini) { display: none; }
   /* a phone's inputs are 44pt with 16px text: the search box grows round it */
   body.web .editor.lib-hubsheet label.lib-hubsearch { height: 44px; border-radius: 10px; }
   /* the card's × as big to tap as the buttons beside it */
@@ -46,7 +49,7 @@ body.window .lib-head { top: -2px; margin: -2px 0 0; padding: 8px 0 4px; }
 .lib-headacts { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
 .lib-head.stuck::before { opacity: 1; box-shadow: 0 1px 0 var(--line-2); }
 .lib-tabs .opt { height: 24px; padding: 0 12px; font-size: 12.5px; }
-.lib-more, .lib-discover, .lib-backups { display: inline-flex; align-items: center; gap: 5px; }
+.lib-more, .lib-discover, .lib-backups, .lib-toart { display: inline-flex; align-items: center; gap: 5px; }
 .lib-mini { display: inline-grid; place-items: center; color: var(--muted); }
 .lib-mini svg { width: 13px; height: 13px; }
 .lib-body { display: flex; flex-direction: column; flex: none; }
@@ -59,6 +62,11 @@ body.window .lib-head { top: -2px; margin: -2px 0 0; padding: 8px 0 4px; }
 .lib-aside.center { text-align: center; margin-top: 14px; }
 /* the MCP hub's switch, under the servers (#2679) */
 .lib-hublist { margin-top: 16px; }
+/* a router over a tab's list (the Skill router, the MCP router) keeps the
+   same room under it, before the card that follows: a .list has no margin,
+   so the install card sat on the router's (the owner, 11-23). The room
+   goes under the router's last piece, its row or the last why under it */
+.lib-hublist:not(:has(+ .lib-hub-why)), .lib-hub-why:not(:has(+ .lib-hub-why)) { margin-bottom: 16px; }
 .lib-hub .lib-switch { align-self: center; }
 /* its switch stays beside its text in a narrow window, as a setting's does */
 .lib-list .row.lib-hub { flex-wrap: nowrap; }
@@ -253,6 +261,14 @@ button.row.lib-hubfolded:hover { background: var(--pill); }
 .lib-tag.lib-unchecked { color: var(--faint); font-weight: 400; }
 .lib-tag.lib-unchecked.link { cursor: pointer; }
 .lib-tag.lib-unchecked.link:hover { color: var(--fg-2); }
+/* through the MCP router or each agent's own entry, turned from the row */
+.lib-tag.lib-route { cursor: pointer; transition: color .15s ease, background-color .15s ease, transform .12s cubic-bezier(.23, 1, .32, 1); }
+.lib-tag.lib-route::before { content: ""; box-sizing: border-box; width: 6px; height: 6px; border-radius: 50%; border: 1.25px solid currentColor; }
+.lib-tag.lib-route.on::before { background: currentColor; }
+.lib-tag.lib-route.lib-direct { color: var(--muted); background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+@media (hover: hover) and (pointer: fine) { .lib-tag.lib-route:hover { color: var(--fg); } }
+.lib-tag.lib-route:active { transform: scale(.97); }
+.lib-row .name:has(> .lib-tag.lib-route) { white-space: normal; text-overflow: clip; overflow-wrap: anywhere; }
 .lib-tag.lib-signed { color: var(--green); background: var(--green-soft); }
 .lib-tag.lib-signed::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 
@@ -832,6 +848,9 @@ input.lib-setname:focus { border-color: var(--accent); box-shadow: 0 0 0 3px col
 .lib-plugin > .who { flex-basis: 240px; }
 .lib-plugin.off .name, .lib-plugin.off .lib-subagentdesc { opacity: .55; }
 .lib-plugin .lib-plparts, .lib-plpick .lib-plparts { white-space: normal; overflow-wrap: anywhere; }
+/* Claude Code loads the plugin natively: why magpie gives Claude Code none of it */
+.lib-row .sub.lib-plnative { white-space: normal; overflow-wrap: anywhere; color: var(--fg-2); }
+.lib-row .sub.lib-pltwice { color: var(--amber); }
 .lib-pldetail > :is(p, details, .hint), .lib-pldetail .ebody > :is(p, details, .hint) { grid-column: 1 / -1; margin: 0; }
 .lib-pldetail p { font-size: 12.5px; line-height: 1.5; }
 .lib-pldetail .lib-plgroup > summary { cursor: pointer; font-size: 12.5px; color: var(--fg-2); }
@@ -1007,3 +1026,14 @@ input.lib-memq:focus, input.lib-memtags:focus, input.lib-memwhy:focus { border-c
 .lib-rulefile > .lib-path { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 /* the box keeping a removed skill's folder in the backups, under what the sheet says */
 .lib-editor label.tick.lib-keepbox { grid-column: 1 / -1; font-size: 12.5px; }
+.lib-plpin { display: grid; gap: 6px; }
+.lib-plpintags { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* Work › Artifacts (artifacts.js): a list of the pages agents made */
+#view-artifacts { gap: 10px; padding-top: 12px; }
+.art-head[hidden] { display: none; }
+.art-row { cursor: pointer; transition: background-color .15s ease; }
+@media (hover: hover) and (pointer: fine) { .art-row:hover { background: var(--card-2); } }
+.art-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.art-ic { display: inline-flex; color: var(--muted); flex: none; }
+.art-empty span { display: block; }

@@ -1494,7 +1494,10 @@ const cacheVersion = 29
 // app's tool calls, from its transcript.
 // pi 1, raft 1, cindy 1: a pi-subagents tool result's model work is its
 // subagents', counted from their own files (piSubagentsRead).
-var parseVersions = map[string]int{"codex": 3, "zcode": 1, "dsh": 3, "antigravity": 3, "agy": 2, "pi": 1, "raft": 1, "cindy": 1}
+// workbuddy 1, workbuddy-ai 1, codebuddy 1: a session's first prompt is
+// its <user_query> when WorkBuddy wrote it in one block with its context
+// (wbTyped).
+var parseVersions = map[string]int{"codex": 3, "zcode": 1, "dsh": 3, "antigravity": 3, "agy": 2, "pi": 1, "raft": 1, "cindy": 1, "workbuddy": 1, "workbuddy-ai": 1, "codebuddy": 1}
 
 type cacheFile struct {
 	Version int    `json:"version"`
@@ -2965,6 +2968,13 @@ func priceOf(s settings.Settings, model string) (catalog.Price, bool) {
 	m := strings.TrimSpace(model)
 	if m == "" {
 		return catalog.Price{}, false
+	}
+	// Kimi Code's own sign-in names its models "kimi-code/<model>", and
+	// "kimi-code" there is Kimi Code's name, not magpie's provider: the
+	// call is priced as one to the user's Kimi Code membership (#3331),
+	// as the ledger prices it
+	if pr, ok, _ := provider.KimiCodeSessionPrice(s, m); ok {
+		return pr, true
 	}
 	if pid, rest, ok := strings.Cut(m, "/"); ok {
 		// without a rate window's rate (#2463): a session sums its calls by
