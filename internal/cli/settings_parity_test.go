@@ -297,6 +297,7 @@ var notYet = map[string]string{
 	"POST /api/settings/bare-ids":                S2, // api.go
 	"POST /api/settings/busy-load":               S2, // api.go
 	"POST /api/settings/checkin-account":         S2, // api.go
+	"GET /api/settings/claude-options/{id}":      S2, // prompt cache and commit trailer for a selected Claude Code instance
 	"POST /api/settings/claude-cache":            S2, // tune.go
 	"POST /api/settings/claude-attribution":      S2, // tune.go
 	"POST /api/settings/codex-agents-v1":         S2, // api.go
@@ -370,6 +371,8 @@ var notYet = map[string]string{
 	"POST /api/library/browser/drag":             L,  // browser.go
 	"POST /api/library/browser/extension":        L,  // browser.go
 	"GET /api/caller-keys/models":                P,  // caller_keys.go
+	"GET /api/provider-keys":                     P,  // caller_keys.go: a provider's side of the keys' models; `gateway-key models` writes the same list
+	"POST /api/provider-keys":                    P,  // caller_keys.go
 	"GET /api/caller-keys/mcp":                   L,  // caller_keys.go: the servers `magpie gateway-key mcp` takes
 	"POST /api/config/repair":                    A,  // config_repair.go
 	"GET /api/context":                           U,  // context.go
