@@ -8,6 +8,7 @@ import (
 	"log"
 	"maps"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,6 +22,7 @@ import (
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/daemon"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
@@ -47,9 +49,11 @@ const providerUsage = `usage:
                                           compaction=native asks the provider Codex's own compaction and hands
                                           Codex its sealed item as it came (a Responses API, a ChatGPT account,
                                           Copilot), compaction=magpie, the default, has magpie summarise
-                                          routing=smart|order|rotate|usage|pace|weight|free|fast|drain spreads requests
-                                          over its keys or accounts (fast: the one that answered fastest lately first;
-                                          drain: one until it is used up, then the next, never back to an earlier one);
+                                          routing=smart|order|rotate|usage|pace|weight|free|fast|drain|pace-drain spreads
+                                          requests over its keys or accounts (fast: the one that answered fastest lately
+                                          first; drain: one until it is used up, then the next, never back to an earlier
+                                          one; pace-drain: the one with the most left per hour until it renews, kept
+                                          until it is used up, then picked again);
                                           prompt=as-written sends Antigravity the system prompt exactly as written;
                                           prompt=default, the default, rewords the lines Google answers with a
                                           false 429 (Codex's, Claude Code's, Hermes' old persona, oh-my-pi's)
@@ -132,6 +136,10 @@ const providerUsage = `usage:
                                           key's calls at since; with --refill it is whole again each month or week;
                                           --expiring adds credit that counts through a day and is spent first
                                           (each one a grant, the soonest spent first; off takes every one off)
+  magpie provider key-balance-token <id> <key> <token|-> [user-id] | <id> <key> off
+                                          the access token (and new-api user ID) of the account an API key is of,
+                                          where the provider's balance token is another account's: that key's balance
+                                          is asked with them. - keeps the saved token; off asks it as the provider says
   magpie provider account-weight <id> [account [n|default]]
                                           a subscription account's share of the requests with routing=weight:
                                           one weighing 3 takes three for each one weighing 1 takes (default 1)
@@ -707,6 +715,8 @@ func providerCmd(args []string) error {
 		return accountConcurrencyCmd(rest)
 	case "key-balance", "key-balances":
 		return keyBalanceCmd(rest)
+	case "key-balance-token":
+		return keyBalanceTokenCmd(rest)
 	case "spend-cap", "spend-caps":
 		return spendCapCmd(rest)
 	case "key-rate", "key-rates":
@@ -942,6 +952,9 @@ func announce(id string) error {
 		// the URLs asked and what they said; the base stays as given
 		fmt.Println(amber.Render("!"), muted.Render(err.Error()))
 	}
+	if saved.IsRemoteMagpie() {
+		addedRemote(saved.ID)
+	}
 	n := len(saved.Exposed())
 	if saved.DecideOnly() {
 		fmt.Println("  it routes groups: magpie group set <id> effort=auto classifier="+saved.ID+"/"+saved.Jev(),
@@ -954,6 +967,28 @@ func announce(id string) error {
 		fmt.Printf("  %d models in the catalog · %s\n", n, muted.Render("magpie models"))
 	}
 	return nil
+}
+
+// addedRemote: a Remote magpie just added with a key that may use all of
+// it, the user's own hub, takes its MCP servers, skills and prompts, as
+// the app's editor does (library.AddedRemote, starballl on X).
+func addedRemote(id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	mcp, shared := library.AddedRemote(ctx, id, true, true)
+	cancel()
+	if mcp {
+		fmt.Println(green.Render("✓"), "its MCP servers are in the Library")
+	}
+	if !shared {
+		return
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), 2*provider.RemoteLibraryWait)
+	defer cancel()
+	if r, err := library.UseRemoteLibrary(ctx, id); err != nil {
+		fmt.Println(amber.Render("!"), "its skills and prompts:", muted.Render(err.Error()))
+	} else {
+		fmt.Println(green.Render("✓"), "its skills and prompts are in the Library", muted.Render(fmt.Sprintf("(%d)", len(r.Added))))
+	}
 }
 
 func showProvider(p provider.Provider) error { return showProviderAsking(p, true) }
@@ -1547,7 +1582,7 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 				// price, so there is nothing to weigh; expiring weighs
 				// several subscriptions' free quota, a group's members; fit
 				// weighs models' windows, and a provider's serve one
-				return fmt.Errorf("routing=%s is a group's: a provider's keys or accounts are routed smart, order, rotate, usage, pace, weight, free, fast or drain", r)
+				return fmt.Errorf("routing=%s is a group's: a provider's keys or accounts are routed smart, order, rotate, usage, pace, weight, free, fast, drain or pace-drain", r)
 			}
 			p.Routing = r
 		case "icon":
@@ -1841,6 +1876,9 @@ func serve() error {
 	go provider.KeepRemotesUpdated(ctx, version)
 	// the models a Remote magpie's agents are on, as the app follows them
 	go agent.KeepFollowingRemote(ctx, 30*time.Second)
+	// and the skills and prompts of a Remote magpie whose Library is
+	// used here, as the app's KeepLinked reads them (frankittee)
+	go library.KeepBorrowing(ctx, 30*time.Second)
 	drained := make(chan struct{})
 	// a SIGTERM (Kubernetes', Docker's, a service manager's) finishes the
 	// requests in flight first (serve_drain.go)
@@ -1877,6 +1915,11 @@ func importCmd(args []string) error {
 	}
 	if link == "" {
 		return errors.New("magpie import [-y] 'magpie://import?…'")
+	}
+	// a routing group shared on usemagpie.ai is added as a group, a copy
+	// the user can change or remove like any of theirs
+	if u, err := url.Parse(link); err == nil && strings.EqualFold(u.Scheme, provider.Scheme) && strings.EqualFold(u.Host, "group") {
+		return groupImportCmd([]string{link})
 	}
 	// a plugin link installs nothing by itself, here too: it says how
 	if plugin.IsLink(link) {

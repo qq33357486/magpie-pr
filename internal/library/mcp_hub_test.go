@@ -814,6 +814,45 @@ func TestHubTellsMagpieMemoryItsCaller(t *testing.T) {
 	}
 }
 
+// Magpie Artifacts is told the address an agent on another computer
+// reached the hub at (gateway.HubCaller.Base), to give it links there
+// rather than at this computer's 127.0.0.1 (#7890); an agent here is
+// told nothing new, and another server is never told it.
+func TestHubTellsMagpieArtifactsWhereAnAgentAwayIs(t *testing.T) {
+	h := hubSandbox(t)
+	write(t, filepath.Join(h, ".claude.json"), `{"mcpServers": {}}`)
+	art := fakeStdio(t, "ok", nil)
+	art.Name, art.Args, art.Agents = ArtifactsServerName, []string{"mcp", "artifacts"}, []string{"claude"}
+	ok(t)(SaveServer("", *art))
+	other := fakeStdio(t, "ok", nil)
+	other.Agents = []string{"claude"}
+	ok(t)(SaveServer("", *other))
+	ok(t)(SetMCPHub(true))
+	hub := theHub{}
+	ctx := context.Background()
+
+	away := gateway.WithHubCaller(ctx, gateway.HubCaller{Base: "http://magpie:3425", Session: "s"})
+	res, err := hub.Call(away, "claude", ArtifactsServerName, "a", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hubText(t, res); !strings.Contains(got, `meta={"magpie/base":"http://magpie:3425"}`) {
+		t.Errorf("artifacts away called as %q", got)
+	}
+	for _, c := range []struct {
+		ctx    context.Context
+		server string
+	}{{away, "fake"}, {gateway.WithHubCaller(ctx, gateway.HubCaller{Session: "s"}), ArtifactsServerName}, {ctx, ArtifactsServerName}} {
+		res, err := hub.Call(c.ctx, "claude", c.server, "a", json.RawMessage(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := hubText(t, res); strings.Contains(got, "meta=") {
+			t.Errorf("%s: called as %q", c.server, got)
+		}
+	}
+}
+
 // The router runs one Magpie Browser for every agent behind it, so each
 // call names its caller's session in _meta, for the browser to keep each
 // caller in a tab of its own; another server is sent no session, and a
@@ -956,5 +995,53 @@ func TestHubKeepsThisComputersOwnServersHere(t *testing.T) {
 	keyed := gateway.WithHubVisitor(here, gateway.HubVisitor{Away: true, Key: "k1"})
 	if got := servers(keyed); !slices.Equal(got, []string{"fake", browserServerName}) && !slices.Equal(got, []string{browserServerName, "fake"}) {
 		t.Errorf("listed for a key from elsewhere: %v", got)
+	}
+}
+
+// An entry of the agent's own under the name of a server the hub gives it
+// goes, as the router-off sync writes the Library's server over it: left
+// beside the magpie entry, the agent was given that server's tools twice,
+// and context went up with the router on (Col0urfu1_ on X). An own entry
+// of another name stays.
+func TestHubTakesOutTheAgentsOwnCopy(t *testing.T) {
+	h := hubSandbox(t)
+	claude := filepath.Join(h, ".claude.json")
+	write(t, claude, `{"mcpServers": {"github": {"command": "npx", "args": ["-y", "gh-own"]}, "mine": {"command": "x"}}}`)
+	ok(t)(SetMCPHub(true))
+	ok(t)(SaveServer("", Server{Name: "github", Transport: "stdio", Command: "npx", Args: []string{"-y", "gh"}, Agents: []string{"claude"}}))
+	names := func() []string {
+		t.Helper()
+		e, err := targetByID("claude").MCP.entries()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for k := range e {
+			out = append(out, k)
+		}
+		slices.Sort(out)
+		return out
+	}
+	if got := names(); !slices.Equal(got, []string{"magpie", "mine"}) {
+		t.Fatalf("claude with github ticked through the router: %v\n%s", got, read(t, claude))
+	}
+	if got := hubServers("claude"); len(got) != 1 || got[0].Name != "github" {
+		t.Fatalf("the hub gives claude %v", got)
+	}
+	// one the user puts back by hand goes on the next sync, as the
+	// Library's server would be written over it with the router off
+	write(t, claude, `{"mcpServers": {"magpie": {"type": "http", "url": "http://127.0.0.1:3425`+gateway.HubMCPPath+`claude"}, "github": {"command": "npx", "args": ["-y", "gh-own"]}, "mine": {"command": "x"}}}`)
+	ok(t)(SaveServer("", Server{Name: "web", Transport: "http", URL: "https://example.com/mcp", Agents: []string{"claude"}}))
+	if got := names(); !slices.Equal(got, []string{"magpie", "mine"}) {
+		t.Fatalf("claude after its own github came back: %v\n%s", got, read(t, claude))
+	}
+	// with the router off, the Library's github is written in its place
+	ok(t)(SetMCPHub(false))
+	e, err := targetByID("claude").MCP.entries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args, _ := e["github"]["args"].([]any); len(args) != 2 || args[1] != "gh" || e["magpie"] != nil {
+		t.Fatalf("claude with the router off:\n%s", read(t, claude))
 	}
 }

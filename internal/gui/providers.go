@@ -72,6 +72,11 @@ type modelJSON struct {
 	// Inputs are the media beyond text and images its source listed it
 	// takes, video and audio (catalog.Model.InputModalities; pingqipai3 on X)
 	Inputs []string `json:"inputs,omitempty"`
+	// Maker is the logo of the model's maker, as its id or else its name
+	// says (agent.ModelIcon, what the agents' pickers draw beside it), ""
+	// for one magpie doesn't know: the editor draws its models by maker
+	// (modelorder.js; WJaunita45604 on X)
+	Maker string `json:"maker,omitempty"`
 	// Headers are the request headers the user gave the model, sent after
 	// the provider's (provider.SetModelHeaders)
 	Headers map[string]string `json:"headers,omitempty"`
@@ -323,6 +328,9 @@ type providerJSON struct {
 		Takes bool `json:"takes"`
 		Set   bool `json:"set"`
 	} `json:"balanceToken"`
+	// a key can carry its own account's balance query, where the
+	// provider's token is another account's (provider.KeyBalanceAuth)
+	KeyBalanceAuth bool `json:"keyBalanceAuth,omitempty"`
 	// a StepFun provider's Step Plan windows, told only to a platform
 	// sign-in: which site's, and whether one is kept
 	StepPlan *stepPlanJSON `json:"stepPlan,omitempty"`
@@ -484,6 +492,12 @@ type providerJSON struct {
 	// what each key's read group rate is multiplied by, by its id, where
 	// it isn't 1 (@YIXIE233 on X)
 	KeyRateFactors map[string]float64 `json:"keyRateFactors,omitempty"`
+	// the account or key each agent set to one uses, by the agent's id
+	// (nb5p on Discord)
+	AgentAccounts map[string]string `json:"agentAccounts,omitempty"`
+	// the accounts and keys an agent may be set to, when there are two or
+	// more to choose from
+	AgentChoices []agentChoiceJSON `json:"agentChoices,omitempty"`
 
 	// what it charges against the official price, 0 for that (#819)
 	PriceRate float64     `json:"priceRate,omitempty"`
@@ -1038,7 +1052,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 		Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountWindowAmounts: p.AccountWindowAmounts, AccountNames: p.AccountNames, Headers: p.Headers, ExtraBody: p.ExtraBody, ReplyHeaders: p.ReplyHeaders, PassHeaders: p.PassHeaders, Searches: p.Searches, Cline: p.ClinePinnable(), PinUpstream: p.PinUpstream, Unredacted: p.Unredacted, CountFree: p.CountFree, Billing: p.Billing, BillingKind: p.BillingKind(), InsecureTLS: p.InsecureTLS, TakesInsecureTLS: p.TakesInsecureTLS(), HTTP1: p.HTTP1, ClientCert: tilde(p.ClientCert), ClientKey: tilde(p.ClientKey), ServerCA: tilde(p.ServerCA), TakesClientCert: p.TakesClientCert(), ServerPin: p.ServerPin, TakesServerPin: p.TakesServerPin(), Resolve: p.Resolve, TakesResolve: p.TakesResolve(), Addresses: p.Addresses, Socket: p.Socket, TakesSocket: p.TakesSocket(), LimitRestOff: p.LimitRestOff, UpstreamProviders: p.UpstreamProviders, ImageFilesOff: p.ImageFilesOff, TakesImageFiles: p.TakesImageFiles(), NativeCompaction: p.NativeCompaction, CarriesCompaction: p.CarriesCompaction(), PassUserAgent: !p.MagpieUserAgent, OwnClient: p.OwnClient(), PassErrors: p.PassErrors, TakesPassErrors: p.TakesPassErrors(), AuthHeader: p.AuthHeader, BothAuth: p.BothAuth(), BalanceURL: p.BalanceURL, BalancePath: p.BalancePath, BalanceMethod: p.BalanceMethod, NoBalanceProbe: p.NoBalanceProbe, ModelsURL: p.ModelsURL, ListOff: p.ListsOff(), TakesListOff: p.Account == nil && !p.IsPlugin() && !p.DecideOnly(), TakesModelHeaders: p.Account == nil, DecideAPIKind: p.DecideAPIKind(),
 		Ready: p.Ready(), Chosen: p.PicksOf(avail), Agents: make([]providerAgent, 0, len(agents)),
 		Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, UseFirst: p.UseFirst, NoStandIn: p.NoStandIn, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, RestartApp: p.RestartApp, Self: p.SelfAnswered(), KeepSelf: p.KeepSelf, ThisDevice: p.ThisDevice, CapStop: p.CapStop, CapCareful: p.CapCareful, Unlisted: p.Unlisted, NoModels: p.ServesNone(), BestInFamily: p.BestInFamily && len(p.Models) == 0 && !p.NoModels, Off: p.Off, Contexts: p.Contexts,
-		MaxConcurrency: p.MaxConcurrency, PluginConcurrency: p.PluginConcurrency(), MaxAccounts: p.MaxAccounts, PluginAccounts: p.PluginAtOnce(), PriceRate: p.PriceRate, KeyPriceRates: p.KeyPriceRates, TopUpRate: p.TopUpRate, RateReadHours: p.RateReadHours, KeyGroupRates: keyGroupRatesOf(p), KeyRateFactors: p.KeyRateFactors,
+		MaxConcurrency: p.MaxConcurrency, PluginConcurrency: p.PluginConcurrency(), MaxAccounts: p.MaxAccounts, PluginAccounts: p.PluginAtOnce(), PriceRate: p.PriceRate, KeyPriceRates: p.KeyPriceRates, TopUpRate: p.TopUpRate, RateReadHours: p.RateReadHours, KeyGroupRates: keyGroupRatesOf(p), KeyRateFactors: p.KeyRateFactors, AgentAccounts: p.AgentAccounts,
 		RateWindows: p.RateWindows, RateNow: rateNowOf(p, time.Now()),
 		AccountConcurrency: p.AccountConcurrency, AccountWeights: p.AccountWeights, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM, MaxImages: p.MaxImages,
 		Outputs: provider.OutputsOf(p.ID), Compacts: provider.CompactsOf(p.ID),
@@ -1046,6 +1060,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 	if p.Account != nil && p.Account.Agent == p.ID {
 		out.SignInMoves = provider.SignInMovesOf(p.ID)
 	}
+	out.AgentChoices = agentChoicesOf(p)
 	if p.Account != nil {
 		for _, r := range p.AccountRefs() {
 			if s := provider.SeatNameOf(p.ID, r); s != "" {
@@ -1082,6 +1097,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 		out.Key.Optional = pr.NoKey
 	}
 	out.BalanceToken.Takes, out.BalanceToken.Set = provider.TakesBalanceToken(p), p.BalanceToken != ""
+	out.KeyBalanceAuth = provider.TakesKeyBalanceAuth(p)
 	if provider.TakesZhipuTeam(p) {
 		out.ZhipuTeam = &provider.ZhipuTeam{}
 		if p.ZhipuTeam != nil {
@@ -1156,6 +1172,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 			out.KeyList[i].Rest = noticeRest(n)
 		}
 	}
+	keyModelRests(p.ID, out.KeyList, restKey)
 	// and one with a spend cap, what it has spent of it (the gateway
 	// holds it at the cap by the same count, gateway.spendHeld)
 	for i, k := range out.KeyList {
@@ -1182,8 +1199,10 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 			if !ok {
 				continue
 			}
-			if h := p.KeyCapHeld(ka, "", now, provider.KeyAllowance); h != nil {
-				out.KeyList[i].CapHeld = &provider.KeyCapState{Used: h.Used, Cap: h.Cap, Back: h.Back}
+			if h := p.KeyCapHeld(ka, "", now, keyAllowance); h != nil {
+				// and the models it still serves at the cap: OpenCode
+				// Go's free ones, which no window counts (#7773)
+				out.KeyList[i].CapHeld = &provider.KeyCapState{Used: h.Used, Cap: h.Cap, Back: h.Back, Free: p.KeyCapLeaves(ka, now, keyAllowance)}
 			}
 		}
 	}
@@ -1291,6 +1310,9 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 		}
 		window := p.WindowIn(m, set)
 		j := modelJSON{ID: m.ID, Name: m.Name, Efforts: provider.EffortsOf(m), On: on, Context: window, Output: provider.OutputWithin(window, p.ReplyLimitIn(m, set)), Listed: provider.ListedWindow(m), ListedOutput: provider.OutputWithin(provider.ListedWindow(m), p.ReplyLimitIn(m, settings.Settings{})), Max: m.MaxContext, Free: m.Free, Rate: m.Rate, RateWas: m.RateWas, Images: images, ImageSet: imageSet, Own: own, Best: newest[m.ID], Inputs: mediaInputs(provider.InputsOf(m))}
+		if j.Maker = agent.ModelIcon(m.ID); j.Maker == "" && m.Name != "" {
+			j.Maker = agent.ModelIcon(m.Name)
+		}
 		list, listed, free := pricer.Prices(set, m.ID)
 		j.Zero = !m.Free && free
 		if j.Keys, j.KeyCount = keysApart(m.Keys, onKeys, keyAt); j.KeyCount == len(j.Keys) {
@@ -1526,6 +1548,49 @@ var (
 	limitNoticeOf     = gateway.LimitNoticeOf
 	limitNoticesUnder = gateway.LimitNoticesUnder
 )
+
+// keyAllowance is provider.KeyAllowance, swapped in tests.
+var keyAllowance = provider.KeyAllowance
+
+// keyModelRests puts on each key of ks that is on its models' own rests
+// in force, then the notices of those whose rests ended before the limit
+// did, as the gateway keys them (restKey(k)/model, gateway.restID). A
+// refusal at OpenCode Go or Zen rests the paid model alone since
+// v0.1.4818, and the key row showed only a whole key's rest, so it said
+// nothing of which models were out, or, with an old whole-key notice,
+// that all of them were (xzhih on X, #7773).
+func keyModelRests(id string, ks []provider.KeyInfo, restKey func(provider.KeyInfo) string) {
+	of := map[string]int{}
+	for i, k := range ks {
+		if k.On {
+			of[restKey(k)] = i
+		}
+	}
+	if len(of) == 0 {
+		return
+	}
+	add := func(key string, r provider.KeyRest) bool {
+		base, model, ok := strings.Cut(key, "/")
+		i, mine := of[base]
+		if !ok || !mine || model == "" {
+			return false
+		}
+		r.Model = cmp.Or(r.Model, model)
+		ks[i].Rests = append(ks[i].Rests, r)
+		return true
+	}
+	resting := map[string]bool{}
+	for _, r := range restsUnder(id) {
+		if add(r.Key, provider.KeyRest{Why: r.Why, Status: r.Status, Until: r.Until, Key: r.Key, Probed: r.Probed, By: r.By, Model: r.Model, Error: r.Error, Rate: r.Rate}) {
+			resting[r.Key] = true
+		}
+	}
+	for _, n := range limitNoticesUnder(id) {
+		if !resting[n.Key] {
+			add(n.Key, *noticeRest(n))
+		}
+	}
+}
 
 // noticeRest is a rate limit or quota the gateway rests on no more, as
 // the row shows it: Notice set, Until when the vendor said it lifts.
@@ -1839,6 +1904,17 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				c, ok = gw.RecentCall(id)
 			} else if route, err := strconv.ParseInt(r.URL.Query().Get("route"), 10, 64); err == nil {
 				c, ok = gw.RouteCall(route)
+			}
+			if gateway.HidesRequestText() {
+				// Show request content off (llxth1 on X): the call's
+				// headers while the ring has it, and that its bodies
+				// aren't kept; nor read from the archive here
+				out := map[string]any{"hidden": true}
+				if ok {
+					out["headers"] = c.Headers()
+				}
+				writeJSON(rw, out)
+				return
 			}
 			if ok {
 				writeJSON(rw, map[string]any{
@@ -2180,6 +2256,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// the provider's (#474)
 			Account string   `json:"account"`
 			Allow   []string `json:"allow"`
+			// Agent, for agentaccount: the agent Account is set for, ""
+			// for every one (nb5p on Discord)
+			Agent string `json:"agent"`
 			// AllKeys, for key: every key the provider holds, one a line,
 			// for Copy all keys (provider.AllKeys)
 			AllKeys bool `json:"allKeys"`
@@ -2719,8 +2798,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					in.AccountConcurrency = old.AccountConcurrency
 					in.AccountWeights = old.AccountWeights
 					in.AccountNames = old.AccountNames     // with accountname
+					in.AgentAccounts = old.AgentAccounts   // with agentaccount
 					in.KeySpendCaps = old.KeySpendCaps     // with keyspendcap
 					in.KeyOwnBalances = old.KeyOwnBalances // with keyownbalance
+					in.KeyBalanceAuth = old.KeyBalanceAuth // with keys/balance
 				}
 				// the image models unticked in its editor likewise: []
 				// shows them all (321sssrt on X)
@@ -2917,14 +2998,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 						return
 					}
 					if *req.LibraryShared {
-						id := in.ID
-						go func() {
-							ctx, cancel := context.WithTimeout(context.Background(), 2*provider.RemoteLibraryWait)
-							defer cancel()
-							if _, err := library.UseRemoteLibrary(ctx, id); err != nil {
-								log.Printf("library: the Library of %s: %v", id, err)
-							}
-						}()
+						go remoteLibraryRead(in.ID)
 					}
 				}
 			}
@@ -2961,6 +3035,18 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				}
 				wg.Wait()
 				cancel()
+				// a Remote magpie just added with a key that may use all
+				// of it, the user's own hub: its MCP servers, skills and
+				// prompts come with it, unless a switch was set by hand
+				// (starballl on X). After its list, which tells a magpie
+				// that is this one.
+				if req.New && p.IsRemoteMagpie() && (req.LibraryMCP == nil || req.LibraryShared == nil) {
+					ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+					if _, shared := library.AddedRemote(ctx, in.ID, req.LibraryMCP == nil, req.LibraryShared == nil); shared {
+						go remoteLibraryRead(in.ID)
+					}
+					cancel()
+				}
 			}
 			// after the list is fetched: a limit has to name a model it has
 			if req.Outputs != nil {
@@ -3035,6 +3121,12 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			agent.SyncCatalogSoon()
 		case "accountmodels":
 			if err := provider.SetAccountModels(in.ID, req.Account, req.Allow); err != nil {
+				fail(rw, err)
+				return
+			}
+		case "agentaccount":
+			// the account or key Agent uses alone, "" for every one
+			if err := provider.SetAgentAccount(in.ID, usage.AgentOf(req.Agent), req.Account); err != nil {
 				fail(rw, err)
 				return
 			}
@@ -3615,6 +3707,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			Protocol           provider.Protocol
 			Weight             int
 			Plan               string
+			// a key's own account's balance query (action balance):
+			// a blank token keeps the saved one, Clear drops both
+			Token, User string
+			Clear       bool
 		}
 		var added, had, removed int
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -3655,6 +3751,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			err = provider.RenameKey(in.ID, in.Ref, in.Name)
 		case "replace":
 			err = replaceKey(in.ID, in.Ref, in.Key)
+		case "balance":
+			// the access token and user id of the account the key is
+			// of, where it isn't the provider's (key_balance_auth.go)
+			err = provider.SetKeyBalanceAuth(in.ID, in.Ref, in.Token, in.User, in.Clear)
 		case "on", "off":
 			moved, err = agent.Reseat(func() error { return provider.SetKeyOn(in.ID, in.Ref, r.PathValue("action") == "on") })
 		default:
@@ -4365,6 +4465,37 @@ func withdrawnLines() []withdrawnJSON {
 		// the plugin to use instead (w.Package), on
 		insteadOn := slices.ContainsFunc(list, func(e plugin.Entry) bool { return !e.Off && plugin.PackageName(e.Spec) == w.Package })
 		out = append(out, withdrawnJSON{Withdrawal: w, Beside: insteadOn && w.ID == "antigravity" && provider.AgyHasEvery()})
+	}
+	return out
+}
+
+// remoteLibraryRead reads the Library of the Remote magpie id, its "Use
+// its skills and prompts" switch just turned on; a variable for the tests.
+var remoteLibraryRead = func(id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*provider.RemoteLibraryWait)
+	defer cancel()
+	if _, err := library.UseRemoteLibrary(ctx, id); err != nil {
+		log.Printf("library: the Library of %s: %v", id, err)
+	}
+}
+
+// agentChoiceJSON is an account or key an agent may be set to use
+// (provider.SetAgentAccount), by its id and the name it is shown by.
+type agentChoiceJSON struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// agentChoicesOf is p's accounts and keys to set an agent to, none when
+// it has one only: there is nothing to choose.
+func agentChoicesOf(p provider.Provider) []agentChoiceJSON {
+	ids := p.AccountIDs()
+	if len(ids) < 2 {
+		return nil
+	}
+	out := make([]agentChoiceJSON, 0, len(ids))
+	for _, a := range ids {
+		out = append(out, agentChoiceJSON{ID: a.ID, Name: a.Shown(p)})
 	}
 	return out
 }

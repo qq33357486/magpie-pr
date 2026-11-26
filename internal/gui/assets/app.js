@@ -198,10 +198,10 @@ async function api(path, body, heads, signal) {
       err.code = data.code;
       err.message = {
         newer: t("This group was shared from a newer magpie (format {n}): update magpie to import it", { n: data.format }),
-        no_format: t("This shared group says no format it is in: copy it again with Copy to share"),
-        unreadable: t("This shared group can't be read: copy it again with Copy to share"),
+        no_format: t("This shared group says no format it is in: copy it again with Copy as text"),
+        unreadable: t("This shared group can't be read: copy it again with Copy as text"),
         none_here: t("None of the group's models is in your magpie: {models}", { models: data.models }),
-      }[data.share] || t("This is not a routing group shared from magpie: copy one with Copy to share in a group's menu");
+      }[data.share] || t("This is not a routing group shared from magpie: paste its link, or the text from Copy as text");
     }
     // an agent's npm update whose global folder (Program Files) needs an
     // administrator, or RTK's winget for every user, the prompt declined or
@@ -1095,7 +1095,10 @@ function driftFix(a, label = "Apply again") {
   const fix = el("button", "ag-fix");
   fix.type = "button";
   fix.title = `${t(DRIFT_WHY[d.kind] || DRIFT_WHY.unwired, { agent: a.name, model: want })}\n${tNotice(d.detail)}`;
-  const deaf = d.kind === "unreachable" || d.kind === "proxied";
+  // "outside": something past its config (Claude Code's managed settings,
+  // a provider switch) that setting it again can't change, so the pill
+  // says how to fix it instead (jimlee0824v2 on X)
+  const deaf = d.kind === "unreachable" || d.kind === "proxied" || d.kind === "outside";
   if (deaf && d.move) label = t("Use {url}", { url: d.move.replace(/^https?:\/\//, "") });
   else if (deaf) label = "How to fix";
   fix.setAttribute("aria-label", t(label));
@@ -1142,6 +1145,7 @@ const DRIFT_WHY = {
   bypassed: "{agent} was used without going through magpie — restart it after applying",
   unreachable: "{agent} is set up, but nothing answers at the address it reaches magpie by",
   proxied: "{agent} reaches magpie through a proxy that doesn't pass its requests on",
+  outside: "{agent} is set up, but a setting outside its config takes it past magpie",
 };
 
 // an i in a circle: the pill that explains rather than acts
@@ -2514,6 +2518,10 @@ async function reapplyAgent(a, btn) {
     state = await api("agents/reapply/" + a.id, {});
     renderAgents();
     document.querySelector(`.agent[data-id="${CSS.escape(a.id)}"] .field`)?.classList.add("flash");
+    // set again, it may still not go through magpie: say why, never that
+    // it does (jimlee0824v2 on X)
+    const left = state.agents?.find((x) => x.id === a.id)?.drift;
+    if (left) return status(tNotice(left.detail) || t(DRIFT_WHY[left.kind] || DRIFT_WHY.unwired, { agent: a.name, model: left.want }), "err");
     const msg = t("{agent} goes through magpie again", { agent: a.name });
     saidOk(msg);
   } catch (e) {
@@ -4424,6 +4432,9 @@ async function load(again) {
     paintUpdateAll(true);
     loadCLIs(); // after the rows, never holding them up
     loadInstalls();
+    // the window back on Plugins: what's installed and its sign-ins read
+    // again too, quietly and at most every 15 s (plugins.js pluginsBack)
+    if (again && view === "plugins") window.pluginsBack?.();
     // the Providers page made ready behind the one shown (#1519)
     if (mode !== "panel" && !(view === "providers" || providersPage(view))) prefetchProviders();
     if (mode === "panel") { renderPanelQuota(true); if (!early) panelQuotasNow(again); panelAccounts(); }
@@ -4442,6 +4453,7 @@ async function load(again) {
   } catch (e) {
     statusErr(e);
   }
+  load.at = performance.now(); // when the agents were last read (show)
   renderUpdateBadge();
   cliBehindOnce();
   if (state?.configBlocked && !configBlockedAsked && $("#modal").hidden) configBlockedAsk(state.configBlocked);
@@ -7752,7 +7764,8 @@ function input(value, placeholder, type = "text") {
 // editor put away (Cancel, Escape, a click outside) takes it with it (#526)
 let providerDraftRef = null, providerDraftBase = "";
 function providerDraftValue() {
-  return JSON.stringify({ ...draft, headers: headersOf(draft?.headers), modelHeaderRows: undefined, onLimits: undefined, modelPrefs: modelPrefsOfDraft() });
+  // a Remote magpie's other addresses, none until its row is drawn (tlscerts.js addressesRow)
+  return JSON.stringify({ ...draft, headers: headersOf(draft?.headers), modelHeaderRows: undefined, onLimits: undefined, modelPrefs: modelPrefsOfDraft(), addresses: draft?.addresses?.length ? draft.addresses : undefined });
 }
 function providerDirty() {
   // Price boxes parse on change; a page closed while typing hasn't blurred one yet.
@@ -7957,6 +7970,8 @@ function proxyPicker() {
 
 // gatewayKeysRow: the gateway keys that may use a saved provider, ticked
 // here as in each key's models (justforlxz on X), by providerkeys.js
+// the account or key each agent uses (nb5p on Discord), in agentaccounts.js
+const agentAccountsRow = (p, at = el("span")) => p?.id && p.agentChoices?.length > 1 ? (import("./agentaccounts.js").then(() => at.isConnected && at.replaceWith(...agentAccountsField(p)), () => {}), [at]) : [];
 function gatewayKeysRow(p) {
   const b = el("button", "rt-cond on gw-keys", "…"), row = p?.id ? field(t("Gateway keys"), b) : [];
   if (p?.id) import("./providerkeys.js").then(() => gatewayKeysFill(p, b, row), () => {});
@@ -9515,7 +9530,7 @@ function baseAPIOf(p) {
 
 // draftOf is a saved provider as its editor's form holds it.
 function draftOf(p) {
-  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, best: !!p.bestInFamily, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), replyHeaders: (p.replyHeaders || []).join(", "), passHeaders: (p.passHeaders || []).join(", "), icon: p.icon || "", iconFrom: p.iconFrom || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, hiddenDrawers: [...(p.hiddenDrawers || [])], hiddenVideomakers: [...(p.hiddenVideomakers || [])], searches: !!p.searches, unredacted: !!p.unredacted, countFree: !!p.countFree, billing: p.billing || "", insecureTLS: !!p.insecureTLS, http1: !!p.http1, clientCert: p.clientCert || "", clientKey: p.clientKey || "", serverCA: p.serverCA || "", serverPin: p.serverPin || "", resolve: p.resolve, socket: p.socket || "", limitRestOff: !!p.limitRestOff, noBalanceProbe: !!p.noBalanceProbe, upstreamProviders: !!p.upstreamProviders, passErrors: !!p.passErrors, imageFilesOff: !!p.imageFilesOff, nativeCompaction: !!p.nativeCompaction, passUserAgent: p.passUserAgent !== false, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", listOff: !!p.listOff, contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p), rateWindows: (p.rateWindows || []).map((w) => ({ ...w })) };
+  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, best: !!p.bestInFamily, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), replyHeaders: (p.replyHeaders || []).join(", "), passHeaders: (p.passHeaders || []).join(", "), icon: p.icon || "", iconFrom: p.iconFrom || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, hiddenDrawers: [...(p.hiddenDrawers || [])], hiddenVideomakers: [...(p.hiddenVideomakers || [])], searches: !!p.searches, unredacted: !!p.unredacted, countFree: !!p.countFree, billing: p.billing || "", insecureTLS: !!p.insecureTLS, http1: !!p.http1, clientCert: p.clientCert || "", clientKey: p.clientKey || "", serverCA: p.serverCA || "", serverPin: p.serverPin || "", resolve: p.resolve, addresses: [...(p.addresses || [])], socket: p.socket || "", limitRestOff: !!p.limitRestOff, noBalanceProbe: !!p.noBalanceProbe, upstreamProviders: !!p.upstreamProviders, passErrors: !!p.passErrors, imageFilesOff: !!p.imageFilesOff, nativeCompaction: !!p.nativeCompaction, passUserAgent: p.passUserAgent !== false, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", listOff: !!p.listOff, contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p), rateWindows: (p.rateWindows || []).map((w) => ({ ...w })) };
 }
 
 // duplicateProvider opens the Add form on a copy of p, its key p's unless another is pasted (#268).
@@ -9849,7 +9864,7 @@ function drawEditor(p, presetID) {
     const perAccount = subOf(a.agent) ? accountProxyPicker(a, p) : null;
     if (perAccount) proxies.append(perAccount);
     advIn.append(...field(t("Proxy"), proxies));
-    advIn.append(...concurrencyField(p), ...gatewayKeysRow(p));
+    advIn.append(...concurrencyField(p), ...gatewayKeysRow(p), ...agentAccountsRow(p));
     advIn.append(...priceRateField(), ...countFreeField(), ...billingField(), ...rateWindowsField());
     if (p.cline) advIn.append(...upstreamField());
     advIn.append(...unmaskRow(""));
@@ -9902,7 +9917,7 @@ function drawEditor(p, presetID) {
       if (picked === false) return pickError();
       const body = { id: p.id, models: chosenIds(), noModels: noneChosen(), bestInFamily: bestChosen(), unlisted: draft.unlisted, hiddenDrawers: draft.hiddenDrawers, hiddenVideomakers: draft.hiddenVideomakers, fallback: draft.fallback, contexts: cx.map, outputs: ox.map, compacts: cpx.map, maxImages, proxy, accountProxies: own.map, maxConcurrency, maxAccounts, ...queue, priceRate, rateWindows, modelPrefs: modelPrefsOfDraft(), pinUpstream: !!draft.pinUpstream, unredacted: !!draft.unredacted, countFree: !!draft.countFree, billing: draft.billing || "", ...(p.carriesCompaction ? { nativeCompaction: !!draft.nativeCompaction } : {}), ...routingOfDraft(p) };
       saving(saveBtn, t("Saving…"));
-      saveAccountModelsDraft(picked).then(() => savePluginOptions(subOf(a.agent))).then(() => self.saveGatewayKeys?.(p)).then(() => providerAction("save", body, t("{name} saved", { name: p.name })), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); }); };
+      saveAccountModelsDraft(picked).then(() => savePluginOptions(subOf(a.agent))).then(() => self.saveGatewayKeys?.(p)).then(() => self.saveAgentAccounts?.(p)).then(() => providerAction("save", body, t("{name} saved", { name: p.name })), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); }); };
     bar.append(cancel, saveBtn);
     ed.append(bar);
     return ed;
@@ -10067,7 +10082,10 @@ function drawEditor(p, presetID) {
     name.onkeydown = idIn.onkeydown = key.onkeydown;
     ed.append(...field(t("Name"), name), ...field(t("ID"), idIn));
   }
-  // off when added
+  // added: its MCP servers, skills and prompts start ticked and send
+  // nothing until changed, for magpie to turn on with a key that may use
+  // all of that magpie, the user's own hub (library.AddedRemote,
+  // starballl on X); connecting agents starts off
   if ((p?.preset || pr?.id) === "remote-magpie" && !p?.account) {
     // KoiLx0 on X: its skills and prompts; an agent connected there,
     // installed here, connected here too, one disconnected here stays so
@@ -10077,7 +10095,8 @@ function drawEditor(p, presetID) {
       ["libraryShared", t("Use its skills and prompts"), t("Skills and prompts"), ed],
       ["connectAgents", t("Connect new agents to this remote"), t("Agents"), advIn],
     ]) {
-      const [l, c] = tick(say, (draft[k] ??= !!p?.[k]));
+      const hub = !p && k !== "connectAgents";
+      const [l, c] = tick(say, hub ? draft[k] ?? true : (draft[k] ??= !!p?.[k]));
       l.classList.add(k.replace(/(?=[A-Z])/, "-").toLowerCase());
       c.onchange = () => (draft[k] = c.checked);
       to.append(...field(head, l));
@@ -10117,7 +10136,7 @@ function drawEditor(p, presetID) {
   const perKey = keyProxyPicker(p);
   if (perKey) proxies.append(perKey);
   advIn.append(...field(t("Proxy"), proxies));
-  advIn.append(...concurrencyField(p), ...gatewayKeysRow(p));
+  advIn.append(...concurrencyField(p), ...gatewayKeysRow(p), ...agentAccountsRow(p));
   advIn.append(...priceRateField(), ...keyRateField(p, "topUpRateField", custom || p?.topUpRate), ...keyRateField(p), ...countFreeField(), ...billingField(), ...rateWindowsField());
 
   if (p?.cline || (isNew && pr?.id === "clinepass")) advIn.append(...upstreamField());
@@ -10676,7 +10695,7 @@ function drawEditor(p, presetID) {
     if (picked === false) return pickError();
     saving(saveBtn, t(isNew ? "Adding…" : "Saving…"));
     const okMsg = t(isNew ? "{name} added" : "{name} saved", { name: draft.name || draft.id });
-    saveAccountModelsDraft(picked).then(() => self.saveGatewayKeys?.(p)).then(() => providerAction("save", body, okMsg), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); });
+    saveAccountModelsDraft(picked).then(() => self.saveGatewayKeys?.(p)).then(() => self.saveAgentAccounts?.(p)).then(() => providerAction("save", body, okMsg), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); });
   };
   saveBtn.onclick = save;
   bar.append(cancel, saveBtn);
@@ -11618,21 +11637,6 @@ function renderModels(p) {
     const on = set ? [set] : (m.auto || []);
     return on.length > 0 && !on.some((a) => p.speaks.includes(a));
   };
-  const pickAPI = (c, id) => {
-    const m = p.models.find((x) => x.id === id) || { id };
-    const auto = (m.auto || []).map(apiLabel).join(" · ");
-    const opts = [{ v: "", name: "Auto", note: auto ? t("As its vendor's list says: {apis}", { apis: auto }) : "Each API the provider has, as it answers" },
-      ...apis.map(([k, l, hint]) => ({ v: k, name: l, note: hint }))];
-    openProtoMenu(c, opts, apiNow(id), (v) => {
-      if (v === apiNow(id)) return;
-      const prefs = draft.modelPrefs = draft.modelPrefs || {};
-      prefs[id] = prefs[id] || {};
-      if (v === (m.api || "")) delete prefs[id].api; else prefs[id].api = v;
-      if (!Object.keys(prefs[id]).length) delete prefs[id];
-      draw();
-      status(v ? t("{model} is asked on {api} once saved", { model: id, api: apiLabel(v) }) : t("{model} is asked as its vendor's list says once saved", { model: id }), "ok");
-    }, "API this model is asked on", "model-api-menu");
-  };
   // staged as Model settings' tick stages it (archsiono on X)
   const setImages = (id, m, v) => {
     const P = draft.modelPrefs = draft.modelPrefs || {}, x = P[id] = P[id] || {};
@@ -11672,7 +11676,7 @@ function renderModels(p) {
       acts.push({ name: "Copy model ID", icon: COPY_ICON, tip: id, run: () => copy(id, id, null, t("Model ID {model} copied", { model: id })) });
       if (apis.length && (!decidesModel(p, id) || apiNow(id) === "decide")) {
         const now = apiNow(id);
-        acts.push({ name: now ? t("Asked on {api}…", { api: apiLabel(now) }) : t("Asked on: Auto…"), icon: "M2.5 5h11M2.5 11h11M10.5 2.5 13.5 5l-3 2.5M5.5 8.5 2.5 11l3 2.5", tip: t("Pick the API this model is asked on"), run: () => pickAPI(c, id) });
+        acts.push({ name: now ? t("Asked on {api}…", { api: apiLabel(now) }) : t("Asked on: Auto…"), icon: "M2.5 5h11M2.5 11h11M10.5 2.5 13.5 5l-3 2.5M5.5 8.5 2.5 11l3 2.5", tip: t("Pick the API this model is asked on"), run: () => import("./modelorder.js").then(() => modelAPIPick(c, p, id, apis, apiNow, draw), statusErr) });
       }
       if (!decidesModel(p, id)) {
         const m = p.models.find((x) => x.id === id) || {}, x = draft.modelPrefs?.[id];
@@ -11738,8 +11742,11 @@ function renderModels(p) {
     draft.dashed = [...served];
     // models that would read alike say what tells them apart (modelTells)
     const tells = modelTells(p.models);
+    // by maker, the newest first (modelorder.js; WJaunita45604 on X)
+    const mo = window.modelOrder ? modelOrder(p.models, chips) : void import("./modelorder.js").then(() => chips.isConnected && draw(), () => {});
+    const put = mo ? mo.put : (c) => chips.append(c);
     // a filter is a search: what it doesn't match is left out
-    for (const m of p.models) {
+    for (const m of mo ? mo.list : p.models) {
       const on = draft.chosen.includes(m.id);
       if (f && !m.id.toLowerCase().includes(f) && !(m.name || "").toLowerCase().includes(f) && !(m.default || "").toLowerCase().includes(f)) continue;
       // past the first 80 only the picked are drawn, till the rest are asked for (#685)
@@ -11794,7 +11801,7 @@ function renderModels(p) {
         unpickedShown = p.id;
         draw();
       };
-      chips.append(c);
+      put(c, m);
       shown++;
     }
     for (const id of draft.chosen) {
@@ -11805,7 +11812,7 @@ function renderModels(p) {
       tested(c, id);
       menu(c, id);
       c.onclick = () => { draft.chosen = draft.chosen.filter((x) => x !== id); draft.none = true; draw(); };
-      chips.append(c);
+      put(c, { id });
     }
     if (hidden || unpicked) chips.append(showRest(hidden || unpicked, () => { if (unpicked) unpickedShown = p.id; else showAll = true; draw(); }));
     if (!p.models.length && !draft.chosen[0]) chips.append(el("span", "hint", t(emptyModelsHint(p))));
@@ -11877,8 +11884,11 @@ function renderModels(p) {
     names.append(head);
     const ids = servedIds(p);
     if (!ids.length) { names.append(el("span", "hint", t("Pick a model first."))); return; }
-    const prefs = draft.modelPrefs = draft.modelPrefs || {};
-    draft.onModelPrefs = drawNames;
+    // the draft this line speaks for: a Settings pick says it again
+    // (redrawSuffix) after the editor is left and draft is null
+    const own = draft;
+    const prefs = own.modelPrefs = own.modelPrefs || {};
+    own.onModelPrefs = drawNames;
     const sfx = el("div", "msuffix suffix-said");
     const sfxSaid = el("span", "hint");
     const first = p.models.find((x) => x.id === ids[0]) || { id: ids[0], name: ids[0] };
@@ -11886,7 +11896,7 @@ function renderModels(p) {
       const name = prefs[first.id]?.name ?? (first.default ? first.name : "");
       const base = name || first.default || first.name || first.id;
       // named by the provider serving it there (lcc580 on X)
-      const up = draft.upstreamProviders && first.by && !(name && (mode || suffixMode()) === "own");
+      const up = own.upstreamProviders && first.by && !(name && (mode || suffixMode()) === "own");
       let label = up ? (name || first.plain || base) + " · " + (p.name || p.id) + " › " + first.by : suffixed(base, p.name || p.id, !!name, mode);
       // a remote magpie's model: its name there (ARNO)
       if (!up && !name && first.plain && label === base) label = first.plain;
@@ -12544,6 +12554,9 @@ const ROUTINGS = [
   ["drain", "Until used up", "Requests stay on one until it is used up, then go to the next in the list and stay there: one before it that renews meanwhile doesn't take them back. One rate limited or failing is passed over while it rests, and requests come back to it after."],
   // the unit that goes round is the user's message (affine's "new-turn"),
   // not a session (Wing8Aqua on X)
+  // picked as Use before expiry picks, kept as Until used up keeps
+  // (guhailin3 on X; routes.PaceDrain)
+  ["pace-drain", "Before expiry, one by one", "Requests go to the subscription with the most left per hour until it is lost, as Use before expiry picks, and stay on it until it is used up or fails; then the next is picked the same way."],
   ["rotate", "In turn", "Each message you send goes to the next one, round the list; the agent's tool calls for it stay on the same one. A move costs some prompt cache; with Stays on Session, a whole conversation stays on one instead."],
   ["usage", "Least used first", "Each request goes to the one used least: a subscription by the share of its allowance used, a key by the tokens it served in the last hours."],
   ["pace", "Use before expiry", "Each request goes to the subscription with the most left per hour until it is lost, at its reset or as credits expire; one at 90% of its five hours waits until the others can't answer, a week at 90% is still spent before its reset. A key goes by the tokens it served in the last hours."],
@@ -12557,12 +12570,15 @@ const drawRotFig = (b, on, a) => (b.hidden = !on) ? b.replaceChildren() : (drawR
 // the routings besides Smart are the built-in plugin rotation's
 // (plugins/rotation): off, their options leave the page (data-feature),
 // and Smart is left — one in use keeps it on
-const ROTATION = new Set(["order", "drain", "rotate", "usage", "pace", "weight", "free", "fast", "cheap", "expiring", "fit"]);
+const ROTATION = new Set(["order", "drain", "pace-drain", "rotate", "usage", "pace", "weight", "free", "fast", "cheap", "expiring", "fit"]);
 // jsRoutings: the routings JS gateway plugins serve now ("<plugin>/<name>",
-// settings' jsRoutings, plugins/middleware's), and saved, a routing none
-// serves now, shown as it is: its pool is tried in its listed order
+// plugins/middleware's: the state's jsRoutings, which the Routing and
+// Plugins pages' own reads bring up to date too), and saved, a routing
+// none serves now, shown as it is: its pool is tried in its listed order.
+// Settings' copy alone left a pool's picker without them once the page
+// was read again after a change (guhailin3 on X).
 function jsRoutings(saved) {
-  const out = (state.settings?.jsRoutings || []).map((r) => [r.id, r.id,
+  const out = (state.jsRoutings || []).map((r) => [r.id, r.id,
     t("Routed by {name}, a routing of the gateway plugin {plugin}: it orders the accounts or keys for each request. If it fails or takes too long, they are tried in their listed order.", { name: r.name, plugin: r.plugin }), true]);
   if (saved && !ROUTINGS.some(([id]) => id === saved) && !out.some(([id]) => id === saved))
     out.push([saved, saved, t("No plugin serves this routing now, so requests go to the accounts or keys in their listed order. Turn on the gateway plugin that serves it on the Plugins page.")]);
@@ -12630,7 +12646,7 @@ function renderRouting(p) {
       ? t("Routing picks the account for each request through magpie, in the accounts' order; {agent} on its own stays signed in to {user}, whatever it has left.", { agent: a.agentName, user: keptLogin(p) })
       : p.keepLogin && !p.switchOnly
       ? t("Routing picks the account for each request through magpie; {agent} on its own stays signed in to the first account, whatever it has left.", { agent: a.agentName })
-      : routing === "drain"
+      : routing === "drain" || routing === "pace-drain"
         // Until used up keeps the requests on the next, and the sign-in
         // with them (provider.returnsToFirst; WalterAIBuilder on X)
         ? t("Routing picks the account for each request through magpie; {agent} on its own uses the one it is signed in to, which magpie moves to the next ticked account with room once it is used up, and keeps it there till that one is used up too.", { agent: a.agentName })
@@ -13739,7 +13755,7 @@ function firstLogin(a, p) {
 }
 
 function byQuotaOf(p, r = p?.routing || "") {
-  return p?.account && ["", "usage", "pace"].includes(r) ? ROUTINGS.find(([id]) => id === r)?.[1] : "";
+  return p?.account && ["", "usage", "pace", "pace-drain"].includes(r) ? ROUTINGS.find(([id]) => id === r)?.[1] : "";
 }
 function firstNoteOf(p, user) {
   return t("{user} is first in the order; {routing} still goes by each account's quota, so the order only settles ties. In order uses the first first.", { user, routing: t(byQuotaOf(p)) });
@@ -14360,12 +14376,27 @@ function quotaError(err, q) {
   if (/^not read yet: this subscription is switched off/.test(err)) return t("Switched off, so no allowance is read — switch it on and refresh");
   const bal = balanceError(err);
   if (bal) return bal;
+  const agy = agyReason(err);
+  if (agy) return agy;
   // a plugin's own usage read failed: its first line (aqiu817/magpie-sensenova#1)
   if (q?.pluginError) {
     const why = String(err).split("\n")[0].trim();
     if (why) return t("Allowance unavailable: {why}", { why: why.length > 160 ? why.slice(0, 159) + "…" : why });
   }
   return t("Allowance unavailable — hover for why");
+}
+
+// agyReason: why agy-cli's plugin has no reading this time, in its own
+// words (its usage.mjs), said in the user's language; "" for any other.
+// Antigravity's quota showed only this English line, or nothing, an hour
+// after the account's last chat (punk2sang on X)
+function agyReason(err) {
+  if (/^agy's sign-in is due to be renewed/.test(err)) return t("agy renews this account's sign-in on its next chat, and reads its allowance after that");
+  if (/^agy is still reading this account's quota/.test(err)) return t("agy is still reading this allowance — it shows on the next refresh");
+  if (/^agy(?:'s own usage read didn't finish| didn't say its version) in/.test(err)) return t("agy took too long to read its usage — it is asked again soon; if this stays, check agy's network or proxy");
+  if (/^agy CLI not found/.test(err)) return t("agy isn't installed — sign in to this account again in magpie to install it");
+  if (/^agy usage reports require a verified agy version/.test(err)) return t("agy is too old to tell its usage — update Antigravity CLI");
+  return "";
 }
 
 // the Balance field's placeholder (balancePathOf in balance.go)
@@ -15281,25 +15312,8 @@ function renderKeyAccounts(p) {
     edit.title = t("Paste a new value for this key; its name, place and settings stay");
     edit.setAttribute("aria-label", t("Change key"));
     edit.append(svg(PENCIL, 12, 1.4));
-    edit.onclick = (e) => {
-      e.stopPropagation();
-      if (row.querySelector(".key-value-in")) return;
-      const i = input("", t("Paste the key's new value"), "password");
-      i.className = "rename-in key-value-in";
-      let over = false;
-      const done = (save) => {
-        if (over) return;
-        over = true;
-        if (save && i.value.trim()) accountAction("keys/replace", { id: p.id, ref: k.id, key: i.value }, t("{key} now uses its new value", { key: k.name || k.masked }));
-        else renderProviders();
-      };
-      i.onkeydown = (ev) => { ev.stopPropagation(); if (ev.key === "Enter") done(true); else if (ev.key === "Escape") done(false); };
-      i.onblur = () => done(!!i.value.trim());
-      const shown = row.querySelector(".plan.mono");
-      if (shown) shown.replaceWith(i);
-      else name.after(i);
-      i.focus(NO_SCROLL);
-    };
+    // its new value, and its own balance query, in keyedit.js
+    edit.onclick = (e) => { e.stopPropagation(); import("./keyedit.js").then(() => keyEdit(row, p, k, name), statusErr); };
     // a double-click on the row is the shortcut, away from its controls
     row.ondblclick = (e) => { if (!e.target.closest("button, input, textarea, .acct-models")) edit.onclick(e); };
     // each key copies its own (#1480)
@@ -18080,7 +18094,7 @@ function panelBalances(bals) {
 function asOfText(q, short = false) {
   const text = short ? t("As of {when}", { when: stamp(q.asOf) })
     : t(q.readDeferred ? "As of {when} — not refreshed this time" : "As of {when} — couldn't be read just now", { when: new Date(q.asOf).toLocaleString(intlLang()) })
-      + (!q.readDeferred && q.readError ? " · " + q.readError : "");
+      + (!q.readDeferred && q.readError ? " · " + (agyReason(q.readError) || q.readError) : "");
   return q.windows?.some((w) => w.resetsAt && new Date(w.resetsAt).getTime() <= Date.now())
     ? text + " · " + t("A cached window has expired; current allowance is unknown") : text;
 }
@@ -18260,11 +18274,13 @@ function resetsWords(r, q) {
     // whether the one that runs out first is kept from going to waste:
     // with Auto-use on it is used shortly before it does (#624, #719)
     // or, the week's alone, when the week runs out (tongzhenbao on X)
+    // and not when its days left are out of those set (ResetDays)
     if (q && autoResetKept(q)) {
-      const { expiring: x, week } = autoResetWhen(q);
+      const { expiring: o, week: k } = autoResetWhen(q), x = o && resetInDays(resetLeadMinutes() * 6e4), week = k && resetInDays(at - Date.now());
       w.append(el("span", "resets-kept" + (x || week ? " on" : ""), " · " + t(x ? "auto-used before it expires" : week ? "auto-used when the week runs out" : "not auto-used")));
       w.title += "\n" + t(x ? "Auto-use is on: the reset that runs out first is used {lead} before it does, if this account's windows have been used, so what they have left can be used until then and it isn't lost; at once if the account is held up until after then."
         : week ? "Auto-use is on for a used-up week: a reset is used by itself when this account's week is used up, before its credits are spent. One about to run out is otherwise lost unless it's used by hand or the week runs out before then."
+        : o || k ? "Auto-use is on, but the reset that runs out first has more or fewer days left than those set for one used by itself: it's lost unless it's used by hand before then."
         : "Auto-use is off: the reset that runs out first is lost unless it's used by hand before then.", resetLeadVars());
     }
   } else if (r.each?.length) w.title = resetsEach(r);
@@ -18395,8 +18411,8 @@ function autoResetTitle(on) {
 }
 
 // How long before a reset runs out it is used (codexResetLead; the owner, 10-30):
-// half an hour unless set or out of range, as the gateway reads it. RESET_LEADS in minutes.
-const RESET_LEADS = [3, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440];
+// half an hour unless set or out of range, as the gateway reads it (the
+// choices, RESET_LEADS, are autoresetown.js's).
 function resetLeadMinutes(s = state?.settings) {
   const m = s?.codexResetLead;
   return Number.isInteger(m) && m >= 3 && m <= 1440 ? m : 30;
@@ -18405,6 +18421,10 @@ function resetLeadWords(m) {
   return m < 60 || m % 60 ? t("{n} min", { n: m }) : t("{n} h", { n: m / 60 });
 }
 const resetLeadVars = (s) => ({ lead: resetLeadWords(resetLeadMinutes(s)) });
+// resetInDays: whether a reset ms from running out may be used by itself,
+// by the days set for that (codexResetDaysLeast/Most, 0 no bound), as
+// settings' ResetInDays (shangyuan0818 on X)
+const resetInDays = (ms, s = state?.settings) => ms >= (s?.codexResetDaysLeast || 0) * 864e5 && ms <= (s?.codexResetDaysMost || 1e9) * 864e5;
 
 // autoResetBrief: the say and its switch beside an account's name in brief (#801).
 function autoResetBrief(q) {
@@ -19046,13 +19066,19 @@ function quotaWindows(sub) {
   for (const w of sub.windows) {
     const quota = el("div", "quota");
     const labels = el("div", "quota-labels");
-    // the count and its share in parts, so a count too long for its
-    // window's width goes to a second line at the · rather than cut short
+    // every segment, so a plugin's display with several · keeps them
+    // all (#7396). A count too long for the window's width goes to the
+    // next line at a · rather than cut short. An empty later piece
+    // still leaves the first as the two-piece split did.
     const n = el("button", "quota-n");
     const text = w.historyMissing ? t("No readings in this cycle") : quotaText(w);
-    const [count, share] = text.split(" · ");
-    n.append(el("span", "", share ? count + " ·" : count));
-    if (share) n.append(" ", el("span", "", share));
+    const parts = text.split(" · ");
+    let last = parts.length - 1;
+    while (last > 0 && !parts[last]) last--;
+    for (let i = 0; i <= last; i++) {
+      if (i) n.append(" ");
+      n.append(el("span", "", i < last ? parts[i] + " ·" : parts[i]));
+    }
     n.title = w.historyMissing ? text : text + "\n" + t(quotaLeft ? "Show how much of each window is used" : "Show how much of each window is left");
     n.disabled = !!w.historyMissing;
     n.onclick = () => setQuotaLeft(!quotaLeft);
@@ -20330,6 +20356,18 @@ function renderSettings() {
   $("#lightweightRow").hidden = web;
   $("#lightweightSegs").replaceChildren(segs([["off", t("Off")], ["on", t("On")]], s.lightweight === true ? "on" : "off",
     (v) => savePrefs({ ...keep, lightweight: v === "on" })));
+  // Linux's app alone: whether WebKitGTK draws on the GPU, read at the
+  // next start (webkit_linux.go; ZDegress on X). Unchosen it follows
+  // magpie's pick, and a choice equal to it is saved as none, so a
+  // later pick (a driver changed) still applies. WEBKIT_* variables the
+  // user set are theirs, and the row says so instead.
+  const gpu = !web && s.gpu;
+  $("#generalMore").hidden = !gpu;
+  if (gpu) {
+    $("#gpuSub").textContent = gpu.env?.length ? t("Set by {vars} in the environment; magpie leaves it as it is", { vars: gpu.env.join(", ") }) : t("Takes effect when magpie next starts");
+    $("#gpuSegs").replaceChildren(gpu.env?.length ? "" : segs([["off", t("Off")], ["on", t("On")]], (s.gpuRendering ?? gpu.auto) ? "on" : "off",
+      (v) => savePrefs({ ...keep, gpuRendering: (v === "on") === gpu.auto ? null : v === "on" })));
+  }
   // the display kept on too (#975)
   $("#keepAwakeSegs").replaceChildren(segs([["off", t("Off")], ["on", t("On")], ["display", t("Screen on too")]],
     !s.keepAwake ? "off" : s.keepAwakeDisplay ? "display" : "on",
@@ -22057,14 +22095,12 @@ function renderReplies(s, keep) {
   const x = segRow("claudeExtraRow", t("Spend extra usage"),
     t("Once a Claude account has used up its plan, Anthropic bills further requests as extra usage. Off, magpie sends the account nothing until its plan renews, and your other accounts take the requests"),
     onOff, s.claudeNoExtraUsage ? "off" : "on", (v) => savePrefs({ ...keep, claudeNoExtraUsage: v === "off" }));
-  // Claude's requests held while their way out is in a region Anthropic
-  // doesn't list (internal/egress, off unless on)
-  const g = segRow("claudeRegionRow", t("Hold requests outside supported regions"),
-    t("While this computer's way out to the internet is in a region Anthropic doesn't list, Claude requests aren't sent and the agent is told why. A lookup that fails holds nothing"),
-    onOff, s.claudeRegionHold ? "on" : "off", (v) => savePrefs({ ...keep, claudeRegionHold: v === "on" }));
   box.append(r, l);
-  // a Claude run's, in its provider's editor (PROV_PREFS)
-  $("#claudeRunList").replaceChildren(c, x, g);
+  // a Claude run's, in its provider's editor (PROV_PREFS); then its way
+  // out, the hold and the ways out allowed (egress.js)
+  const cr = $("#claudeRunList"), ew = () => egressRows(cr, s, keep);
+  cr.replaceChildren(c, x);
+  window.egressRows ? ew() : import("./egress.js").then(ew, () => {});
   $("#claudeRunList").classList.toggle("gw", gatewayMode);
   $("#routeList").replaceChildren(f, a, k, $("#busyLoadRow"), $("#contextCapRow"));
 }
@@ -22258,6 +22294,10 @@ function renderRedact(s, keep) {
   rowIn(find, t("Rules"), masking ? t("Keys, tokens, emails and numbers whose checksum adds up: patterns that are certain, checked on every request") : why, always).id = "maskRulesRow";
   if (window.hideAccounts) rowIn(share, t("Hide accounts"), t("Email addresses and account names on every page are blurred, for a screenshot to share"),
     onOff(window.hideAccounts.on(), (on) => { window.hideAccounts.set(on); renderSettings(); }));
+  // what the last requests said, on Routing and Gateway (llxth1 on X);
+  // off, the gateway keeps none of it (gateway/request_text.go)
+  rowIn(share, t("Show request content"), t("What the last requests said, on the Routing and Gateway pages, kept in memory only. Off, magpie keeps none of it"),
+    onOff(!s.hideRequestText, (on) => savePrefs({ ...keep, hideRequestText: !on }))).id = "hideRequestTextRow";
   rowIn(share, t("Turn off telemetry for all agents"), t("Over each agent's own Telemetry switch, an agent found later too"),
     onOff(s.agentTelemetryOff, (off) => writingPrefs(api("settings/agent-telemetry", { off })).then((ns) => {
       prefs = state.settings = ns;
@@ -22278,132 +22318,19 @@ function renderRedact(s, keep) {
   }
 }
 
-// privacyModelRow: the local masking model (internal/pii); its state read
-// on drawing, each second while it downloads or starts; then pmScore.
-let pmState = null, pmTimer = 0;
+// privacyModelRow: the local masking model (internal/pii); its controls and
+// status live in privacymodel.js, imported when Settings › Privacy draws it.
 function privacyModelRow(box, why) {
   const r = el("div", "row pref" + (why ? " pm-wait" : ""));
   r.id = "privacyModelRow";
-  box.append(r);
-  const sr = el("div", "row pref");
-  sr.id = "pmScoreRow";
   const name = () => { const n = el("div", "name", t("Find with a local model")); n.append(el("span", "badge new", t("New"))); return n; };
-  if (why) {
-    clearTimeout(pmTimer);
-    const who = el("div", "who");
-    who.append(name(), el("div", "sub say", why));
-    r.append(who);
-    return;
-  }
-  let tries = 0;
-  const draw = (m) => {
-    if (!r.isConnected) return;
-    const who = el("div", "who"), val = el("div", "val");
-    who.append(name(), el("div", m && (m.on || m.installed || !m.supported || pmBusy(m) || m.error || m.models?.some((x) => x.error)) ? "sub say" : "sub", pmSub(m)));
-    if (m?.supported || m?.installed || m?.managedWeights === false) {
-      if (m.models?.length > 1) val.append(pmPick(m, (id) => act("pick", id)));
-      if (pmBusy(m)) {
-        const c = el("button", "text", t("Cancel"));
-        c.onclick = () => act("cancel");
-        val.append(c);
-      } else if (m.installed && !m.on && m.managedWeights !== false) {
-        const x = el("button", "text", t("Delete model"));
-        x.onclick = async () => {
-          if (await confirmAction(t("Delete the model?"), t("Turning it on again downloads {size} again.", { size: fmtBytes(m.size) }), t("Delete"))) act("remove");
-        };
-        val.append(x);
-      }
-      val.append(segs([["off", t("Off")], ["on", t("On")]], m.on || m.downloading ? "on" : "off", (v) => act(v)));
-    }
-    r.replaceChildren(who, val);
-    if (m && (m.supported || m.installed) && m.defaultScore) {
-      const sw = el("div", "who");
-      sw.append(el("div", "name", t("Confidence threshold")), el("div", "sub", t("What the model is less sure of goes as written. Higher masks less, with fewer false alarms")));
-      const sv = el("div", "val");
-      sv.append(pmScore(m, (score) => act("score", m.model, score)));
-      sr.replaceChildren(sw, sv);
-      if (!sr.isConnected) r.after(sr);
-    } else sr.remove();
-    import("./pmfolder.js").then(() => window.pmFolder(r, sr, m, act), () => {});
-    clearTimeout(pmTimer);
-    // a download's progress, and where pf-serve runs once it has started
-    const starting = m?.on && m.installed && !m.running && !m.failed && tries++ < 30;
-    if (pmBusy(m) || starting || m?.moving) pmTimer = setTimeout(load, 1000);
-  };
-  const load = () => api("privacy-model").then((m) => { pmState = m; draw(m); }).catch(() => {});
-  const act = (doing, model, score, dir) => { tries = 0; api("privacy-model", { do: doing, model, score, dir }).then((m) => { pmState = m; draw(m); }).catch((e) => { statusTErr(e); load(); }); };
-  draw(pmState);
-  load();
-}
-// the local models to pick from (pii.Models), by the app's menu: what
-// each is, its size and whether it is downloaded
-const PM_MODELS = { "astrlink-guard": ["AstrLink Guard", "Chinese and English, few false alarms in code"], "privacy-filter": ["Privacy Filter", "OpenAI's, masks more ordinary values in code"] };
-// pmBusy is the model downloading (the one picked while another masks, too)
-const pmBusy = (m) => (m?.models || []).find((x) => x.downloading) || (m?.downloading ? m : null);
-function pmPick(m, pick) {
-  const b = el("button", "sess-pick pm-model");
-  b.type = "button";
-  menuOpener(b);
-  b.title = t("The local model");
-  b.append(el("span", "", m.name || (PM_MODELS[m.model] || [m.model])[0]), svg(CHEV, 11, 1.6));
-  b.onclick = (e) => {
-    e.stopPropagation();
-    if (b.classList.contains("open")) return closeProtoMenu();
-    const opts = (m.models || []).map(pmModelOption);
-    openProtoMenu(b, opts, m.model, (v) => v !== m.model && pick(v), "The local model", "sess-menu", "right");
-  };
-  return b;
-}
-// pmScore picks the model's threshold (privacy-model's score) by the
-// app's menu: its default, or one of PM_SCORES
-const PM_SCORES = [0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95];
-function pmScore(m, pick) {
-  const cur = m.minScore === m.defaultScore ? "0" : String(m.minScore);
-  const b = el("button", "sess-pick pm-score");
-  b.type = "button";
-  menuOpener(b);
-  b.title = t("Confidence threshold");
-  b.append(el("span", "", String(m.minScore)), svg(CHEV, 11, 1.6));
-  b.onclick = (e) => {
-    e.stopPropagation();
-    if (b.classList.contains("open")) return closeProtoMenu();
-    const note = (s) => s === PM_SCORES[0] ? "Masks the most" : s === PM_SCORES.at(-1) ? "Masks the least" : "";
-    const opts = [{ v: "0", name: t("Default ({score})", { score: m.defaultScore }), literalName: true, note: note(m.defaultScore) },
-      ...PM_SCORES.filter((s) => s !== m.defaultScore).map((s) => ({ v: String(s), name: String(s), literalName: true, note: note(s) }))];
-    openProtoMenu(b, opts, cur, (v) => v !== cur && pick(Number(v)), "Confidence threshold", "sess-menu", "right");
-  };
-  return b;
-}
-function pmSub(m) {
-  const about = t("Names, addresses and passwords no rule can find, found by a model that runs on this computer");
-  if (!m) return about;
-  // a plugin's model (pii/external.go): its files are the user's
-  if (m.managedWeights === false && !m.installed) return t("Not available: its plugin is off, or its files are gone");
-  if (!m.supported && !m.installed) return t("Not available on this system yet");
-  const d = pmBusy(m);
-  if (d) return t("Downloading the model: {done} of {total}", { done: fmtBytes(d.done), total: fmtBytes(d.total) });
-  const bad = (m.models || []).find((x) => x.error) || (m.error ? m : null);
-  if (bad) return t("The download stopped: {error}", { error: bad.error });
-  if (m.on && m.failed) return m.chosen ? t("The model didn't answer, so requests are held back: {error}", { error: m.failed }) : t("The model didn't answer, so the rules mask requests alone: {error}", { error: m.failed });
-  if (m.on && m.running) {
-    if (m.gpu) return t("On, on the GPU ({device})", { device: m.device });
-    // AstrLink Guard on a Mac: CoreML, on the device its plan picked
-    if (m.via) return { "Neural Engine": t("On, with CoreML on the Neural Engine"), GPU: t("On, with CoreML on the GPU"), CPU: t("On, with CoreML on the CPU") }[m.device] || t("On, with CoreML");
-    // the Intel build on Apple silicon: Go, translated, several times slower
-    if (m.rosetta) return t("On, slowly under Rosetta: the next update installs magpie for Apple silicon");
-    // the x64 build on Windows on Arm, emulated
-    if (m.emulated) return t("On, slowly under x64 emulation: the next update installs magpie for Arm");
-    if (m.gpuError && m.model === "astrlink-guard") return t("On, on the CPU: CoreML failed ({error})", { error: m.gpuError });
-    // Privacy Filter lost the GPU: to its driver resetting it (device
-    // lost), or to a fault; the GPU is tried again at gpuAgain
-    const time = m.gpuAgain ? hhmm(m.gpuAgain) : "";
-    if (m.gpuReset) return time ? t("On, on the CPU until {time}: the graphics driver reset the GPU (device lost)", { time }) : t("On, on the CPU: the graphics driver reset the GPU (device lost)");
-    if (m.gpuError && time) return t("On, on the CPU until {time}: the GPU failed ({error})", { time, error: m.gpuError });
-    return m.gpuError ? t("On, on the CPU: the GPU failed ({error})", { error: m.gpuError }) : t("On, on the CPU");
-  }
-  if (m.on) return t("On: the model starts with the next request");
-  if (m.installed) return t("Off. The model is downloaded ({size})", { size: fmtBytes(m.size) });
-  return t("Names, addresses and passwords no rule can find, found by a model that runs on this computer. Turning it on downloads {size} once", { size: fmtBytes(m.size) });
+  const who = el("div", "who");
+  who.append(name(), el("div", why ? "sub say" : "sub", why || t("Names, addresses and passwords no rule can find, found by a model that runs on this computer")));
+  r.append(who);
+  box.append(r);
+  if (why) { window.pmStop?.(); return; }
+  if (window.pmFill) pmFill(r, name);
+  else import("./privacymodel.js").then(() => pmFill(r, name), () => {});
 }
 
 // ---------- what masking swapped (maskrec) ----------
@@ -23075,7 +23002,7 @@ function prefsKeep(s) {
     redact: !!s.redact, redactPersonal: !!s.redactPersonal, redactKinds: s.redactKinds || {}, redactWords: s.redactWords || [], redactWordsAnyCase: !!s.redactWordsAnyCase, redactWordsWhole: !!s.redactWordsWhole, redactShape: !!s.redactShape, codexWarmup: s.codexWarmup || "",
     claudeWarmup: s.claudeWarmup || "", agyWarmup: s.agyWarmup || "", codexWarmAt: s.codexWarmAt || "", claudeWarmAt: s.claudeWarmAt || "",
     codexWarmAts: warmTimes(s.codexWarmAts, s.codexWarmAt), claudeWarmAts: warmTimes(s.claudeWarmAts, s.claudeWarmAt), workbuddyCheckin: !!s.workbuddyCheckin, traeCheckin: !!s.traeCheckin, minimaxCheckin: !!s.minimaxCheckin, qoderCheckin: !!s.qoderCheckin, checkinAt: s.checkinAt || "", noStats: !!s.noStats, noUsageStats: !!s.noUsageStats, signInLinkOnly: !!s.signInLinkOnly,
-    replyModel: s.replyModel || "", noLoopGuard: !!s.noLoopGuard, claudeLeanPrompt: !!s.claudeLeanPrompt, claudeNoExtraUsage: !!s.claudeNoExtraUsage, claudeRegionHold: !!s.claudeRegionHold, claudePrintMode: !!s.claudePrintMode, refusalRetries: s.refusalRetries ?? null, retryAfterCap: s.retryAfterCap ?? null,
+    replyModel: s.replyModel || "", noLoopGuard: !!s.noLoopGuard, claudeLeanPrompt: !!s.claudeLeanPrompt, claudeNoExtraUsage: !!s.claudeNoExtraUsage, claudeRegionHold: !!s.claudeRegionHold, claudeWaysOut: s.claudeWaysOut || [], claudePrintMode: !!s.claudePrintMode, refusalRetries: s.refusalRetries ?? null, retryAfterCap: s.retryAfterCap ?? null,
     noUpdatePill: !!s.noUpdatePill, noAutoUpdate: !!s.noAutoUpdate, updateEvery: s.updateEvery || 360, autoRestart: !!s.autoRestart, noAutoDownload: !!s.noAutoDownload, updateChannel: s.updateChannel || "",
     trayUsage: s.trayUsage || "", trayUsageEvery: s.trayUsageEvery || 3, trayNoLogos: !!s.trayNoLogos, trayAnthropicMark: !!s.trayAnthropicMark, trayNoBird: !!s.trayNoBird, trayNoNumber: !!s.trayNoNumber, trayPace: !!s.trayPace, trayNoCost: !!s.trayNoCost, trayWindows: s.trayWindows || {}, vision: s.vision || "", visionEffort: s.visionEffort || "", searcherEffort: s.searcherEffort || "", imageGen: s.imageGen || "", videoGen: s.videoGen || "", imageTimeout: s.imageTimeout || 0, classifyTimeout: s.classifyTimeout || 0, searcher: s.searcher || "", searchFirst: s.searchFirst || "", currency: s.currency || "usd", totalCurrency: s.totalCurrency || "", trayCurrency: s.trayCurrency || "",
     chineseUnits: !!s.chineseUnits, inUncached: !!s.inUncached, dayStart: s.dayStart || 0, usageAlert: s.usageAlert || 0, balanceAlert: s.balanceAlert || 0, resetReminder: s.resetReminder || 0,
@@ -23557,6 +23484,7 @@ async function show(v) {
   // Plugins opened from another page: on Installed when an update waits, and
   // the opening counted for its partners (plugins.js pmOpen, provider.CountPage)
   if (v !== view && v === "plugins") window.pmOpen?.(pluginUpdates);
+  const toAgents = v === "agents" && v !== view;
   view = v;
   renderBack();
   window.hideAccounts?.page();
@@ -23588,6 +23516,10 @@ async function show(v) {
   if ((rtView(v) || v === "providers" && !featuresOff.has("usage")) && (!quotas || Date.now() - quotasAt > 60e3)) loadQuotas();
   if (v === "settings") (settingsLoad = loadSettings()).then(back, settingsUnread);
   if (v === "plugins") window.loadPlugins?.()?.then(back);
+  // Agents opened from another page reads them again when the last read is
+  // over 15 s old, or a plugin was added or removed since (agentsStale): the
+  // same read the window's focus makes, never a rescan
+  if (toAgents && load.done && performance.now() - (load.at || 0) > 15e3) loadBack();
   syncTitle();
   syncURL();
   return true;
@@ -24589,6 +24521,9 @@ if (mode === "window") {
 // page shown with it held at its first frame was a blank pane under its
 // header and sidebar (WaiooT on X)
 function playViews() { for (const v of $$(".view")) for (const a of v.getAnimations?.() || []) try { a.finish(); } catch {} }
+// agentsStale: what the agents were read as is out of date (a plugin added
+// or removed): Agents opened next reads them again
+window.agentsStale = () => { load.at = 0; };
 function loadBack() {
   const f = loadBack.flight;
   if (f && performance.now() - f.at < 1000) return f.done;
