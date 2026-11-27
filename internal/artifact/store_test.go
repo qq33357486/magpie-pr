@@ -18,7 +18,13 @@ func sandbox(t *testing.T) string {
 	dir := t.TempDir()
 	old := Dir
 	Dir = func() string { return dir }
-	t.Cleanup(func() { Dir = old })
+	// before the folder goes: Windows won't remove a data.db still open
+	t.Cleanup(func() {
+		// a shared copy's asset sync ends with the test
+		assetSyncs.Wait()
+		Dir = old
+		CloseDBs()
+	})
 	return dir
 }
 

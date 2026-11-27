@@ -1312,10 +1312,18 @@ func (s *Server) routes() *routeMux {
 	mux.HandleFunc("GET "+ArtifactPagePath+"{ref}/{path...}", s.artifactPage)
 	mux.HandleFunc("POST "+ArtifactPagePath+"{ref}/"+artifactAPIDir+"db", s.artifactDB)
 	mux.HandleFunc("GET "+ArtifactPagePath+"{ref}/"+artifactAPIDir+"events", s.artifactEvents)
+	mux.HandleFunc("GET "+ArtifactPagePath+"{ref}/"+artifactAPIDir+"live", s.artifactLive)
 	mux.HandleFunc("POST "+ArtifactPagePath+"{ref}/"+artifactAPIDir+"publish", s.artifactPublish)
 	mux.HandleFunc("POST "+ArtifactPagePath+"{ref}/"+artifactAPIDir+"meta", s.artifactMeta)
 	mux.HandleFunc("POST "+ArtifactPagePath+"{ref}/"+artifactAPIDir+"upload", s.artifactUpload)
 	mux.HandleFunc("POST "+ArtifactPagePath+"{ref}/"+artifactAPIDir+"assets", s.artifactAssets)
+	mux.HandleFunc("POST "+ArtifactPagePath+"{ref}/"+artifactAPIDir+"sample", s.artifactSample)
+	mux.HandleFunc("POST "+ArtifactPagePath+"{ref}/"+artifactAPIDir+"comments", s.artifactComments)
+	mux.HandleFunc("POST "+ArtifactPagePath+"{ref}/"+artifactAPIDir+"tts", s.artifactTTS)
+	mux.HandleFunc("POST "+ArtifactPagePath+"{ref}/"+artifactAPIDir+"dictation", s.artifactDictation)
+	mux.HandleFunc("POST "+ArtifactPagePath+"{ref}/"+artifactAPIDir+"mcp", s.artifactMCP)
+	mux.HandleFunc("POST "+ArtifactPagePath+"{ref}/"+artifactAPIDir+"files", s.artifactFiles)
+	mux.HandleFunc("GET "+ArtifactPagePath+"{ref}/"+artifactAPIDir+"shell", s.artifactShellEvents)
 	mux.HandleFunc("GET "+artifactBlobPath+"{id}", s.artifactBlob)
 	mux.HandleFunc(ImageMCPPath, s.imageMCP)
 	mux.HandleFunc(BrowserMCPPath, s.browserMCP)
@@ -1683,6 +1691,14 @@ func modelObject(e provider.Entry) map[string]any {
 	// (magpie group set … context=) included
 	if e.Context > 0 {
 		m["context_window"], m["context_length"], m["max_input_tokens"] = e.Context, e.Context, e.Context
+		// the most it may be raised to, when its vendor takes more than
+		// that window at a higher price (Copilot's gpt-6.2-sol: 272K,
+		// 1.05M): another magpie that has this one as its provider keeps
+		// it as its own model's MaxContext, so its user can raise the
+		// window there too (#7296)
+		if e.MaxContext > e.Context {
+			m["max_context_window"] = e.MaxContext
+		}
 	}
 	// the reply limit, kept within that window as agents are told it
 	// (#1438)
@@ -2821,6 +2837,11 @@ func estimate(req *Request) int {
 // serve routes one parsed-enough request to its provider.
 func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Protocol, body []byte) {
 	start := time.Now()
+	// magpie's own ask made while serving an agent's request — a search,
+	// an image description, a classifier asked through chat — is held to
+	// the accounts magpie's own requests are set to, not the agent's
+	// (ownHeld)
+	r = ownHeld(r)
 	// a client's "off" is magpie's none, for every route and check below
 	// that reads the body's effort (plugins#334)
 	body = offAsNone(from, body)

@@ -75,6 +75,10 @@ import { serve as serveFile, held, onR2, mirror, githubFile } from "./files.js";
 import { handle as pluginStats, prune as prunePlugins } from "./pluginstats.js";
 import { api as shareAPI, page as sharePage, content as shareContent, prune as pruneShares, CONTENT as SHARE_HOST } from "./shares.js";
 import { api as groupAPI, page as groupPage, prune as pruneGroups } from "./groups.js";
+import { api as liveAPI, ShareLive } from "./live.js";
+
+// each shared page's data and room (live.js)
+export { ShareLive };
 
 const REPO = "yetone/magpie-releases";
 const SITE = "https://usemagpie.ai";
@@ -109,7 +113,14 @@ export default {
       url.hostname = url.hostname.slice(4);
       return Response.redirect(url.toString(), 301);
     }
-    if (url.pathname === "/api/shares" || url.pathname.startsWith("/api/shares/")) return shareAPI(req, env, ctx);
+    if (url.pathname.startsWith("/api/visitors") || url.pathname.startsWith("/api/shares/")) {
+      const got = await liveAPI(req, env, ctx);
+      if (got) return got;
+    }
+    // a path neither knows (a malformed id, an unknown call) is a 404,
+    // not a Worker exception
+    if (url.pathname === "/api/shares" || url.pathname.startsWith("/api/shares/"))
+      return (await shareAPI(req, env, ctx)) || Response.json({ error: "no such call" }, { status: 404 });
     if (url.pathname.startsWith("/a/")) {
       const got = await sharePage(req, env);
       if (got) return got;

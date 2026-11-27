@@ -14,6 +14,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/yetone/magpie/internal/artifact"
 	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/proc"
+	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
 )
 
@@ -55,6 +57,7 @@ const (
 	artifactDeleteTool  = "delete_artifact"
 	artifactOpenTool    = "open_artifact"
 	artifactDataTool    = "artifact_data"
+	artifactGuideTool   = "artifact_guide"
 
 	// artifactsMCPBody is the most a message may be: a version's 64 MiB in
 	// base64, and the JSON around it
@@ -117,6 +120,7 @@ func artifactsMCPTools() []any {
 			"title": "Publish artifact",
 			"description": "Publishes an HTML page as an artifact: a private page on this computer, kept with every version, that the user opens in their browser. " +
 				"Use it whenever a page would be clearer than text, or when the user would use the page rather than only read it: a report, a chart or dashboard, a diagram, an explainer, a prototype, a small app or game. " +
+				"This is how the user opens a page you make for them: an HTML page, tool, game or app you write for them to open is published, even when they ask for an HTML file or you save it in the folder, and they get its address rather than a file to open. Not a project's own source (a site or an app the folder is the code of). " +
 				"Write the page to a file and pass file_path (or pass the page as html). The page is self-contained HTML; a <title> of two to four words names it. " +
 				"file_path and files' paths are read on the computer magpie runs on: from another computer or container, pass the page as html and its files as text or base64. " +
 				"Supporting files (scripts, styles, data, images, more pages) go in files, by the relative path the page uses, each from a local file. " +
@@ -144,10 +148,19 @@ func artifactsMCPTools() []any {
 						"type": "object",
 						"description": "What the page may do beyond static HTML, as Claude's artifacts declare it: {\"db\": {}, \"user\": {}}. " +
 							"db keeps data outside the page, which the page reads and writes through `await claude.use(\"db\")` (doc, collection, get, set, update, delete, where, orderBy, limit, onSnapshot) and you read and seed with " + artifactDataTool + "; " +
-							"{\"db\": {\"rules\": [{\"path\": …, \"read\": …, \"write\": …}]}} sets who reads and writes where. user is who views it, through `await claude.use(\"user\")`. " +
+							"{\"db\": {\"rules\": [{\"path\": \"votes\", \"read\": \"view\", \"write\": \"owner\"}]}} sets who reads and writes where, by levels: view, interact, admin, owner, self. user is who views it, through `await claude.use(\"user\")`. " +
 							"artifact lets the page save itself: `await (await claude.use(\"artifact\")).publish(html)` publishes the whole page, state embedded, as the newest version, and every open view reloads to it; publish({path: content}) saves files and keeps the page running. " +
 							"assets keeps files people add (images, video, PDF, fonts, CSV and text, 20 MiB each): `(await claude.use(\"assets\")).upload(blob)` gives {id, url}; keep the id in db and show it at \"/_blob/\" + id. " +
-							"Any other capability resolves null on the page here, so a page lights it up only when it is there. Left out, an update keeps the version before's; {} clears them.",
+							"sample lets the page ask a model: `await (await claude.use(\"sample\"))(input, {onText, tools, modelTier})` gives {text, truncated}, and sample.json(input) a parsed value; {\"sample\": {\"images\": true}} lets it send images too. Each call is memoryless, so send the instructions, data and format with it. " +
+							"comments adds ways into the viewer's comments, which magpie's viewer draws around the page and the viewer can send to you: {\"comments\": {\"composer_only\": true}} gives `(await claude.use(\"comments\")).openComposer({element})`, and {\"comments\": {}} create, reply and sendToClaude too; never build the page's own list of comments. " +
+							"downloads hands the viewer a file the page made, once they say yes: {\"downloads\": true}, then `await (await claude.use(\"downloads\")).save({filename, data})`. " +
+							"tts reads text aloud to the viewer: {\"tts\": {}}, then `await (await claude.use(\"tts\")).speak(text)` on their click, in the voice buttery, airy, glassy or rounded. " +
+							"dictation gives the page the viewer's words as they speak: {\"dictation\": {}}, then `(await claude.use(\"dictation\")).start()` on their click, with onPartial, onFinal and onState. " +
+							"mcp calls the tools of MCP servers in the Library as the viewer, once they allow each server: {\"mcp\": {\"servers\": [{\"server\": \"github\", \"tools\": [\"list_issues\"]}]}}, then `(await claude.use(\"mcp\")).watchTool(server, tool, input, handler)` for data to show and callTool for an action. " +
+							"files reads the files of the folder you publish from, once the viewer allows it: {\"files\": {}}, then `(await claude.use(\"files\")).list({path, recursive})`, read(path) for {bytes, size, revision}, download(path) and asSampleTools(). " +
+							"room reaches whoever has the page open right now, its visitors on usemagpie.ai too: {\"room\": {}}, then `(await claude.use(\"room\"))` emit(topic, data), on(topic, fn), presence(patch), onPeers(fn) and join(name); nothing is kept, so state a late joiner needs goes in db, and {\"room\": {\"topics\": {\"move\": \"interact\"}}} lets signed-in visitors send on move. " +
+							"Any other capability resolves null on the page here, so a page lights it up only when it is there. Left out, an update keeps the version before's; {} clears them. " +
+							"Before writing a page that uses one, read its calls' shapes and answers with " + artifactGuideTool + ".",
 					},
 					"label":   map[string]any{"type": "string", "description": "A short name for this version, at most 60 characters"},
 					"version": map[string]any{"type": "integer", "minimum": 1, "description": "The version this publish was built on; a newer one makes it fail instead of being written over"},
@@ -157,6 +170,20 @@ func artifactsMCPTools() []any {
 			// declared to the model at once, as a built-in tool is, so an ask
 			// for a page reaches it without naming it (hubAlwaysLoaded)
 			"_meta": hubAlwaysLoadMeta(),
+		},
+		map[string]any{
+			"name":  artifactGuideTool,
+			"title": "Artifact capabilities guide",
+			"description": "How an artifact's page calls the capabilities publish_artifact declares (db, user, artifact, assets, sample, comments, downloads, tts, dictation, mcp, files, room, permissions): each call's shape, what it answers and its error codes, as Magpie's page runtime serves them. " +
+				"Read it before writing a page that uses one.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"capabilities": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "The ones the page uses, e.g. [\"db\", \"user\"]; left out, every one"},
+				},
+			},
+			"annotations": map[string]any{"readOnlyHint": true, "openWorldHint": false},
+			"_meta":       hubAlwaysLoadMeta(),
 		},
 		map[string]any{
 			"name":        artifactReadTool,
@@ -443,10 +470,15 @@ func (s *Server) artifactsMCPCall(r *http.Request, m mcpMessage) (any, map[strin
 			"protocolVersion": mcpVersion(m),
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]any{"name": artifactsServerName, "title": "Magpie Artifacts", "version": Version},
-			"instructions": "Artifacts are private pages on this computer, kept with every version, that the user opens in their browser. " +
-				"When a page would be clearer than text, or the user would use the page rather than only read it (a report, a chart, a dashboard, a diagram, an explainer, a prototype, a small app), write it as HTML and publish it with " + artifactPublishTool + ", then give the user its address. " +
+			// The first sentence carries the trigger: an agent that defers
+			// these tools shows only the start of this text (Codex cuts it
+			// near 250 characters), and has to search for the tool by it.
+			"instructions": "Publish every HTML page, chart, report, diagram, dashboard, tool, game or small app you make for the user with " + artifactPublishTool + ", even when they ask for an HTML file; they open it in their browser. " +
+				"Artifacts are private pages on this computer, kept with every version. " +
+				"Make one whenever a page would be clearer than text, or the user would use the page rather than only read it (an explainer, a prototype, a calculator), then give the user its address. " +
+				"A page saved in the folder is published too, unless it is a project's own source (a site or an app the folder is the code of). " +
 				"To change one, read it first with " + artifactReadTool + " and publish with its id. Delete one only when the user asks. " +
-				"Files are read on the computer magpie runs on: an agent on another computer or in another container passes the page as html. " +
+				"Files are read on the computer this server runs on: an agent on another computer or in another container passes the page as html. " +
 				"A page that keeps data (a poll, a tracker, a board, a sign-up sheet) declares capabilities {\"db\": {}, \"user\": {}} and reads it with `await claude.use(\"db\")`, as Claude's artifacts do; seed and read its data with " + artifactDataTool + ". " +
 				"A page that is its own record (a checklist kept in the page) declares {\"artifact\": {}} and publishes itself with `(await claude.use(\"artifact\")).publish(html)`.",
 		}, nil
@@ -488,9 +520,11 @@ func (s *Server) artifactsMCPCall(r *http.Request, m mcpMessage) (any, map[strin
 			said, err = artifactDelete(c, a)
 		case artifactDataTool:
 			said, err = artifactData(a)
+		case artifactGuideTool:
+			said, err = artifactGuide(a)
 		default:
 			return nil, map[string]any{"code": -32602, "message": "unknown tool " + p.Name + ": this server has " +
-				strings.Join([]string{artifactPublishTool, artifactReadTool, artifactListTool, artifactOpenTool, artifactDataTool, artifactDeleteTool}, ", ")}
+				strings.Join([]string{artifactPublishTool, artifactGuideTool, artifactReadTool, artifactListTool, artifactOpenTool, artifactDataTool, artifactDeleteTool}, ", ")}
 		}
 		if err != nil {
 			return toolResult(err.Error(), true), nil
@@ -498,6 +532,24 @@ func (s *Server) artifactsMCPCall(r *http.Request, m mcpMessage) (any, map[strin
 		return toolResult(said, false), nil
 	}
 	return nil, map[string]any{"code": -32601, "message": "method not found: " + m.Method}
+}
+
+// artifactGuide is the guide to the capabilities a.Capabilities names:
+// a list of names, or a declaration's object, whose keys they are.
+func artifactGuide(a artifactArgs) (string, error) {
+	var names []string
+	if len(a.Capabilities) > 0 && string(a.Capabilities) != "null" {
+		if json.Unmarshal(a.Capabilities, &names) != nil {
+			var m map[string]json.RawMessage
+			if json.Unmarshal(a.Capabilities, &m) != nil {
+				return "", errors.New("capabilities is a list of their names, e.g. [\"db\", \"user\"]")
+			}
+			for k := range m {
+				names = append(names, k)
+			}
+		}
+	}
+	return artifact.Guide(names)
 }
 
 // artifactNamed is the artifact the arguments name, and the version.
@@ -526,7 +578,7 @@ func artifactNamed(a artifactArgs) (*artifact.Artifact, int, error) {
 }
 
 func artifactPublish(c *artifactCaller, a artifactArgs) (string, error) {
-	p := artifact.Publish{Title: a.Title, Description: a.Description, Label: a.Label, Agent: c.agent, Base: int(a.Version)}
+	p := artifact.Publish{Title: a.Title, Description: a.Description, Label: a.Label, Agent: c.agent, Cwd: c.dir(), Base: int(a.Version)}
 	caps, err := artifact.ParseCapabilities(a.Capabilities)
 	if err != nil {
 		return "", err
@@ -629,6 +681,9 @@ func artifactPublish(c *artifactCaller, a artifactArgs) (string, error) {
 			fmt.Fprintf(&b, "The user shared it at %s, which still shows version %d: %v. Give the user the address, and say so.", sh.URL, sh.Version, err)
 		} else {
 			fmt.Fprintf(&b, "The user shared it: anyone with its link, %s, sees this version now. Give the user the address.", sh2.URL)
+			if sh2.Note != "" {
+				fmt.Fprintf(&b, " On the shared copy, %s: say so.", sh2.Note)
+			}
 		}
 	}
 	return b.String(), nil
@@ -832,6 +887,10 @@ func (s *Server) artifactPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("path")
+	if app, ok := strings.CutPrefix(name, artifactAPIDir); ok && n == 0 {
+		s.artifactApp(w, r, id, app)
+		return
+	}
 	where, art, err := artifact.File(id, n, name)
 	if err != nil {
 		if errors.Is(err, artifact.ErrNotFound) {
@@ -847,6 +906,13 @@ func (s *Server) artifactPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page := name == "" || name == artifact.Page
+	if page && !reader && r.Header.Get("Sec-Fetch-Dest") == "document" {
+		// a tab gets the viewer shell, which frames the page (served
+		// below, to the frame) and draws its comments; another
+		// computer's tab reads the page alone, as a shared copy
+		s.artifactShell(w, r, art, ref, n)
+		return
+	}
 	ct := artifactType(name)
 	if page {
 		ct = "text/html; charset=utf-8"
@@ -857,8 +923,11 @@ func (s *Server) artifactPage(w http.ResponseWriter, r *http.Request) {
 		// the page's runtime, and the token to its store, go into what a
 		// browser navigates to alone (artifactRuntimeFor)
 		h.Add("Vary", "Sec-Fetch-Mode")
+		if page {
+			h.Add("Vary", "Sec-Fetch-Dest")
+		}
 		if reader {
-			body = artifact.WithRuntime(body, artifact.SharedRuntime())
+			body = artifact.WithRuntime(body, artifact.SharedRuntime(nil)) // no link session there: every capability null
 		} else if artifactRuntimeFor(r) {
 			rt, err := artifact.PageRuntime(art, n, ArtifactPagePath+ref+"/"+strings.TrimSuffix(artifactAPIDir, "/"))
 			if err != nil {
@@ -866,6 +935,7 @@ func (s *Server) artifactPage(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			rt.Home = ArtifactPagePath + id + "/"
+			rt.Origin = requestOrigin(r)
 			body = artifact.WithRuntime(body, rt)
 		}
 	}
@@ -884,6 +954,114 @@ func (s *Server) artifactPage(w http.ResponseWriter, r *http.Request) {
 		h.Set("ETag", strconv.Quote(art.ID+"-"+strconv.Itoa(art.Latest().N)))
 	}
 	http.ServeContent(w, r, "", art.Latest().At, bytes.NewReader(body))
+}
+
+// artifactShell serves the viewer shell for the page at ref
+// (docs/subsystems/artifacts.md, "Comments"). It runs at magpie's own
+// origin, so it takes no other origin's reads (no
+// Access-Control-Allow-Origin) and no frame around it.
+func (s *Server) artifactShell(w http.ResponseWriter, r *http.Request, art *artifact.Artifact, ref string, n int) {
+	tok, err := artifact.ShellToken(art.ID)
+	if err != nil {
+		http.Error(w, "the artifact's viewer can't be made: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	shown := art.Latest().N
+	if v := art.Version(n); v != nil {
+		shown = v.N
+	}
+	src := ArtifactPagePath + ref + "/"
+	if r.URL.RawQuery != "" {
+		src += "?" + r.URL.RawQuery
+	}
+	page, nonce := artifact.ShellPage(artifact.ShellConfig{
+		API:     ArtifactPagePath + ref + "/" + strings.TrimSuffix(artifactAPIDir, "/"),
+		Token:   tok,
+		ID:      art.ID,
+		Title:   art.Title,
+		Src:     src,
+		Version: shown,
+		Pinned:  n > 0,
+		Origin:  requestOrigin(r),
+		Lang:    settings.Load().Lang,
+		App:     ArtifactPagePath + art.ID + "/" + strings.TrimSuffix(artifactAPIDir, "/"),
+	})
+	h := w.Header()
+	h.Add("Vary", "Sec-Fetch-Mode")
+	h.Add("Vary", "Sec-Fetch-Dest")
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	h.Set("Content-Security-Policy", artifact.ShellCSP(nonce))
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Referrer-Policy", "no-referrer")
+	h.Set("Cache-Control", "no-store")
+	if r.Method != http.MethodHead {
+		w.Write(page)
+	}
+}
+
+// artifactApp serves what installs artifact id as an app from the
+// browser (artifact.Manifest): its manifest, icons and service worker,
+// under its newest page's _api. A pinned version has none: the app
+// always opens the newest.
+func (s *Server) artifactApp(w http.ResponseWriter, r *http.Request, id, name string) {
+	a, err := artifact.Get(id)
+	if err != nil {
+		if errors.Is(err, artifact.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "the artifact can't be read: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	home := ArtifactPagePath + id + "/"
+	api := home + strings.TrimSuffix(artifactAPIDir, "/")
+	var body []byte
+	h := w.Header()
+	switch {
+	case name == artifact.AppManifest:
+		body = artifact.Manifest(a, home, api)
+		h.Set("Content-Type", "application/manifest+json")
+		h.Set("Cache-Control", "no-cache")
+	case name == artifact.AppWorker:
+		body = artifact.AppWorkerJS(settings.Load().Lang)
+		h.Set("Content-Type", "text/javascript; charset=utf-8")
+		h.Set("Cache-Control", "no-cache")
+		// its scope is the page's folder, above _api where it is
+		h.Set("Service-Worker-Allowed", home)
+		// it fetches the app's window from magpie, and nothing else
+		h.Set("Content-Security-Policy", "default-src 'none'; connect-src 'self'")
+	case strings.HasPrefix(name, artifact.AppIcon) && strings.HasSuffix(name, ".png"):
+		size, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(name, artifact.AppIcon), ".png"))
+		if err != nil || !slices.Contains(artifact.AppIconSizes, size) {
+			http.NotFound(w, r)
+			return
+		}
+		if body, err = artifact.AppIconPNG(a, size); err != nil {
+			http.Error(w, "the icon can't be drawn: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		h.Set("Content-Type", "image/png")
+		// drawn from the title, which a new version may change
+		h.Set("Cache-Control", "no-cache")
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	h.Set("X-Content-Type-Options", "nosniff")
+	if h.Get("Content-Security-Policy") == "" {
+		h.Set("Content-Security-Policy", "default-src 'none'")
+	}
+	if r.Method != http.MethodHead {
+		w.Write(body)
+	}
+}
+
+// requestOrigin is the origin r was made to, as a browser names it.
+func requestOrigin(r *http.Request) string {
+	if r.TLS != nil {
+		return "https://" + r.Host
+	}
+	return "http://" + r.Host
 }
 
 // artifactType is the Content-Type a file is served with, by its name.
