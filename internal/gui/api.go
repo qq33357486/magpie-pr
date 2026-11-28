@@ -479,6 +479,9 @@ type settingsJSON struct {
 	AllowIPsEnv     string   `json:"allowIPsEnv,omitempty"`
 	AllowIPsFromEnv []string `json:"allowIPsFromEnv,omitempty"`
 	OnNetwork       bool     `json:"onNetwork,omitempty"`
+	// InContainer: magpie runs in a container, where MAGPIE_ADDR on the
+	// network is how its port is published at all
+	InContainer bool `json:"inContainer,omitempty"`
 	// the client certificates issued and still good (mtls.go), while
 	// other computers can reach magpie or mTLS is on; MTLSSaved: the
 	// folder the one just issued was saved to
@@ -901,6 +904,7 @@ func settingsState() settingsJSON {
 	s.Builtins = builtinsState()
 	s.PanelKeys = panelKeysState()
 	s.OnNetwork = gateway.OnNetwork()
+	s.InContainer = s.OnNetwork && gateway.InContainer()
 	if list, env := gateway.AllowIPs(); env {
 		s.AllowIPsEnv, s.AllowIPsFromEnv = os.Getenv(gateway.AllowIPsEnv), list
 	}
@@ -3443,9 +3447,13 @@ func held(h http.Handler) http.Handler {
 			// 5x the CPU.
 			defer tightenGC()()
 		}
-		if !(api && r.Method == http.MethodGet) && r.URL.Path != "/api/update/using" && r.URL.Path != "/api/page-away" {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.URL.Path != "/api/update/using" && r.URL.Path != "/api/page-away" {
 			// anything that may have written drops what was held, once it
-			// has answered with it (a page's word of input writes nothing)
+			// has answered with it (a page's word of input writes nothing).
+			// A GET writes nothing, under /api or not: the page's own
+			// files, icons and logos each dropped every provider's, agent's
+			// and catalog's lists, ~90 a page open, and the next read
+			// built them all again (#2278)
 			defer provider.Changed()
 		}
 		h.ServeHTTP(rw, r)

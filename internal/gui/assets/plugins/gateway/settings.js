@@ -18,6 +18,7 @@ let portDraft = { value: null, err: "" };
 function portSays(m) {
   let x;
   if ((x = /^port (\d+) is in use by another program/.exec(m))) return t("Port {p} is in use by another program: pick another one", { p: x[1] });
+  if ((x = /^port (\d+) is reserved by Windows/.exec(m))) return t("Windows reserves port {p} for Hyper-V, WSL or Docker: pick another one", { p: x[1] });
   if ((x = /^another magpie serves the gateway at (\S+):/.exec(m))) return t("Another magpie serves the gateway at {url}: set its port there, or quit it first", { url: x[1] });
   if (/from 1024 to 65535/.test(m)) return t("A port is a number from 1024 to 65535");
   return t(m);
@@ -653,6 +654,18 @@ function renderLAN(s) {
     if (ns.rekeyed) status(ns.rekeyed, "err");
   })
     .catch((e) => { status(t(e.message), "err"); renderSettings(); });
+  // MAGPIE_ADDR on the network (Docker's image, a service that carried
+  // it) listens there whatever the switch says: the row says it is on, and
+  // what turns it off (rael_tao on X: Off, and still [::] after a restart)
+  if (s.onNetwork && !s.lan) {
+    const port = (s.addrEnv || "").split(":").pop() || String(s.port || 3425);
+    const on = segs([["off", t("Off")], ["on", t("On")]], "on", () => {});
+    for (const b of on.querySelectorAll("button")) b.disabled = true;
+    row(t("Share on local network"), s.inContainer
+      ? t("MAGPIE_ADDR={addr} listens on every address in this container: publish the port as -p 127.0.0.1:{port}:{port} to keep the gateway on this computer", { addr: s.addrEnv, port })
+      : t("MAGPIE_ADDR={addr} has the gateway listen on the network whatever is set here: set it to 127.0.0.1:{port}, or unset it, and restart magpie to keep the gateway on this computer", { addr: s.addrEnv, port }), "", on);
+    return;
+  }
   row(t("Share on local network"), t("Agents on other computers on this network, or through a tunnel to this one such as Cloudflare Tunnel, can use magpie’s models with a gateway key from Gateway"), "",
     segs([["off", t("Off")], ["on", t("On")]], s.lan ? "on" : "off", (v) => set({ on: v === "on" })));
   if (!s.lan) return;
@@ -798,7 +811,8 @@ function renderWebPage(asked) {
     t("The app serves this window’s page with a key in its link, as magpie web does, while it runs. For a tunnel such as Cloudflare Tunnel, point it at http://127.0.0.1:{port}", { port: s.port }),
     segs([["", t("Off")], ["local", t("This computer")], ["lan", t("Local network")]], s.mode || "", (mode) => set({ mode }))).classList.add("web-page-mode");
   if (s.mode) {
-    const why = s.error ? el("div", "sub err", s.error.startsWith("port ") ? t("Port {p} is taken by another program, magpie web perhaps: magpie tries again every few seconds", { p: s.port }) : t(s.error))
+    const why = s.error ? el("div", "sub err", /^port \d+ is reserved by Windows/.test(s.error) ? portSays(s.error)
+      : s.error.startsWith("port ") ? t("Port {p} is taken by another program, magpie web perhaps: magpie tries again every few seconds", { p: s.port }) : t(s.error))
       : el("div", "sub say", s.serving ? t("Served; anyone with this link can change every setting") : t("Starting…"));
     const links = [s.link, ...(s.mode === "lan" ? s.network || [] : [])].filter(Boolean);
     const box2 = el("div", "web-page-links");

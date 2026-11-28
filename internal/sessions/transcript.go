@@ -22,6 +22,23 @@ type Transcript struct {
 	From     int    `json:"from,omitempty"`
 	Source   string `json:"source,omitempty"`
 	Captured int    `json:"captured,omitempty"`
+	// Turns is the user's messages in the whole file, and TurnsBefore
+	// those among the From parts left out: what a sheet showing only
+	// part of a long session counts its turns against (TurnsOf)
+	Turns       int `json:"turns,omitempty"`
+	TurnsBefore int `json:"turnsBefore,omitempty"`
+	size        int // characters of Parts' text, kept up as they are added
+	whole       bool
+}
+
+// Next is the number of the message a read of the rest starts at (as
+// From, TranscriptAfter's n), when t stops before the session's end; 0
+// when it reaches it.
+func (t Transcript) Next() int {
+	if !t.Cut {
+		return 0
+	}
+	return t.From + len(t.Parts)
 }
 
 // transcriptMax is the characters of all of a transcript's parts.
@@ -35,7 +52,7 @@ var ErrNoTranscript = errors.New("this agent's conversations can't be shown")
 // transcript.
 func HasTranscript(agent string) bool {
 	switch agent {
-	case "claude", "qoder", "qoder-cn", "codex", "pi", "raft", "cindy", "omp", "cursor", "opencode", "kimi", "agy", "antigravity", "openmausbot", "catpaw", "liveagent", "workbuddy", "workbuddy-ai", "codebuddy", "hermes":
+	case "claude", "qoder", "qoder-cn", "codex", "pi", "raft", "cindy", "omp", "cursor", "opencode", "kimi", "agy", "antigravity", "openmausbot", "catpaw", "dim", "liveagent", "workbuddy", "workbuddy-ai", "codebuddy", "hermes":
 		return true
 	}
 	return false
@@ -49,26 +66,26 @@ func readable(s Session) bool {
 }
 
 func (t *Transcript) add(_ bool, p Part) bool {
-	size := 0
-	for _, x := range t.Parts {
-		size += len(x.Text)
-	}
-	if size >= transcriptMax {
+	if t.size >= transcriptMax {
 		t.Cut = true
 		return false
 	}
-	if p, ok := keep(p); ok {
+	if p, ok := keepAs(p, t.whole); ok {
 		t.Parts = append(t.Parts, p)
+		t.size += len(p.Text)
 	}
 	return true
 }
 
 // TranscriptOf reads a session's conversation from its (main) file.
-func TranscriptOf(s Session) (Transcript, error) {
+func TranscriptOf(s Session) (Transcript, error) { return transcriptOf(s, false) }
+
+// transcriptOf is TranscriptOf, each part whole with whole.
+func transcriptOf(s Session, whole bool) (Transcript, error) {
 	if !Reads(s.Agent) {
 		return Transcript{Parts: []Part{}}, ErrNotRead
 	}
-	out := Transcript{Parts: []Part{}}
+	out := Transcript{Parts: []Part{}, whole: whole}
 	if !HasTranscript(s.Agent) || s.Path == "" {
 		return out, ErrNoTranscript
 	}
@@ -85,8 +102,13 @@ const transcriptLead = 6
 // part, the parts before it are left out (but a few) and From says how
 // many were.
 func TranscriptAt(s Session, needle string) (Transcript, error) {
+	return transcriptAt(s, needle, false)
+}
+
+// transcriptAt is TranscriptAt, each part whole with whole.
+func transcriptAt(s Session, needle string, whole bool) (Transcript, error) {
 	if needle == "" {
-		return TranscriptOf(s)
+		return transcriptOf(s, whole)
 	}
 	if !Reads(s.Agent) {
 		return Transcript{Parts: []Part{}}, ErrNotRead
@@ -98,7 +120,7 @@ func TranscriptAt(s Session, needle string) (Transcript, error) {
 	// found one's place among them noted, and the characters before it
 	at, saidAt, n, size, sizeAt, saidSize := -1, -1, 0, 0, 0, 0
 	if err := readTranscript(s, func(_ bool, p Part) bool {
-		p, ok := keep(p)
+		p, ok := keepAs(p, whole)
 		if !ok {
 			return true
 		}
@@ -122,20 +144,96 @@ func TranscriptAt(s Session, needle string) (Transcript, error) {
 		at, sizeAt = saidAt, saidSize
 	}
 	if at < 0 || sizeAt < transcriptMax {
-		return TranscriptOf(s)
+		return transcriptOf(s, whole)
 	}
-	out := Transcript{Parts: []Part{}, From: max(0, at-transcriptLead)}
+	return transcriptAfter(s, max(0, at-transcriptLead), whole)
+}
+
+// TranscriptAfter is TranscriptOf from the part after the first n it
+// keeps, and From says n: the rest of a transcript that was Cut, read
+// when the reader asks for it, so that a long session is never shown
+// only up to its first transcriptMax characters (usrname1833 on Discord:
+// a long session's sheet stopped before its last turns).
+func TranscriptAfter(s Session, n int) (Transcript, error) {
+	return transcriptAfter(s, n, false)
+}
+
+// transcriptAfter is TranscriptAfter, each part whole with whole: the
+// parts are numbered as TranscriptAfter numbers them, since a part is
+// left out only when it says nothing, whole or not.
+func transcriptAfter(s Session, n int, whole bool) (Transcript, error) {
+	if n <= 0 {
+		return transcriptOf(s, whole)
+	}
+	if !Reads(s.Agent) {
+		return Transcript{Parts: []Part{}}, ErrNotRead
+	}
+	if !HasTranscript(s.Agent) || s.Path == "" {
+		return Transcript{Parts: []Part{}}, ErrNoTranscript
+	}
+	out := Transcript{Parts: []Part{}, From: n, whole: whole}
 	i := 0
-	return out, readTranscript(s, func(in bool, p Part) bool {
+	err := readTranscript(s, func(in bool, p Part) bool {
 		if _, ok := keep(p); !ok {
 			return true
 		}
 		i++
-		if i <= out.From {
+		if i <= n {
 			return true
 		}
 		return out.add(in, p)
 	})
+	return out, err
+}
+
+// turn says whether a kept part starts a turn as a sheet counts them: a
+// message the user wrote (a [data-turn] in the GUI's drawTalk).
+func turn(p Part) bool {
+	return p.Role == "user" && (p.Kind == "" || p.Kind == "text")
+}
+
+// TurnsOf reads a session's whole file to count its turns, and those
+// among the first before parts it keeps: a long session's sheet is read
+// a part at a time, and still says how many turns the session has
+// (usrname1833 on Discord: "turn i / N" counted only what was read).
+func TurnsOf(s Session, before int) (all, inBefore int, err error) {
+	if !Reads(s.Agent) {
+		return 0, 0, ErrNotRead
+	}
+	if !HasTranscript(s.Agent) || s.Path == "" {
+		return 0, 0, ErrNoTranscript
+	}
+	i := 0 // the parts kept so far, as keep keeps them
+	err = readTranscript(s, func(_ bool, p Part) bool {
+		p, ok := keep(p)
+		if !ok {
+			return true
+		}
+		if turn(p) {
+			all++
+			if i < before {
+				inBefore++
+			}
+		}
+		i++
+		return true
+	})
+	return all, inBefore, err
+}
+
+// Counted is t with Turns and TurnsBefore filled in, when t holds only
+// part of the session (it was cut, or starts past From); a whole one's
+// turns are its own.
+func Counted(s Session, t Transcript) (Transcript, error) {
+	if !t.Cut && t.From <= 0 {
+		return t, nil
+	}
+	all, before, err := TurnsOf(s, t.From)
+	if err != nil {
+		return t, err
+	}
+	t.Turns, t.TurnsBefore = all, before
+	return t, nil
 }
 
 // readTranscript tells add each part of a session's conversation, in order,
@@ -170,6 +268,8 @@ func readTranscriptOf(s Session, keep func([]byte) bool, add func(bool, Part) bo
 		return hermesTranscript(s, add)
 	case "catpaw":
 		return catpawTranscript(s, add)
+	case "dim":
+		return dimTranscript(s, add)
 	case "liveagent":
 		return liveagentTranscript(s.Path, add)
 	case "workbuddy", "workbuddy-ai", "codebuddy":
